@@ -1,0 +1,4 @@
+# Customer App (original) — runs on native iOS and native Android.
+# Used by repos: gogovan-client-v2-android, gogovan-client-v2-ios.
+
+branch_prefix: CET

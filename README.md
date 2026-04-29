@@ -34,11 +34,35 @@ skills/
   design/   designer workflows
 commands/
   shared/  pm/  dev/  design/    slash commands — single .md file per command
+  <category>/profiles/           data files (.yaml) read by commands at runtime
 agents/
   shared/  pm/  dev/  design/    same shape, but each agent is a single .md file
 _template/
   SKILL.md  canonical skill template — copy this when adding a new skill
 ```
+
+## Project-aware commands
+
+Some commands change behavior based on the current project — e.g. `/add-worktree` runs `flutter pub get` in a Flutter repo and skips that step in a native Android repo.
+
+Per-platform/per-product details live in YAML profiles under `commands/<category>/profiles/`, installed alongside commands at `~/.claude/commands/profiles/`. They are **data files**, not slash commands (`.yaml`, not `.md`).
+
+The shape:
+
+```
+commands/dev/profiles/
+  platform/{flutter,android,ios}.yaml      deps_install, test_cmd, format_cmd, ide_open_hint
+  product/{ca,da,ca-revamp,da-revamp}.yaml branch_prefix
+  repos.yaml                                central repo → (platform, product) mapping
+```
+
+A command resolves the current project's profile at runtime:
+
+1. Reads `<repo-root>/.gogox-claude.yaml` if it exists (repo self-describes).
+2. Else looks up `basename $(git rev-parse --show-toplevel)` in `~/.claude/commands/profiles/repos.yaml`.
+3. Else errors with a hint to add the repo.
+
+Adding a new repo: append to `commands/dev/profiles/repos.yaml`. Adding a new platform: drop a yaml into `commands/dev/profiles/platform/`. Adding a new product: drop a yaml into `commands/dev/profiles/product/`.
 
 ## Adding a skill
 

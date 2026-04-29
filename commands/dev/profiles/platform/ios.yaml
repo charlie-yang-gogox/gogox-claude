@@ -1,0 +1,10 @@
+# iOS (native Swift/Xcode) platform profile.
+# Read by gogox-claude commands at runtime when the resolved platform is "ios".
+#
+# TODO: confirm with iOS team when first repo onboards. The defaults below
+# assume CocoaPods + standard Xcode test/format toolchain.
+
+deps_install: bundle exec pod install
+test_cmd: "xcodebuild test -workspace App.xcworkspace -scheme App -destination 'platform=iOS Simulator,name=iPhone 15'"
+format_cmd: swiftformat . && swiftlint
+ide_open_hint: "open App.xcworkspace in Xcode, or /list-worktrees to see all active worktrees"

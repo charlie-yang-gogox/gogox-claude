@@ -1,0 +1,28 @@
+# Central repo → (platform, product) mapping.
+#
+# gogox-claude commands resolve the active profile at runtime by:
+#   1. Reading <repo-root>/.gogox-claude.yaml (if present) — repo self-describes.
+#   2. Else looking up `basename $(git rev-parse --show-toplevel)` in this file.
+#   3. Else erroring with a hint to add an entry here.
+#
+# Add a new entry whenever a repo onboards.
+
+repos:
+  gogovan-client-v2-android:
+    platform: android
+    product: ca
+  gogovan-client-v2-ios:
+    platform: ios
+    product: ca
+  gogovan-driver-android:
+    platform: android
+    product: da
+  gogovan-driver-ios:
+    platform: ios
+    product: da
+  gogox-client-flutter:
+    platform: flutter
+    product: ca-revamp
+  gogox-driver-flutter:
+    platform: flutter
+    product: da-revamp

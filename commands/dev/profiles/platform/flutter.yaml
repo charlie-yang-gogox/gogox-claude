@@ -1,0 +1,7 @@
+# Flutter platform profile.
+# Read by gogox-claude commands at runtime when the resolved platform is "flutter".
+
+deps_install: flutter pub get
+test_cmd: /check-test --all --fix
+format_cmd: /format --skip-commit
+ide_open_hint: "run /work <ticket-id> to start, or /list-worktrees to see all active worktrees"

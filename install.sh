@@ -35,6 +35,7 @@ done
 INSTALLED_SKILLS=()
 INSTALLED_AGENTS=()
 INSTALLED_COMMANDS=()
+INSTALLED_PROFILES=()
 COLLISIONS=()
 
 for cat in "${CATEGORIES[@]}"; do
@@ -78,6 +79,17 @@ for cat in "${CATEGORIES[@]}"; do
       cp "$command_file" "$COMMANDS_DIR/"
       INSTALLED_COMMANDS+=("$command_name")
     done
+
+    # Profiles: data files (yaml) consumed by commands at runtime. Subtree-copied
+    # into ~/.claude/commands/profiles/ so commands can read them by a fixed path.
+    # Non-.md so they do NOT register as slash commands.
+    if [ -d "$src_commands/profiles" ]; then
+      mkdir -p "$COMMANDS_DIR/profiles"
+      cp -R "$src_commands/profiles/." "$COMMANDS_DIR/profiles/"
+      while IFS= read -r p; do
+        INSTALLED_PROFILES+=("${p#$src_commands/profiles/}")
+      done < <(find "$src_commands/profiles" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.toml' \))
+    fi
   fi
 done
 
@@ -119,6 +131,14 @@ if [ "${#INSTALLED_COMMANDS[@]}" -gt 0 ]; then
   echo
 fi
 
+if [ "${#INSTALLED_PROFILES[@]}" -gt 0 ]; then
+  echo "Profiles (${#INSTALLED_PROFILES[@]}) — read at runtime by commands:"
+  for p in "${INSTALLED_PROFILES[@]}"; do
+    echo "  ~/.claude/commands/profiles/$p"
+  done
+  echo
+fi
+
 if [ "${#COLLISIONS[@]}" -gt 0 ]; then
   echo "WARN: name collisions across categories (later wins):"
   for c in "${COLLISIONS[@]}"; do
@@ -127,7 +147,7 @@ if [ "${#COLLISIONS[@]}" -gt 0 ]; then
   echo
 fi
 
-if [ "${#INSTALLED_SKILLS[@]}" -eq 0 ] && [ "${#INSTALLED_AGENTS[@]}" -eq 0 ] && [ "${#INSTALLED_COMMANDS[@]}" -eq 0 ]; then
+if [ "${#INSTALLED_SKILLS[@]}" -eq 0 ] && [ "${#INSTALLED_AGENTS[@]}" -eq 0 ] && [ "${#INSTALLED_COMMANDS[@]}" -eq 0 ] && [ "${#INSTALLED_PROFILES[@]}" -eq 0 ]; then
   echo "No skills, agents, or commands installed yet — repo skeleton mode."
   echo "Add a skill: cp -r _template skills/<category>/<skill-name>"
   echo

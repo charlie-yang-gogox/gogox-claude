@@ -1,0 +1,8 @@
+# Android (native Kotlin/Gradle) platform profile.
+# Read by gogox-claude commands at runtime when the resolved platform is "android".
+
+# Empty: Android Studio runs Gradle sync automatically when the project opens.
+deps_install: ""
+test_cmd: ./gradlew testDebugUnitTest
+format_cmd: ./gradlew detekt detektFormat
+ide_open_hint: "open the worktree in Android Studio (Gradle sync runs automatically), or /list-worktrees to see all active worktrees"

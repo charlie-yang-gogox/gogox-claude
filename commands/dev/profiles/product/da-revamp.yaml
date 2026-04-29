@@ -1,0 +1,6 @@
+# Driver App (revamp) — Flutter rewrite of DA.
+# Used by repo: gogox-driver-flutter.
+
+# TODO(Mark): confirm DA-revamp branch prefix. High probability "DAF",
+# awaiting confirmation. Update this file once decided.
+branch_prefix: DAF
