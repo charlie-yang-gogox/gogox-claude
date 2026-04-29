@@ -12,7 +12,7 @@ cd gogox-claude
 ./install.sh pm dev design    # installs everything
 ```
 
-`shared/` is always installed. After install, skills appear in `~/.claude/skills/` and are invoked as `/<skill-name>` (folder categories are browsing-only — they collapse flat at install time).
+`shared/` is always installed. After install, skills appear in `~/.claude/skills/`, commands in `~/.claude/commands/`, and agents in `~/.claude/agents/`. Skills and commands are both invoked as `/<name>` (folder categories are browsing-only — they collapse flat at install time).
 
 To update: `git pull && ./install.sh <same categories>`. There is no auto-update by design — your local edits to a skill stay until you re-run install for that category.
 
@@ -32,6 +32,8 @@ skills/
   pm/       PM-specific workflows
   dev/      engineering workflows
   design/   designer workflows
+commands/
+  shared/  pm/  dev/  design/    slash commands — single .md file per command
 agents/
   shared/  pm/  dev/  design/    same shape, but each agent is a single .md file
 _template/
