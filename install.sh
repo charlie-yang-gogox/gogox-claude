@@ -44,10 +44,14 @@ for cat in "${CATEGORIES[@]}"; do
       [ -d "$skill_path" ] || continue
       skill_name="$(basename "$skill_path")"
       [ "$skill_name" = "_template" ] && continue
+      [ -z "$skill_name" ] && continue
       if [ -d "$SKILLS_DIR/$skill_name" ] && [[ " ${INSTALLED_SKILLS[*]:-} " == *" $skill_name "* ]]; then
         COLLISIONS+=("skill:$skill_name")
       fi
-      cp -R "$skill_path" "$SKILLS_DIR/"
+      # Explicit destination path so trailing slash on $skill_path doesn't
+      # cause BSD cp to copy contents-only into $SKILLS_DIR.
+      rm -rf "$SKILLS_DIR/$skill_name"
+      cp -R "${skill_path%/}" "$SKILLS_DIR/$skill_name"
       INSTALLED_SKILLS+=("$skill_name")
     done
   fi
