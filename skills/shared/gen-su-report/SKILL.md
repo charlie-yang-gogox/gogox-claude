@@ -5,9 +5,11 @@ description: Generate today's daily stand-up (SU) report by reading the user's C
 
 # Generate Stand-Up Report
 
-> **One-line summary**: Reads Claude Code transcripts from the last working day, extracts ticket-based and non-ticket-based work, queries Linear for current ticket statuses, and produces a Slack-ready SU report.
+> **One-line summary**: Reads Claude Code transcripts from the last working day, extracts ticket-based and non-ticket-based work, queries Linear and Jira for current ticket statuses, and produces a Slack-ready SU report.
 >
-> **MCP prerequisites**: Linear (`mcp__claude_ai_Linear__*`). User must have completed `/mcp` auth for Linear before running. If Linear is unavailable, the skill still produces a report from transcripts alone but ticket statuses will be marked as `(status unknown)`.
+> **MCP prerequisites**: Both Linear (`mcp__claude_ai_Linear__*`) and Jira via Atlassian Rovo (`mcp__claude_ai_Atlassian_Rovo__*`) — gogox uses both systems and tickets land in either one. User must have completed `/mcp` auth for both before running.
+>
+> **Graceful degradation**: Per-ticket fetch failures (Entity not found, timeouts, auth issues) mark that single ticket as `(status unknown)` and the skill continues. The skill still runs if one MCP is entirely unavailable, but tickets routed to that system will all show `(status unknown)`.
 
 ## Inputs
 
@@ -44,20 +46,36 @@ None required. Optional inputs the user may provide:
      - Cross-team support work, code reviews, debugging sessions
    - Aim for 1–3 non-ticket bullets max. Don't list every micro-action — this is a stand-up, not an audit.
 
-5. **Fetch ticket status from Linear** for each extracted ticket:
-   - Use `mcp__claude_ai_Linear__get_issue` with the ticket identifier.
-   - Capture: `title`, `state.name` (e.g. "In Progress", "In Review", "Done"), `team.key` (the prefix).
-   - If a ticket can't be fetched (deleted, wrong workspace, etc.), mark its status as `(status unknown)` and continue.
+5. **Fetch ticket status — Linear first, Jira as fallback**:
 
-6. **Group tickets by project** using the prefix → project mapping in **Gogox Context** below:
-   - If the prefix is mapped, use the mapped project name as the section header.
-   - If the prefix is NOT mapped, use the team name from Linear (`team.name`) as the header. Note in the user-facing output which mapping is missing so the user can update Gogox Context for next time.
-   - Non-ticket work goes under the catch-all project bucket (default: `CA` — see Gogox Context).
+   For each extracted ticket ID, try Linear first; if Linear says the entity does not exist, try Jira. Only "Entity not found" triggers the fallback — timeout / auth / network errors mark the ticket as `(status unknown)` immediately and do NOT cascade to Jira (avoids doubling latency when Linear itself is degraded).
 
-7. **Determine "today's plan"** — list tickets the user is likely to work on today:
-   - Use `mcp__claude_ai_Linear__list_issues` with filters: `assignee = me`, `state.type IN ("started", "unstarted")`, ordered by recently updated.
-   - Limit to the top 3–5 most recently touched.
-   - Group by project using the same mapping.
+   ```
+   for each ticket_id:
+     try mcp__claude_ai_Linear__get_issue(ticket_id):
+       success → capture { title, state.name, state.type, team.key, team.name }
+       error "Entity not found" → fall through to Jira
+       any other error → mark (status unknown), continue to next ticket
+     try mcp__claude_ai_Atlassian_Rovo__getJiraIssue(cloudId, ticket_id):
+       success → capture { summary, status.name, status.statusCategory, project.key, project.name }
+       any error → mark (status unknown)
+   ```
+
+   **cloudId caching**: Before the first Jira call, run `mcp__claude_ai_Atlassian_Rovo__getAccessibleAtlassianResources()` once and cache the **first** cloudId returned. gogox uses a single Atlassian workspace (gogotech.atlassian.net) so the first entry is correct. If gogox ever moves to multiple Atlassian clouds, this skill needs updating to iterate.
+
+6. **Group tickets by project**:
+   - If the ticket's prefix appears in the **Gogox Context** mapping table, use the mapped project name as the section header.
+   - Otherwise, use the team/project name from the API response (`team.name` for Linear, `project.name` for Jira). Note in the user-facing output that the mapping is missing so the user can add it to Gogox Context if they want a friendlier name.
+   - Non-ticket work goes under the catch-all bucket (default: `CA` — see Gogox Context).
+
+7. **Determine "today's plan"** — list tickets the user is likely to work on today, querying **both** Linear and Jira:
+
+   - Linear: `mcp__claude_ai_Linear__list_issues` with `assignee = me`, `state.type = "started"` (i.e. actively In Progress, not just triaged/todo), ordered by recently updated. Capture `updatedAt` for the merge step.
+   - Jira: `mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql(cloudId, "assignee = currentUser() AND statusCategory = \"In Progress\" ORDER BY updated DESC")`. Capture `fields.updated` for the merge step.
+   - Merge both result sets, sort by updated desc, take top 3–5 across the union.
+   - Group by project using the same rules as step 6.
+
+   Why `started` only and not `unstarted` too: gogox SU "today's plan" lists what you're actually working on, not your full backlog. Tickets that haven't been started yet aren't "today's plan" candidates by convention.
 
 8. **Ask the user three subjective questions** (these cannot be auto-extracted) — ask them one at a time, not batched:
 
@@ -73,18 +91,21 @@ None required. Optional inputs the user may provide:
 
 ## Gogox Context
 
-Update this section as new Linear teams are added or project names change. PRs welcome.
+**Atlassian workspace**: `gogotech.atlassian.net` — single workspace assumption. cloudId is cached after first lookup.
 
-**Linear team prefix → project name** (used as section headers in the SU report):
+**Ticket prefix → project name** (optional override table):
 
-| Prefix | Project name | Notes |
-|--------|--------------|-------|
-| `CAF` | Moonshot | Core fixed-fee work stream |
-| _(add others as you encounter them)_ | | |
+| Prefix | Project name | Source | Notes |
+|--------|--------------|--------|-------|
+| _(empty by default — add your team's prefixes as you encounter them)_ | | | |
 
-**Non-ticket bucket**: `CA` — work without a dedicated ticket (release bug fixes, ad-hoc support, code review, ops). Always use `CA` as the section header for non-ticket bullets unless the user overrides.
+This table is **documentation, not gating**. Tickets whose prefix is not listed here will still be fetched correctly by the Linear-first / Jira-fallback logic in step 5. The mapping is purely a display preference: if you want the SU report to group `CAF-*` tickets under "Moonshot" instead of the API's literal team name, add the row. If you don't care, leave the table empty and the skill uses the API team/project name verbatim.
 
-**Linear "in progress" state types**: `started` (active) and `unstarted` (planned/triaged). Both count as "today's plan" candidates.
+The `Source` column documents where each prefix lives (Linear or Jira) for human readers — it does NOT route the API call. Step 5 always tries Linear first then falls back to Jira; the column is just so a new contributor reading the table can see the lay of the land.
+
+**Non-ticket bucket**: `CA` — default header for work without a dedicated ticket (release bug fixes, ad-hoc support, code review, ops). Override per-user if your team uses a different name.
+
+**Linear state semantics**: Linear states have both `name` (e.g. "In Progress", "In Review", "Done") and `type` (e.g. `started`, `unstarted`, `completed`). Filter by `type` for portability across teams that use different display names; show `name` in the report so the output matches what users see in Linear.
 
 **SU template format** (matches gogox stand-up convention):
 
