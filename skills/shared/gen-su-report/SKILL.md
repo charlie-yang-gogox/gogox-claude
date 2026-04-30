@@ -53,13 +53,16 @@ None required. Optional inputs the user may provide:
    ```
    for each ticket_id:
      try mcp__claude_ai_Linear__get_issue(ticket_id):
-       success → capture { title, state.name, state.type, team.key, team.name }
+       success → capture { title, state.name, state.type, team.key, team.name, url }
        error "Entity not found" → fall through to Jira
        any other error → mark (status unknown), continue to next ticket
      try mcp__claude_ai_Atlassian_Rovo__getJiraIssue(cloudId, ticket_id):
        success → capture { summary, status.name, status.statusCategory, project.key, project.name }
+                 build url = `https://gogotech.atlassian.net/browse/{ticket_id}`
        any error → mark (status unknown)
    ```
+
+   **URL capture is required, not optional** — every successfully fetched ticket must carry its `url` through to the rendering step so the bullet can be wrapped in Slack's `<URL|label>` link format. Linear's `get_issue` response exposes `url` directly; Jira's URL is built deterministically from the ticket key against the gogotech workspace.
 
    **cloudId caching**: Before the first Jira call, run `mcp__claude_ai_Atlassian_Rovo__getAccessibleAtlassianResources()` once and cache the **first** cloudId returned. gogox uses a single Atlassian workspace (gogotech.atlassian.net) so the first entry is correct. If gogox ever moves to multiple Atlassian clouds, this skill needs updating to iterate.
 
@@ -70,10 +73,10 @@ None required. Optional inputs the user may provide:
 
 7. **Determine "today's plan"** — list tickets the user is likely to work on today, querying **both** Linear and Jira:
 
-   - Linear: `mcp__claude_ai_Linear__list_issues` with `assignee = me`, `state.type = "started"` (i.e. actively In Progress, not just triaged/todo), ordered by recently updated. Capture `updatedAt` for the merge step.
-   - Jira: `mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql(cloudId, "assignee = currentUser() AND statusCategory = \"In Progress\" ORDER BY updated DESC")`. Capture `fields.updated` for the merge step.
+   - Linear: `mcp__claude_ai_Linear__list_issues` with `assignee = me`, `state.type = "started"` (i.e. actively In Progress, not just triaged/todo), ordered by recently updated. Capture `updatedAt` and `url` for each issue.
+   - Jira: `mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql(cloudId, "assignee = currentUser() AND statusCategory = \"In Progress\" ORDER BY updated DESC")`. Capture `fields.updated` and build `url = https://gogotech.atlassian.net/browse/{key}` for each issue.
    - Merge both result sets, sort by updated desc, take top 3–5 across the union.
-   - Group by project using the same rules as step 6.
+   - Group by project using the same rules as step 6. Carry the `url` through so the rendering step can wrap each bullet in Slack's `<URL|label>` link format.
 
    Why `started` only and not `unstarted` too: gogox SU "today's plan" lists what you're actually working on, not your full backlog. Tickets that haven't been started yet aren't "today's plan" candidates by convention.
 
@@ -115,14 +118,14 @@ How are you feeling today?
 
 What did you do on the last working day?
 {Project A}
-• {TICKET-ID}: {title} {Status}
-• {TICKET-ID}: {title} {Status}
+• <{ticket URL}|{TICKET-ID}>: {title} {Status}
+• <{ticket URL}|{TICKET-ID}>: {title} {Status}
 {Project B}
-• {non-ticket bullet}
+• <{PR or commit URL}|{label}>: {non-ticket bullet}
 
 What will you do today?
 {Project A}
-• {TICKET-ID}: {title} {Status}
+• <{ticket URL}|{TICKET-ID}>: {title} {Status}
 
 Anything blocking your progress?
 {blockers text, or omit this line if none}
@@ -131,9 +134,19 @@ Anything else you'd like to share?
 {anything-else text, or omit this line if none}
 ```
 
+Concrete rendered example (so the format is unambiguous):
+
+```
+• <https://linear.app/gogox/issue/CAF-229|CAF-229>: Driver onboarding revamp In Review
+• <https://gogotech.atlassian.net/browse/CET-8351|CET-8351>: Fix push token refresh In Progress
+```
+
 Rules for rendering:
 - Project headers are bolded by being on their own line (no markdown — Slack renders plain text).
 - Ticket bullets use `•` (U+2022), not `-` or `*`.
+- **Every ticket bullet must wrap the ticket ID in Slack's `<URL|label>` link format** so it renders clickably when pasted into Slack. `[label](URL)` becomes literal text in `mrkdwn` paste, and bare URLs lose context — `<URL|label>` is the only syntax Slack renders as a clickable link from a paste. Use the `url` captured in step 5 (or step 7 for today's plan).
+- For non-ticket items with a natural URL (PRs, commits, dashboards), wrap them in the same `<URL|label>` form. If a non-ticket bullet has no URL, leave it as plain text.
+- For tickets that fell back to `(status unknown)` because both Linear and Jira fetches failed, render as plain `• {TICKET-ID}: (status unknown)` without a link wrapper — the skill doesn't know the tracker, so a deterministic URL would mislead.
 - Status appears at the end of the line, no parentheses (e.g. `In Review`, not `(In Review)`).
 - If the user skipped Blockers or Anything-else, omit the question heading entirely from the output (don't leave it blank).
 
