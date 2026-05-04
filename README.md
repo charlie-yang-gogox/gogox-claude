@@ -9,22 +9,12 @@ Internal shared Claude Code skills and agents for gogox. Manual install, overrid
 ```bash
 git clone <repo-url> gogox-claude
 cd gogox-claude
-./install.sh                  # installs shared/ only
-./install.sh pm dev           # installs shared + pm + dev
-./install.sh pm dev design    # installs everything
+./install.sh
 ```
 
-`shared/` is always installed. After install, skills appear in `~/.claude/skills/`, commands in `~/.claude/commands/`, and agents in `~/.claude/agents/`. Skills and commands are both invoked as `/<name>` (folder categories are browsing-only — they collapse flat at install time).
+One command, installs everything. After install, skills appear in `~/.claude/skills/`, commands in `~/.claude/commands/`, and agents in `~/.claude/agents/`. Skills and commands are both invoked as `/<name>` (folder categories inside the repo are organization-only — they collapse flat at install time).
 
-To update: `git pull && ./install.sh <same categories>`. There is no auto-update by design — your local edits to a skill stay until you re-run install for that category.
-
-## Persona examples
-
-- **PM**: `./install.sh pm`
-- **Dev**: `./install.sh dev`
-- **Designer**: `./install.sh design`
-- **Dev who occasionally writes PRDs**: `./install.sh pm dev`
-- **Anyone**: `./install.sh` gets you the shared workflows
+To update: `git pull`. Files are symlinked into `~/.claude/`, so the pull is the upgrade — no need to re-run `install.sh` unless you want to pick up newly-added top-level files.
 
 ## Layout
 

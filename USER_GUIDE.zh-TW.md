@@ -20,26 +20,19 @@
 
 ---
 
-## 2. 安裝（挑一個你的角色）
+## 2. 安裝
 
 ```bash
 git clone <repo-url> gogox-claude
 cd gogox-claude
-
-# 只裝大家共用的（最小集合）
 ./install.sh
-
-# 依角色安裝（shared 永遠會包含）
-./install.sh pm                 # PM
-./install.sh dev                # 工程師
-./install.sh design             # 設計師
-./install.sh pm dev             # 偶爾寫 PRD 的工程師
-./install.sh pm dev design      # 全部都裝
 ```
 
-裝完終端機會印出這次裝了哪些 `/skill`、`/command`、`agent`，照著挑一個試試看就行。
+一行指令、全部裝好。不用挑角色——repo 裡的 `pm/`、`dev/`、`design/` 資料夾只是內部分類，安裝後全部攤平在 `~/.claude/` 底下。
 
-> 內部用 **symlink**，不是 copy。也就是說 `git pull` 之後檔案就同步更新了，**不用再跑一次 `install.sh`**。除非你要新增/減少角色，才需要重跑。
+裝完終端機會印出這次裝了哪些 `/skill`、`/command`、`agent`，挑一個試試看就行。
+
+> 內部用 **symlink**，不是 copy。`git pull` 之後檔案就同步更新了，**不用再跑一次 `install.sh`**（除非有新增最上層的東西想撿起來）。
 
 ---
 
@@ -68,9 +61,6 @@ cd gogox-claude
 ```bash
 # 升級到最新版（檔案是 symlink，git pull 完就生效）
 cd gogox-claude && git pull
-
-# 想換角色，重跑 install 並指定新組合
-./install.sh dev design
 
 # 想完全移除？刪掉 ~/.claude/ 裡對應的 symlink 就好
 # （symlink 安全可刪，不會影響原檔案）

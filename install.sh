@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # gogox-claude installer
 #
-# Usage:
-#   ./install.sh                # installs shared/ only
-#   ./install.sh pm             # installs shared + pm
-#   ./install.sh pm dev design  # installs everything
+# Usage: ./install.sh
 #
-# `shared` is always installed. Skills, agents, and commands are symlinked
-# (not copied) so that `git pull` updates everything instantly — no need
-# to re-run install after pulling.
+# Installs every category (shared, pm, dev, design). Folder split inside the
+# repo is for organization only — onboarding shouldn't have to decide.
+# Skills, agents, and commands are symlinked (not copied) so `git pull`
+# updates everything instantly — no need to re-run install after pulling.
 
 set -eo pipefail
 
@@ -19,18 +17,7 @@ COMMANDS_DIR="$HOME/.claude/commands"
 
 mkdir -p "$SKILLS_DIR" "$AGENTS_DIR" "$COMMANDS_DIR"
 
-# Shared always included. Dedupe user args.
-CATEGORIES=("shared")
-for arg in "$@"; do
-  case "$arg" in
-    shared|pm|dev|design)
-      [[ " ${CATEGORIES[*]} " == *" $arg "* ]] || CATEGORIES+=("$arg")
-      ;;
-    *)
-      echo "warning: unknown category '$arg' (valid: shared pm dev design)" >&2
-      ;;
-  esac
-done
+CATEGORIES=("shared" "pm" "dev" "design")
 
 INSTALLED_SKILLS=()
 INSTALLED_AGENTS=()
@@ -106,8 +93,7 @@ fi
 echo
 echo "============================================"
 echo " gogox-claude installed"
-echo " commit:     $COMMIT"
-echo " categories: ${CATEGORIES[*]}"
+echo " commit: $COMMIT"
 echo "============================================"
 echo
 
