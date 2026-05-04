@@ -5,7 +5,7 @@ description: Generate today's daily stand-up (SU) report by reading the user's C
 
 # Generate Stand-Up Report
 
-> **One-line summary**: Reads Claude Code transcripts from the last working day, extracts ticket-based and non-ticket-based work, queries Linear and Jira for current ticket statuses, and produces a Slack-ready SU report.
+> **One-line summary**: Reads Claude Code transcripts from the last working day, extracts ticket-based and non-ticket-based work, queries Linear and Jira for current ticket statuses, and produces a Slack-ready SU report as an HTML file opened in the browser — copying from the rendered page preserves rich-text formatting (bold headers, italic project subtitles, inline-code status badges, clickable ticket anchors) when pasted into Slack.
 >
 > **MCP prerequisites**: Both Linear (`mcp__claude_ai_Linear__*`) and Jira via Atlassian Rovo (`mcp__claude_ai_Atlassian_Rovo__*`) — gogox uses both systems and tickets land in either one. User must have completed `/mcp` auth for both before running.
 >
@@ -62,7 +62,7 @@ None required. Optional inputs the user may provide:
        any error → mark (status unknown)
    ```
 
-   **URL capture is required, not optional** — every successfully fetched ticket must carry its `url` through to the rendering step so the bullet can be wrapped in Slack's `<URL|label>` link format. Linear's `get_issue` response exposes `url` directly; Jira's URL is built deterministically from the ticket key against the gogotech workspace.
+   **URL capture is required, not optional** — every successfully fetched ticket must carry its `url` through to the rendering step so the ticket ID can be wrapped in an HTML `<a href>` anchor. Linear's `get_issue` response exposes `url` directly; Jira's URL is built deterministically from the ticket key against the gogotech workspace.
 
    **cloudId caching**: Before the first Jira call, run `mcp__claude_ai_Atlassian_Rovo__getAccessibleAtlassianResources()` once and cache the **first** cloudId returned. gogox uses a single Atlassian workspace (gogotech.atlassian.net) so the first entry is correct. If gogox ever moves to multiple Atlassian clouds, this skill needs updating to iterate.
 
@@ -76,7 +76,7 @@ None required. Optional inputs the user may provide:
    - Linear: `mcp__claude_ai_Linear__list_issues` with `assignee = me`, `state.type = "started"` (i.e. actively In Progress, not just triaged/todo), ordered by recently updated. Capture `updatedAt` and `url` for each issue.
    - Jira: `mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql(cloudId, "assignee = currentUser() AND statusCategory = \"In Progress\" ORDER BY updated DESC")`. Capture `fields.updated` and build `url = https://gogotech.atlassian.net/browse/{key}` for each issue.
    - Merge both result sets, sort by updated desc, take top 3–5 across the union.
-   - Group by project using the same rules as step 6. Carry the `url` through so the rendering step can wrap each bullet in Slack's `<URL|label>` link format.
+   - Group by project using the same rules as step 6. Carry the `url` through so the rendering step can wrap each ticket ID in an HTML `<a href>` anchor.
 
    Why `started` only and not `unstarted` too: gogox SU "today's plan" lists what you're actually working on, not your full backlog. Tickets that haven't been started yet aren't "today's plan" candidates by convention.
 
@@ -88,9 +88,9 @@ None required. Optional inputs the user may provide:
 
    c. **Anything else**: "Anything else you'd like to share? (Press Enter to skip)"
 
-9. **Assemble the report** in the gogox SU template format below. Render it in a single code block so the user can copy-paste into Slack.
+9. **Assemble the report as an HTML file** at `/tmp/su-report.html` using the template in **SU template format** below. Then `open /tmp/su-report.html` (macOS) so the user sees it rendered in their default browser. Pasting from the rendered page into Slack preserves rich text — bold question headers, italic project subtitles, inline-code status badges, and clickable ticket anchors all survive the paste because the clipboard carries HTML, not plain text. Plain-text / mrkdwn variants (`<URL|label>`, `[label](URL)`) all degrade to literal text when pasted into Slack and are therefore not used.
 
-10. **Confirm with the user** before finishing: show the rendered report, ask "Edit anything before you post? (yes/no)". If yes, ask what to change and re-render. If no, the skill is done — the user copy-pastes it themselves. **Do NOT auto-post to Slack**; posting is a user action, not the skill's job.
+10. **Confirm with the user** before finishing: tell them the file is open in the browser and ask "Edit anything before you post? (yes/no)". If yes, ask what to change, rewrite `/tmp/su-report.html`, and re-open it. If no, the skill is done — the user does Cmd+A → Cmd+C in the browser tab and Cmd+V into Slack. **Do NOT auto-post to Slack**; posting is a user action, not the skill's job.
 
 ## Gogox Context
 
@@ -110,49 +110,52 @@ The `Source` column documents where each prefix lives (Linear or Jira) for human
 
 **Linear state semantics**: Linear states have both `name` (e.g. "In Progress", "In Review", "Done") and `type` (e.g. `started`, `unstarted`, `completed`). Filter by `type` for portability across teams that use different display names; show `name` in the report so the output matches what users see in Linear.
 
-**SU template format** (matches gogox stand-up convention):
+**SU template format** (HTML — written to `/tmp/su-report.html` and opened in the browser):
 
-```
-How are you feeling today?
-{feeling emoji or phrase}
-
-What did you do on the last working day?
-{Project A}
-• <{ticket URL}|{TICKET-ID}>: {title} {Status}
-• <{ticket URL}|{TICKET-ID}>: {title} {Status}
-{Project B}
-• <{PR or commit URL}|{label}>: {non-ticket bullet}
-
-What will you do today?
-{Project A}
-• <{ticket URL}|{TICKET-ID}>: {title} {Status}
-
-Anything blocking your progress?
-{blockers text, or omit this line if none}
-
-Anything else you'd like to share?
-{anything-else text, or omit this line if none}
+```html
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SU {YYYY-MM-DD}</title>
+<style>body{font:14px -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;line-height:1.5;padding:24px;max-width:820px;color:#1d1c1d}p{margin:0}code{background:#f4f4f4;border:1px solid #e0e0e0;border-radius:3px;padding:1px 4px;font:12px ui-monospace,Menlo,monospace;color:#c0341d}</style>
+</head><body>
+<p><strong>How are you feeling today?</strong></p>
+<p>{feeling emoji or phrase}</p>
+<p>&nbsp;</p>
+<p><strong>What did you do on the last working day?</strong></p>
+<p><em>{Project A}</em></p>
+<p>•&nbsp;<a href="{ticket URL}">{TICKET-ID}</a>: {title} <code>{Status}</code></p>
+<p><em>{Project B}</em></p>
+<p>•&nbsp;<a href="{PR or commit URL}">{label}</a>: {non-ticket bullet}</p>
+<p>&nbsp;</p>
+<p><strong>What will you do today?</strong></p>
+<p><em>{Project A}</em></p>
+<p>•&nbsp;<a href="{ticket URL}">{TICKET-ID}</a>: {title} <code>{Status}</code></p>
+<p><strong>Anything blocking your progress?</strong></p>
+<p>{blockers text — omit this and the heading above if none}</p>
+<p><strong>Anything else you'd like to share?</strong></p>
+<p>{anything-else text — omit this and the heading above if none}</p>
+</body></html>
 ```
 
 Concrete rendered example (so the format is unambiguous):
 
-```
-• <https://linear.app/gogox/issue/CAF-229|CAF-229>: Driver onboarding revamp In Review
-• <https://gogotech.atlassian.net/browse/CET-8351|CET-8351>: Fix push token refresh In Progress
+```html
+<p>•&nbsp;<a href="https://linear.app/gogox/issue/CAF-229/support-fixed-fee-moving-additional-requirement">CAF-229</a>: Support fixed fee moving additional requirement <code>Ready for QA</code></p>
+<p>•&nbsp;<a href="https://gogotech.atlassian.net/browse/CET-8351">CET-8351</a>: Fix push token refresh <code>In Progress</code></p>
 ```
 
 Rules for rendering:
-- Project headers are bolded by being on their own line (no markdown — Slack renders plain text).
-- Ticket bullets use `•` (U+2022), not `-` or `*`.
-- **Every ticket bullet must wrap the ticket ID in Slack's `<URL|label>` link format** so it renders clickably when pasted into Slack. `[label](URL)` becomes literal text in `mrkdwn` paste, and bare URLs lose context — `<URL|label>` is the only syntax Slack renders as a clickable link from a paste. Use the `url` captured in step 5 (or step 7 for today's plan).
-- For non-ticket items with a natural URL (PRs, commits, dashboards), wrap them in the same `<URL|label>` form. If a non-ticket bullet has no URL, leave it as plain text.
-- For tickets that fell back to `(status unknown)` because both Linear and Jira fetches failed, render as plain `• {TICKET-ID}: (status unknown)` without a link wrapper — the skill doesn't know the tracker, so a deterministic URL would mislead.
-- Status appears at the end of the line, no parentheses (e.g. `In Review`, not `(In Review)`).
-- If the user skipped Blockers or Anything-else, omit the question heading entirely from the output (don't leave it blank).
+- **Visual hierarchy** (all three styles survive Slack paste): question headers use `<strong>`, project subtitles use `<em>`, status badges use `<code>`. Ticket IDs are wrapped in `<a href="…">` for clickable anchor text.
+- Bullet character is `•` (U+2022) followed by `&nbsp;` for spacing — not `-` or `*`.
+- **Every ticket bullet must wrap the ticket ID in an `<a href>` anchor** using the `url` captured in step 5 (or step 7 for today's plan). The clickable anchor text is preserved by Slack on paste because the clipboard carries HTML; mrkdwn forms (`<URL|label>`, `[label](URL)`) are NOT used because they only render via API send, not paste.
+- For non-ticket items with a natural URL (PRs, commits, dashboards), wrap in the same `<a href>`. If a non-ticket bullet has no URL, leave the text plain inside the `<p>•&nbsp;…</p>`.
+- For tickets that fell back to `(status unknown)` because both Linear and Jira fetches failed, render as `<p>•&nbsp;{TICKET-ID}: <code>(status unknown)</code></p>` without an anchor — the skill doesn't know the tracker, so a deterministic URL would mislead.
+- Status text inside `<code>` has no parentheses (e.g. `In Review`, not `(In Review)`).
+- If the user skipped Blockers or Anything-else, omit BOTH the `<strong>` heading line AND the answer paragraph — don't leave a blank `<p></p>`.
+- Empty-line spacing between sections uses `<p>&nbsp;</p>` (a literal `<p></p>` collapses in some browsers' copy).
 
 ## Output
 
-A single code block containing the formatted SU report, ready to paste into Slack. The skill prints it once on first render, again after any edits, and stops there — the user copies and posts it.
+An HTML file written to `/tmp/su-report.html` and opened in the user's default browser. The user does Cmd+A → Cmd+C in the rendered page and Cmd+V into Slack — the clipboard carries HTML, so bold question headers, italic project subtitles, inline-code status badges, and clickable ticket anchors all survive the paste. The skill rewrites and re-opens the file once on first render, again after any edits, and stops there — the user does the actual posting.
 
 ## How this was used last
 
@@ -160,3 +163,4 @@ A single code block containing the formatted SU report, ready to paste into Slac
 > Format: `YYYY-MM-DD by @username — one-line context`
 
 - 2026-04-29 by @template — placeholder, replace on first real use
+- 2026-04-30 by @charlie — switched output format from plain-text mrkdwn code block to HTML file opened in browser; rich-text paste into Slack now preserves bold question headers, italic project subtitles, inline-code status badges, and clickable ticket anchors

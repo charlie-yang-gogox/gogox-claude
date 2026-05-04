@@ -6,11 +6,11 @@
 #   ./install.sh pm             # installs shared + pm
 #   ./install.sh pm dev design  # installs everything
 #
-# `shared` is always installed. Re-run any time to update — overwrites
-# matching skill folders in ~/.claude/skills/. Your local edits to a
-# skill are kept until you re-run install for that category.
+# `shared` is always installed. Skills, agents, and commands are symlinked
+# (not copied) so that `git pull` updates everything instantly — no need
+# to re-run install after pulling.
 
-set -euo pipefail
+set -eo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$HOME/.claude/skills"
@@ -52,10 +52,8 @@ for cat in "${CATEGORIES[@]}"; do
       if [ -d "$SKILLS_DIR/$skill_name" ] && [[ " ${INSTALLED_SKILLS[*]:-} " == *" $skill_name "* ]]; then
         COLLISIONS+=("skill:$skill_name")
       fi
-      # Explicit destination path so trailing slash on $skill_path doesn't
-      # cause BSD cp to copy contents-only into $SKILLS_DIR.
       rm -rf "$SKILLS_DIR/$skill_name"
-      cp -R "${skill_path%/}" "$SKILLS_DIR/$skill_name"
+      ln -s "${skill_path%/}" "$SKILLS_DIR/$skill_name"
       INSTALLED_SKILLS+=("$skill_name")
     done
   fi
@@ -64,7 +62,8 @@ for cat in "${CATEGORIES[@]}"; do
     for agent_file in "$src_agents"/*.md; do
       [ -f "$agent_file" ] || continue
       agent_name="$(basename "$agent_file" .md)"
-      cp "$agent_file" "$AGENTS_DIR/"
+      rm -f "$AGENTS_DIR/$agent_name.md"
+      ln -s "$agent_file" "$AGENTS_DIR/$agent_name.md"
       INSTALLED_AGENTS+=("$agent_name")
     done
   fi
@@ -76,18 +75,23 @@ for cat in "${CATEGORIES[@]}"; do
       if [ -f "$COMMANDS_DIR/$command_name.md" ] && [[ " ${INSTALLED_COMMANDS[*]:-} " == *" $command_name "* ]]; then
         COLLISIONS+=("command:$command_name")
       fi
-      cp "$command_file" "$COMMANDS_DIR/"
+      rm -f "$COMMANDS_DIR/$command_name.md"
+      ln -s "$command_file" "$COMMANDS_DIR/$command_name.md"
       INSTALLED_COMMANDS+=("$command_name")
     done
 
-    # Profiles: data files (yaml) consumed by commands at runtime. Subtree-copied
+    # Profiles: data files (yaml) consumed by commands at runtime. Symlinked
     # into ~/.claude/commands/profiles/ so commands can read them by a fixed path.
     # Non-.md so they do NOT register as slash commands.
     if [ -d "$src_commands/profiles" ]; then
       mkdir -p "$COMMANDS_DIR/profiles"
-      cp -R "$src_commands/profiles/." "$COMMANDS_DIR/profiles/"
       while IFS= read -r p; do
-        INSTALLED_PROFILES+=("${p#$src_commands/profiles/}")
+        rel="${p#$src_commands/profiles/}"
+        target_dir="$COMMANDS_DIR/profiles/$(dirname "$rel")"
+        mkdir -p "$target_dir"
+        rm -f "$COMMANDS_DIR/profiles/$rel"
+        ln -s "$p" "$COMMANDS_DIR/profiles/$rel"
+        INSTALLED_PROFILES+=("$rel")
       done < <(find "$src_commands/profiles" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.toml' \))
     fi
   fi
@@ -168,5 +172,6 @@ else
 fi
 
 echo "To update later:"
-echo "  cd $(basename "$REPO_DIR") && git pull && ./install.sh ${CATEGORIES[*]}"
+echo "  cd $(basename "$REPO_DIR") && git pull"
+echo "  (skills are symlinked — git pull updates them instantly)"
 echo
