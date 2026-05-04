@@ -17,6 +17,13 @@ This agent operates in two modes depending on whether a PR number is provided in
 
 ## Steps
 
+### Step 0: Resolve project profile
+
+1. Determine the active repo:
+   - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
+   - Else look up `basename "$(git rev-parse --show-toplevel)"` in `~/.claude/commands/profiles/repos.yaml`.
+2. Hold `{platform}` for the run. Use it only to pick the right test vocabulary in Step 5 (e.g. unit + widget for flutter, unit + instrumentation for android, unit + UI for ios).
+
 ### Step 1: Determine mode and gather branch info
 
 **Local mode:**
@@ -74,7 +81,7 @@ git show origin/<branch_name>:<file_path>
 Review the changes thoroughly, checking for:
     a. Do the changes correctly implement what the Linear ticket asked for?
     b. Are the OpenSpec artifacts (if any) involved in this change correctly implemented?
-    c. Are there unit and widget tests covering the changed logic?
+    c. Are there tests covering the changed logic? Use the test kinds appropriate for `{platform}` (e.g. unit + widget for flutter, unit + instrumentation for android, unit + UI for ios).
     d. Are there code issues: unreachable code, duplicated logic, or overly complex code?
     e. Are there any security-related issues?
     f. Does the code follow existing patterns, naming conventions, and architectural style?
