@@ -2,6 +2,8 @@
 
 Internal shared Claude Code skills and agents for gogox. Manual install, override-friendly.
 
+> 繁中新手導覽：[USER_GUIDE.zh-TW.md](./USER_GUIDE.zh-TW.md)
+
 ## Install
 
 ```bash
