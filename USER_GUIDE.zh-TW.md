@@ -1,6 +1,6 @@
 # gogox-claude 新手導覽（繁中）
 
-第一次下載這個 repo 嗎？跟著下面四步走，5 分鐘內就能在 Claude Code 裡用到團隊共享的 skills、commands、agents。
+第一次下載這個 repo 嗎？跟著下面步驟走，5 分鐘內就能在 Claude Code 裡用到團隊共享的 skills、commands、agents。
 
 > 英文版說明請看 [README.md](./README.md)。
 
@@ -20,7 +20,7 @@
 
 ---
 
-## 2. 安裝
+## 2. 安裝 gogox-claude（每台電腦一次）
 
 ```bash
 git clone <repo-url> gogox-claude
@@ -36,18 +36,57 @@ cd gogox-claude
 
 ---
 
-## 3. 馬上試一下
+## 3. 設定專案（每個 project 一次）
 
-打開任何一個專案，啟動 Claude Code，在對話框輸入：
+在你的 project repo 裡，啟動 Claude Code，輸入：
 
 ```
-/dev
+/init-project
+```
+
+它會用選單引導你選平台、產品、ticket 系統，然後自動產生 `.gogox-claude.yaml`。
+
+**記得把 `.gogox-claude.yaml` commit 進 git** — push 之後，team 裡所有人 pull 就自動有設定。
+
+### `.gogox-claude.yaml` 範例
+
+**固定模式**（單產品 repo，如 gogovan-client-v2-ios）：
+```yaml
+platform: ios
+product: ca
+branch_prefix: CET
+ticket_system: jira
+```
+
+**自動模式**（shared repo，ticket 來自多個產品）：
+```yaml
+platform: ios
+product: ggx-core-ios
+branch_prefix: auto
+ticket_system: auto
+```
+
+| 欄位 | 可用值 | 說明 |
+|------|--------|------|
+| `platform` | `ios`、`android`、`flutter` | 決定用哪套 test / format / deps 指令 |
+| `product` | `ca`、`da`、`ca-revamp`、`da-revamp`、或自訂 | 產品名稱 |
+| `branch_prefix` | `CET`、`DET`、`CAF`、`DAF`、或 `auto` | `auto` 會從 branch name 自動偵測 |
+| `ticket_system` | `jira`、`linear`、`auto`、或 `none` | `auto` 會從 branch prefix 反推 |
+
+---
+
+## 4. 馬上試一下
+
+打開任何已設定的專案，啟動 Claude Code，在對話框輸入：
+
+```
+/commit
 ```
 
 或：
 
 ```
-/commit
+/pull-request --dry-run
 ```
 
 如果出現對應的工作流，就代表裝好了。
@@ -56,7 +95,7 @@ cd gogox-claude
 
 ---
 
-## 4. 升級 / 移除
+## 5. 升級 / 移除
 
 ```bash
 # 升級到最新版（檔案是 symlink，git pull 完就生效）
@@ -74,10 +113,19 @@ cd gogox-claude && git pull
 A：你改的其實是 symlink 指向的 repo 檔案，所以等於改到 repo。如果只是想本地實驗，建議在 repo 裡開分支改，或先 `rm` 掉 symlink 再放自己的版本。
 
 **Q：Project-aware 是什麼意思？**
-A：有些 command（例如 `/add-worktree`、`/format`）會依當前 repo 的平台（flutter / android / ios）和產品（ca / da）做不同的事。判斷規則：
-1. repo 根目錄有 `.gogox-claude.yaml` → 用它。
-2. 否則查 `~/.claude/commands/profiles/repos.yaml` 裡 `basename` 對應的設定。
-3. 都沒有 → 報錯，請你補一筆。
+A：有些 command（例如 `/add-worktree`、`/format`、`/pull-request`）會依當前 repo 的設定做不同的事。判斷規則：
+1. repo 根目錄有 `.gogox-claude.yaml` → 用它（source of truth）。
+2. 否則查 `~/.claude/commands/profiles/registry/{repo-name}.yaml`（fallback）。
+3. 都沒有 → 報錯，請跑 `/init-project`。
+
+**Q：第一次在新 repo 使用怎麼設定？**
+A：在該 repo 裡跑 `/init-project`。它會用選單引導你選平台、產品、ticket 系統，然後產生 `.gogox-claude.yaml`。**commit 進 git 後，所有人 pull 就有**——一人設定，全 team 受益。同時會自動推一份 registry 到 gogox-claude 作為 fallback。
+
+**Q：Shared repo 的 ticket 來自不同產品怎麼辦？**
+A：用 `auto` 模式。設定 `branch_prefix: auto` 和 `ticket_system: auto`，指令會從 branch name 提取 ticket prefix（如 `CET`），再查 `org.yaml` 反推 ticket 系統。例如 `feat/CET-1234` → Jira，`feat/CAF-567` → Linear。
+
+**Q：Jira 和 Linear 都支援嗎？**
+A：對。`/pull-request` 會根據 `ticket_system` 自動去 Jira 或 Linear 抓 ticket 標題、產生連結、回貼 implementation notes。native app（ca / da）用 Jira，Flutter revamp（ca-revamp / da-revamp）用 Linear。shared repo 用 `auto` 模式兩邊都支援。
 
 **Q：怎麼把我自己的 skill 加進來？**
 A：照 [README.md → Adding a skill](./README.md#adding-a-skill) 走。重點：skill 內容必須是英文、放對 category 子目錄、PR 進 `shared/` 需要兩個不同角色 +1。
