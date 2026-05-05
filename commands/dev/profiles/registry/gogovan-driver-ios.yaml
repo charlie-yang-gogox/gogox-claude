@@ -1,0 +1,4 @@
+platform: ios
+product: da
+branch_prefix: DET
+ticket_system: jira

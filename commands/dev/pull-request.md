@@ -1,12 +1,27 @@
 # Pull Request — Create or Update PR
 
-Push the current branch and create a new PR or update the existing one. Automatically posts implementation notes to the Linear ticket, comparing what was planned (port artifacts) against what was actually built.
+Push the current branch and create a new PR or update the existing one. Automatically posts implementation notes to the ticket (Linear or Jira), comparing what was planned (port artifacts) against what was actually built.
 
 **Arguments:** `--dry-run` to preview PR title, body, and implementation notes without pushing, creating, or posting. `--draft` to create the PR as a draft.
 
 ---
 
 ## Steps
+
+### 0. Resolve Project Profile
+
+1. Read `<repo-root>/.gogox-claude.yaml` (source of truth). It contains `platform`, `product`, `branch_prefix`, `ticket_system`.
+2. If not found, fallback: read `~/.claude/commands/profiles/registry/{repo-name}.yaml` — same fields.
+3. If neither found, error: "Run `/init-project` to set up this repo."
+4. Read `~/.claude/commands/profiles/org.yaml`.
+5. If `branch_prefix` and `ticket_system` are `auto`:
+   - Extract the ticket prefix from the branch name (e.g., `CET` from `feat/CET-1234`).
+   - Look up the prefix in `org.yaml` → `jira.prefixes` or `linear.prefixes` to resolve `ticket_system`.
+   - If prefix not found in org.yaml, skip ticket integration.
+6. Resolve org constants for the resolved `ticket_system`:
+   - If `jira`: `jira.cloud_id` and `jira.base_url`
+   - If `linear`: `linear.base_url`
+7. If `ticket_system` is not set or unresolved, warn and skip ticket integration (Steps 4, 9).
 
 ### 1. Check for Existing PR
 
@@ -28,7 +43,7 @@ Run these checks sequentially. Stop on first failure.
 
 ### 3. Extract Ticket ID
 
-Parse the branch name to extract a Linear ticket ID (e.g., `CAF-272` from `feat/CAF-272`).
+Parse the branch name to extract a ticket ID (e.g., `CAF-272` from `feat/CAF-272`, or `CET-7911` from `feat/CET-7911`).
 
 ```bash
 git rev-parse --abbrev-ref HEAD
@@ -38,11 +53,21 @@ Extract pattern `[A-Z]+-\d+` from the branch name. If no match, use the branch n
 
 ### 4. Fetch Ticket Title (if ticket ID found)
 
-Use the Linear MCP tool to fetch the issue title:
+Based on `ticket_system` from the product profile:
 
-- Tool: `mcp__linear-server__get_issue` with the extracted ticket ID
+**If `ticket_system` is `linear`:**
+- Use `mcp__linear-server__get_issue` with the extracted ticket ID
 - If successful, use `"{TICKET_ID}: {title}"` as the PR title
-- If failed or no ticket ID, use the branch name as the PR title
+
+**If `ticket_system` is `jira`:**
+- Use `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` with:
+  - `cloudId`: `{jira_cloud_id}` from product profile
+  - `issueIdOrKey`: the extracted ticket ID
+  - `responseContentFormat`: `markdown`
+- If successful, use `"{TICKET_ID}: {summary}"` as the PR title
+
+**If `ticket_system` is not set, or fetch fails:**
+- Use the branch name as the PR title
 
 ### 5. Build PR Body
 
@@ -58,7 +83,7 @@ Build the PR body using this template:
 
 ```markdown
 #### Ticket ####
-[{TICKET_ID}]({LINEAR_URL})
+[{TICKET_ID}]({TICKET_URL})
 
 ## Summary
 
@@ -78,8 +103,10 @@ Build the PR body using this template:
 ```
 
 Where:
-- `{TICKET_ID}` is the extracted ticket ID (e.g., `CAF-272`)
-- `{LINEAR_URL}` is `https://linear.app/gogox/issue/{TICKET_ID}`
+- `{TICKET_ID}` is the extracted ticket ID (e.g., `CAF-272`, `CET-7911`)
+- `{TICKET_URL}` is:
+  - Linear: `{linear_base_url}/{TICKET_ID}` (e.g., `https://linear.app/gogox/issue/CAF-272`)
+  - Jira: `{jira_base_url}/{TICKET_ID}` (e.g., `https://gogotech.atlassian.net/browse/CET-7911`)
 - `{GENERATED_SUMMARY_BULLETS}` is a plain-English summary generated from the commits
 - `{COMMIT_MESSAGES_AS_CHECKLIST}` is each commit message formatted as `- [x] <message>`
 - `{GENERATED_TEST_PLAN}` is a QA-oriented checklist generated from the diff and commits (see Step 6d)
@@ -88,7 +115,7 @@ Where:
 
 ### 6. Generate Implementation Notes
 
-This step always runs. It produces a structured comment for the Linear ticket.
+This step always runs. It produces a structured comment for the ticket.
 
 #### 6a. Gather context
 
@@ -135,7 +162,7 @@ Write in concise English. Each item should be 1-2 sentences. Group by category. 
 Based on the diff, commit messages, and any planning artifacts found, produce a QA-oriented test plan. Each item should be a concrete, actionable step that a QA engineer can follow without reading the code.
 
 Guidelines:
-- Write as a numbered list (e.g., `1. Open the order screen and verify...`) — no checkboxes in the PR body; the Linear comment uses checkboxes (`1. [ ] ...`)
+- Write as a numbered list (e.g., `1. Open the order screen and verify...`) — no checkboxes in the PR body; the ticket comment uses checkboxes (`1. [ ] ...`)
 - Cover the **happy path** first, then **edge cases** and **regression risks**
 - If the PR touches UI, include visual verification steps (layout, text, interactions)
 - If the PR touches data/logic, include input/output verification steps
@@ -144,7 +171,7 @@ Guidelines:
 - Aim for 3-10 steps depending on PR scope
 - Mark any steps that require specific test data or environment setup with a note
 
-The test plan is included in both the PR body (`## Test Plan`, before Demo) and the Linear implementation notes (Step 9).
+The test plan is included in both the PR body (`## Test Plan`, before Demo) and the ticket implementation notes (Step 9).
 
 ### 7. Push Branch
 
@@ -184,9 +211,11 @@ gh pr edit <number> --body "<MERGED_PR_BODY>"
 
 Use a HEREDOC for the body to ensure correct formatting.
 
-### 9. Post Implementation Notes to Linear
+### 9. Post Implementation Notes to Ticket
 
-If a ticket ID was extracted in Step 3, post the implementation notes as a comment on the Linear ticket.
+If a ticket ID was extracted in Step 3, post the implementation notes as a comment.
+
+**If `ticket_system` is `linear`:**
 
 Use `mcp__linear-server__save_comment` with the following format:
 
@@ -211,6 +240,17 @@ If no planning artifacts were found:
 {commit messages as a bullet list}
 ```
 
+**If `ticket_system` is `jira`:**
+
+Use `mcp__claude_ai_Atlassian_Rovo__addCommentToJiraIssue` with:
+- `cloudId`: `{jira_cloud_id}` from product profile
+- `issueIdOrKey`: the extracted ticket ID
+- `contentFormat`: `markdown`
+- `commentBody`: same format as above
+
+**If `ticket_system` is not set:**
+- Skip this step with a warning: "No ticket system configured. Skipping implementation notes."
+
 If no ticket ID was found, skip this step.
 
 ### 10. Report Result
@@ -220,7 +260,7 @@ Show:
 - PR title
 - Number of commits included
 - Whether the PR was **created** or **updated**
-- Whether a Linear comment was **posted** (with link) or **skipped** (no ticket ID)
+- Whether a ticket comment was **posted** (with link) or **skipped** (no ticket ID / no ticket system)
 
 ---
 
@@ -233,6 +273,6 @@ Show:
 - Summary should be in English, plain language, reviewer-friendly
 - Update flow preserves the PR title — only refreshes Summary and What Changes
 - Update flow preserves the existing Demo section if it contains real content (images, videos, links, text beyond the placeholder comment)
-- Implementation notes are always generated and posted to Linear (when ticket ID exists)
+- Implementation notes are always generated and posted to the ticket (when ticket ID exists and ticket system is configured)
 - Deviation analysis requires planning artifacts (port or OpenSpec); without them, only a plain summary is posted
-- The `### Deviations from Plan` section should be honest and specific — its purpose is to keep the Linear ticket aligned with reality, not to justify decisions
+- The `### Deviations from Plan` section should be honest and specific — its purpose is to keep the ticket aligned with reality, not to justify decisions

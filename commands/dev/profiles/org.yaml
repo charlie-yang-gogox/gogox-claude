@@ -1,0 +1,11 @@
+# Organization-level constants for GoGoX.
+# Shared across all products — resolved at runtime by commands.
+
+jira:
+  cloud_id: ac2181fb-deb7-45c3-b9ee-1975eaf49d29
+  base_url: https://gogotech.atlassian.net/browse
+  prefixes: [CET, DET]
+
+linear:
+  base_url: https://linear.app/gogox/issue
+  prefixes: [CAF, DAF]

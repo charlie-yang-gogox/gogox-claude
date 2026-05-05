@@ -1,0 +1,4 @@
+platform: flutter
+product: ca-revamp
+branch_prefix: CAF
+ticket_system: linear
