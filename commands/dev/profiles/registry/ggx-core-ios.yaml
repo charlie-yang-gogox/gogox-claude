@@ -1,0 +1,4 @@
+platform: ios
+product: ggx-core-ios
+branch_prefix: auto
+ticket_system: auto
