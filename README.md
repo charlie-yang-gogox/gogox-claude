@@ -74,6 +74,14 @@ _template/
   SKILL.md  canonical skill template — copy this when adding a new skill
 ```
 
+## Skill discovery
+
+The full list of installables — every command, skill, and agent in this repo — lives as a Notion database for browsing and search:
+
+**[claude-gogox / Claude Skills](https://www.notion.so/gogox/claude-gogox-357f54d1149880c98674f8b1218ee1f1)**
+
+Auto-maintained by `/sync-skills-to-notion` (run from the gogox-claude repo root). Filter by `Category` (`dev` / `shared` / `design` / `pm`) to scope by team, or open any row to read the full skill detail without checking out the repo.
+
 ## Project-aware commands
 
 Some commands change behavior based on the current project — e.g. `/add-worktree` runs `flutter pub get` in a Flutter repo and skips that step in a native Android repo.
@@ -118,6 +126,7 @@ Organization-level constants (Jira cloud ID, base URLs, prefix mapping) live in 
    - Skills going into `shared/` need +1 from at least two different roles.
    - Declare any required MCP servers in the skill body (Linear, Atlassian, etc).
 4. Skill names are kebab-case and globally unique across categories — `shared/` wins on collision.
+5. After the PR is merged, run `/sync-skills-to-notion` from the gogox-claude repo root to update the team's Notion index.
 
 ## Usage logging
 
