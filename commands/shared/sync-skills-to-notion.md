@@ -57,7 +57,7 @@ Goal: end this step with a known-good `database_id` pointing at a database under
    | Property | Type | Notes |
    |---|---|---|
    | Name | Title | The skill display name, `/<slug>` |
-   | Category | Select | Options: `dev`, `design`, `pm`, `shared` |
+   | Category | Select | Options: `dev`, `design`, `pm`, `shared`, `agent` |
    | Description | Rich text | One-line summary |
    | Last Synced | Date | Timestamp of last sync |
 
@@ -84,7 +84,7 @@ Goal: end this step with a known-good `database_id` pointing at a database under
    |---|---|
    | `slug` | for commands/agents: filename without `.md`. For skills: parent directory name (since file is always `SKILL.md`). |
    | `display_name` | `/<slug>` (consistent prefix across all three asset types) |
-   | `category` | for commands/agents: parent folder name. For skills: grandparent folder name (`skills/<category>/<slug>/SKILL.md`). |
+   | `category` | for agents: always `agent` (regardless of subfolder — agents are their own bucket, not commands/skills). For commands: parent folder name (`dev`/`design`/`pm`/`shared`). For skills: grandparent folder name (`skills/<category>/<slug>/SKILL.md`). |
    | `kind` | `command` / `skill` / `agent` — derived from which tree the file came from. Used in the row body, NOT a Notion property. |
    | `title` | frontmatter `name`, else first H1, else humanized slug |
    | `description` | first line of frontmatter `description` (collapse multi-line YAML scalars) |

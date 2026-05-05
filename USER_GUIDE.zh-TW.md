@@ -94,7 +94,7 @@ ticket_system: auto
 不確定有什麼可用？三個方式都行：
 
 - 輸入 `/` 看 Claude Code 即時清單
-- 在 Notion 看完整索引（含每個 skill 的 detail 頁）：[claude-gogox / Claude Skills](https://www.notion.so/gogox/claude-gogox-357f54d1149880c98674f8b1218ee1f1)。可以用 `Category` 篩選 dev / shared / design / pm
+- 在 Notion 看完整索引（含每個 skill 的 detail 頁）：[claude-gogox / Claude Skills](https://www.notion.so/gogox/claude-gogox-357f54d1149880c98674f8b1218ee1f1)。可以用 `Category` 篩選 dev / shared / design / pm / agent
 - 直接問 Claude：「我這邊有哪些 gogox 的 skill？」
 
 ---

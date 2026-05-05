@@ -80,7 +80,7 @@ The full list of installables â€” every command, skill, and agent in this repo â
 
 **[claude-gogox / Claude Skills](https://www.notion.so/gogox/claude-gogox-357f54d1149880c98674f8b1218ee1f1)**
 
-Auto-maintained by `/sync-skills-to-notion` (run from the gogox-claude repo root). Filter by `Category` (`dev` / `shared` / `design` / `pm`) to scope by team, or open any row to read the full skill detail without checking out the repo.
+Auto-maintained by `/sync-skills-to-notion` (run from the gogox-claude repo root). Filter by `Category` (`dev` / `shared` / `design` / `pm` / `agent`) to scope by team or asset type, or open any row to read the full skill detail without checking out the repo.
 
 ## Project-aware commands
 
