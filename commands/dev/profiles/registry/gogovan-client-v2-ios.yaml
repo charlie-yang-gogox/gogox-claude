@@ -1,0 +1,4 @@
+platform: ios
+product: ca
+branch_prefix: CET
+ticket_system: jira
