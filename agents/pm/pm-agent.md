@@ -37,6 +37,10 @@ List existing capabilities whose REQUIREMENTS are changing. Only include if spec
 ### Impact
 Affected code, APIs, dependencies, or systems.
 
+### Labeled-ID convention (mandatory)
+
+When you are invoked in port-pipeline consult mode (writing `pm-notes.md`), every numbered item MUST start with a bold labeled ID — `**FR-1**`, `**FR-2**`, ... for Functional Requirements; `**AC-1**`, `**AC-2**`, ... for Acceptance Criteria rows; `**A-1**`, `**A-2**`, ... for Assumption bullets. The orchestrator's `/spec-lint` check cites these IDs across `proposal.md` / `design.md` / `tasks.md` / `specs/` to prove traceability. Drop the bold-and-ID format and downstream `/spec-lint` citation checks will misfire.
+
 ## Output
 
 The orchestrator's prompt will specify a file path to save your proposal to. Use the Write tool to save the complete proposal to that path before finishing. This is mandatory — do NOT just output to stdout.

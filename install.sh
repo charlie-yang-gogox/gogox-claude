@@ -56,6 +56,7 @@ for cat in "${CATEGORIES[@]}"; do
   fi
 
   if [ -d "$src_commands" ]; then
+    # Top-level command files: commands/<cat>/foo.md → ~/.claude/commands/foo.md → /foo
     for command_file in "$src_commands"/*.md; do
       [ -f "$command_file" ] || continue
       command_name="$(basename "$command_file" .md)"
@@ -65,6 +66,27 @@ for cat in "${CATEGORIES[@]}"; do
       rm -f "$COMMANDS_DIR/$command_name.md"
       ln -s "$command_file" "$COMMANDS_DIR/$command_name.md"
       INSTALLED_COMMANDS+=("$command_name")
+    done
+
+    # Namespaced command directories: commands/<cat>/<ns>/foo.md
+    #   → ~/.claude/commands/<ns>/foo.md → /<ns>:foo
+    # One-level only. `profiles/` is reserved for runtime data and skipped.
+    for ns_dir in "$src_commands"/*/; do
+      [ -d "$ns_dir" ] || continue
+      ns_name="$(basename "$ns_dir")"
+      [ "$ns_name" = "profiles" ] && continue
+      mkdir -p "$COMMANDS_DIR/$ns_name"
+      for command_file in "$ns_dir"*.md; do
+        [ -f "$command_file" ] || continue
+        command_name="$(basename "$command_file" .md)"
+        ns_key="$ns_name:$command_name"
+        if [ -L "$COMMANDS_DIR/$ns_name/$command_name.md" ] && [[ " ${INSTALLED_COMMANDS[*]:-} " == *" $ns_key "* ]]; then
+          COLLISIONS+=("command:$ns_key")
+        fi
+        rm -f "$COMMANDS_DIR/$ns_name/$command_name.md"
+        ln -s "$command_file" "$COMMANDS_DIR/$ns_name/$command_name.md"
+        INSTALLED_COMMANDS+=("$ns_key")
+      done
     done
 
     # Profiles: data files (yaml) consumed by commands at runtime. Symlinked
