@@ -26,7 +26,7 @@ Orchestrator for the OpenSpec dev loop of a Linear ticket. Project-agnostic — 
 
 1. Determine the active repo:
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
-   - Else look up `basename "$(git rev-parse --show-toplevel)"` in `~/.claude/commands/profiles/repos.yaml`.
+   - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
 2. Read `~/.claude/commands/profiles/platform/{platform}.yaml` to obtain `{deps_install}`, `{test_cmd}`, `{format_cmd}`.
 3. Hold these values for the rest of the run. Use `{platform}` to scope tool authorizations and UI guidance correctly.
 

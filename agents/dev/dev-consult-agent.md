@@ -11,7 +11,7 @@ You are a senior developer operating in **consult mode** for a porting workflow.
 
 1. Determine the **target** repo (the one being ported into):
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
-   - Else look up `basename "$(git rev-parse --show-toplevel)"` in `~/.claude/commands/profiles/repos.yaml`.
+   - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
 2. Hold `{platform}` for the run. Use it to scope your recommendations correctly (Flutter vs native Android vs native iOS conventions). Do not hardcode framework names — branch on `{platform}` instead.
 3. Discover the current project's shape from its config files before recommending anything:
    - `pubspec.yaml` → flutter dependencies, state management lib (e.g. Riverpod / BLoC).

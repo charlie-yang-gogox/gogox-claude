@@ -25,15 +25,14 @@ Before any other step, determine the active project profile so later steps know 
 
 **Resolution order:**
 
-1. **Repo self-describes** — read `<repo-root>/.gogox-claude.yaml` if present. Use its `platform` and `product` fields.
-2. **Central mapping** — else, get repo basename via `basename "$(git rev-parse --show-toplevel)"` and look it up in `~/.claude/commands/profiles/repos.yaml` under `repos.<basename>`.
+1. **Repo self-describes** — read `<repo-root>/.gogox-claude.yaml` if present. Use its `platform`, `product`, and `branch_prefix` fields.
+2. **Central mapping** — else, read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for the same fields.
 3. **Error** — if neither resolves, stop and tell the user:
-   > Cannot resolve gogox project profile. Either add an entry for `<basename>` to `~/.claude/commands/profiles/repos.yaml`, or create `<repo>/.gogox-claude.yaml` with `platform:` and `product:`.
+   > Cannot resolve gogox project profile. Either add `~/.claude/commands/profiles/registry/<basename>.yaml`, or create `<repo>/.gogox-claude.yaml` with `platform:` and `product:`.
 
-After resolution, read both profile files:
+After resolution, read the platform profile:
 
 - `~/.claude/commands/profiles/platform/<platform>.yaml` — exposes `deps_install`, `test_cmd`, `format_cmd`, `ide_open_hint`.
-- `~/.claude/commands/profiles/product/<product>.yaml` — exposes `branch_prefix`.
 
 Hold these values in memory for use in later steps where you see `{deps_install}`, `{ide_open_hint}`, etc.
 
