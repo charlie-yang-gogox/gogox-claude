@@ -31,7 +31,7 @@ Non-goals: rewriting `dev-consult-agent` / `pm-agent` / `designer-agent` semanti
 | ID | Decision | Rationale |
 |---|---|---|
 | D1 | **Filesystem state, no JSON manifest** | Aligned with opsx + existing skill philosophy; LLMs read `ls` reliably; one less schema to maintain |
-| D2 | **Persistent config in profile yaml** (`origin_project_path`, `linear_team_key` as top-level fields) | Matches existing project-aware command convention; user-facing one-time customization |
+| D2 | **Persistent config split across two files**: `.gogox-claude.yaml` (committed, holds existing `branch_prefix` which doubles as Linear team key when `ticket_system: linear`); **new `.gogox-claude.local.yaml`** (gitignored, per-machine, holds `origin_project_path` with `~`/`$ENV` expansion) | Per-machine paths can't be checked-in; reuse `branch_prefix` instead of new `linear_team_key` field |
 | D3 | **6 atomic commands + 1 wrapper `/port:ff`** | Wrapper naming follows `/opsx:ff` convention |
 | D4 | **B-citation check via labeled-item IDs** (`FR-N`, `AC-N`, `R-N`, `A-N`) | Stable across edits, regex-friendly, human-readable in PR review |
 | D5 | **No A/B/C LLM reviewer agents in MVP** (per pragmatic-path decision) | Deterministic guards already cover most failure modes; revisit only after post-mortem evidence |
