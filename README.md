@@ -67,6 +67,7 @@ skills/
   design/   designer workflows
 commands/
   shared/  pm/  dev/  design/    slash commands — single .md file per command
+  <category>/<namespace>/        namespaced commands like commands/dev/port/*.md → /port:start
   <category>/profiles/           data files (.yaml) read by commands at runtime
 agents/
   shared/  pm/  dev/  design/    same shape, but each agent is a single .md file
@@ -81,6 +82,68 @@ The full list of installables — every command, skill, and agent in this repo �
 **[claude-gogox / Claude Skills](https://www.notion.so/gogox/claude-gogox-357f54d1149880c98674f8b1218ee1f1)**
 
 Auto-maintained by `/sync-skills-to-notion` (run from the gogox-claude repo root). Filter by `Category` (`dev` / `shared` / `design` / `pm` / `agent`) to scope by team or asset type, or open any row to read the full skill detail without checking out the repo.
+
+## Port pipeline
+
+Port a feature from one codebase to another (e.g. Android → Flutter) via OpenSpec. The pipeline reads the origin codebase, produces planning notes via three sub-agents, synthesises OpenSpec artifacts, runs deterministic guards, and pushes a feature branch with a Linear summary — all under one slash command.
+
+### Quick start
+
+```
+/port:ff --ticket:CAF-212
+```
+
+That runs the full pipeline (`start → explore → plan → synth → revise → ship`) honoring HITL gates. End state: a `feat/<ticket-id>` branch is pushed with `openspec/changes/<change-name>/{proposal,design,tasks,specs}` ready for `/opsx:apply`.
+
+For unattended dispatcher use:
+
+```
+/port:ff --ticket:CAF-212 --auto
+```
+
+For a lightweight scoping pass (no worktree, just a Linear analysis comment):
+
+```
+/port:ff --ticket:CAF-212 --simple
+```
+
+### Atomic stages
+
+Each stage is independently re-runnable. Use them when you want to pause / iterate between phases.
+
+| Command | Stage | Owner | Output |
+|---|---|---|---|
+| `/port:start` | resolve + worktree + scaffold | orchestrator | `.port/` initialized; cwd inside worktree |
+| `/port:explore` | source-codebase consult | `dev-consult-agent` (opus) | `.port/dev-notes.md` (Locate gate hardened) |
+| `/port:plan` | PM + design notes | `pm-agent` + `designer-agent` parallel (sonnet) | `.port/{pm-notes,design-notes}.md` |
+| `/port:synth` | OpenSpec artifact synthesis | `synth-agent` (opus pinned) + `/spec-lint` | artifacts + `.port/synth-report.md` |
+| `/port:revise` | HITL clarification + review gate | orchestrator | revised artifacts; `Review approved` sentinel |
+| `/port:ship` | commit + push + Linear write-back | orchestrator | branch pushed; Linear PRD region updated |
+
+`/port:explore --simple` is also valid as a standalone — exploration only, no worktree, no spec.
+
+### Setup (per-machine, once per port-target repo)
+
+The pipeline ports FROM an origin codebase that lives somewhere on your disk. Set the path in `.gogox-claude.local.yaml` (gitignored):
+
+```yaml
+# .gogox-claude.local.yaml
+origin_project_path: ~/Projects/work_project/gogovan-client-v2-android
+```
+
+Supports `~` and `$ENV_VAR` expansion. `/port:start` validates the path on first run; if missing or invalid, it prompts and writes back.
+
+### Deterministic guard: `/spec-lint`
+
+`/port:synth` invokes `/spec-lint` automatically, but you can run it standalone on any OpenSpec change:
+
+```
+/spec-lint --change <change-name>
+```
+
+Nine pure-grep checks: capability-name alignment, FR-vs-scenario count, hardcoded drift, divergence markers, forbidden markers (TBD/TODO/FIXME), bidirectional B-citation (catches synthesis omission AND hallucination via labeled `**FR-N**` / `**AC-N**` / `**R-N**` / `**A-N**` IDs), zero-ID drift warning, and post-edit cascade scan (`--after-edit --stale "term1,term2"`).
+
+Design rationale, decisions, and risk register: see [`plans/port-centralization.md`](./plans/port-centralization.md).
 
 ## Project-aware commands
 
