@@ -39,6 +39,10 @@ List components already in the codebase that should be reused rather than rebuil
 ### Risks / Trade-offs
 Known risks and trade-offs. Format: `[Risk] → Mitigation`. Always cover accessibility, responsive layout, and platform conventions (iOS / Android).
 
+### Labeled-ID convention (mandatory)
+
+When you are invoked in port-pipeline consult mode (writing `design-notes.md`), every numbered item MUST start with a bold labeled ID — `**A-1**`, `**A-2**`, ... for every Assumption bullet. If you introduce numbered design decisions in `## Decisions` (or a similar section), label them too (e.g. `**D-1**`, `**D-2**`). The orchestrator's `/spec-lint` check cites these IDs across `proposal.md` / `design.md` / `tasks.md` / `specs/` to prove traceability. Drop the bold-and-ID format and downstream `/spec-lint` citation checks will misfire.
+
 ## Figma Integration
 
 If a Figma URL is provided:

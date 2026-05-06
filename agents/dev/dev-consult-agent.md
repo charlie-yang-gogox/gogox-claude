@@ -80,6 +80,10 @@ Cover at minimum: state management, async / streams, networking, persistence, an
 ### Risks & Unknowns
 Technical risks or uncertain dependencies. Format: `[Risk] → Mitigation or investigation needed`.
 
+### Labeled-ID convention (mandatory)
+
+Every numbered item across `## Risks & Unknowns` and `## Porting Recommendations` MUST start with a bold labeled ID — `**R-1**`, `**R-2**`, ... for risks and `**P-1**`, `**P-2**`, ... for porting recommendations. The orchestrator's `/spec-lint` check cites these IDs across `proposal.md` / `design.md` / `tasks.md` / `specs/` to prove traceability. Drop the bold-and-ID format and downstream `/spec-lint` citation checks will misfire.
+
 ### Assumptions
 Every decision you made in absence of explicit input. Format:
 ```

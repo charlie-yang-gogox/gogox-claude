@@ -99,7 +99,64 @@ ticket_system: auto
 
 ---
 
-## 5. 升級 / 移除
+## 5. Port — 把 feature 從另一個 codebase 搬過來
+
+如果你 repo 是 port target（譬如 flutter app 要從 android app 搬功能），用 `/port:*` 系列。
+
+### 一條指令跑完
+
+```
+/port:ff --ticket:CAF-212
+```
+
+從 Linear ticket 開始，自動：建 worktree → 讀 origin codebase → 產 PM/設計 notes → 合成 OpenSpec artifact（proposal / design / tasks / spec） → 跑 lint check → 互動式 review → push feature branch → 回貼 Linear summary。
+
+跑完之後 cwd 會在 worktree 裡，下一步通常是 `/opsx:apply` 開始實作。
+
+### 三種模式
+
+| 模式 | 用途 |
+|---|---|
+| `/port:ff --ticket:X` | **預設 HITL** — 每個 stage 仍會 AskUserQuestion 等你確認（Locate gate / 修訂 / review gate） |
+| `/port:ff --ticket:X --auto` | **無人值守** — 給 dispatcher 半夜跑用，所有 gate 套 G1-G9 auto-decision rules，locate 信心過低或 agent 重複失敗才 abort |
+| `/port:ff --ticket:X --simple` | **輕量探勘** — 不建 worktree、不開 spec，只跑一次 origin codebase 分析，把結果寫進 Linear comment。適合 PM 給的 ticket 太薄、想先看可行性 |
+
+### 進階：拆開跑（atomic stage）
+
+`/port:ff` 是 wrapper。實際拆成 6 個獨立 command，可以單跑：
+
+```
+/port:start --ticket:X    # 建 worktree、scaffold
+/port:explore             # dev-consult-agent 讀 origin codebase
+/port:plan                # pm-agent + designer-agent 平行跑
+/port:synth               # 合成 artifact + /spec-lint
+/port:revise              # HITL 處理 lint findings
+/port:ship                # commit + push + 回貼 Linear
+```
+
+中段 stage 會自動從 cwd worktree 名稱推 ticket-id，不用每次傳 `--ticket:`。
+
+### 設定（每台電腦一次）
+
+Port 需要知道 origin codebase 在你電腦的哪裡。在 **port target repo** 的根目錄建 `.gogox-claude.local.yaml`（**加進 .gitignore**，是 per-machine 設定）：
+
+```yaml
+origin_project_path: ~/Projects/work_project/gogovan-client-v2-android
+```
+
+支援 `~` 和 `$ENV_VAR`。第一次 `/port:start` 會驗路徑、缺就互動式問你補。
+
+### `/spec-lint` 也可以單獨用
+
+任何 OpenSpec change（不限 port 產生的）都能用 `/spec-lint --change <name>` 檢查：
+- 缺 spec scenario 對應 FR、artifact 引用了 notes 沒寫的 ID（synthesis 幻覺）、forbidden marker（TBD / TODO）等 9 種純 grep 檢查
+- 修完一輪後可以跑 `/spec-lint --after-edit --stale "old-term"` 找散落各處的舊用詞
+
+詳細設計：[`plans/port-centralization.md`](./plans/port-centralization.md)。
+
+---
+
+## 6. 升級 / 移除
 
 ```bash
 # 升級到最新版（檔案是 symlink，git pull 完就生效）
