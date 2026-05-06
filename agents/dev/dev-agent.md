@@ -54,12 +54,14 @@ You MUST use the OpenSpec workflow. This is mandatory — do not skip it or impl
 5. Write actual production code for every task. Every task must result in real file changes. Use the language and conventions of the project (resolve from `{platform}` and the existing source tree).
 6. After `/opsx:apply` completes all tasks, run `/opsx:verify` to confirm implementation matches the specs.
 7. After verification, run the project's test command: `{test_cmd}`.
-8. Stage all changes with `git add -A` and commit with a descriptive message.
+8. Stage all changes with `git add -A`, then exclude the runtime workspace with `git reset -- .dev/` (these files are proof-of-work, not source). Commit with a descriptive message. If `.dev/` is not yet listed in the project's `.gitignore`, add it in this commit.
+9. Return control to the orchestrator. The orchestrator is required to spawn `verify-agent` against your diff before any push or PR — do NOT spawn it yourself, and do NOT self-audit your work in `.dev/verify-pass.md`. Same-agent self-audit is the pattern this split is designed to break (a previous CAF-467 dev-agent reported "switched to AppCheckbox" but only changed one of two call sites — the user caught it, not self-audit).
 
 Do NOT implement UI code without first consulting the Figma design (when available).
 Do NOT implement code without running `/opsx:apply` first.
 Do NOT stop after analysis or planning.
 Do NOT skip `/opsx:verify` after implementation.
+Do NOT write `.dev/verify-pass.md` — that file belongs to `verify-agent`. Writing it from inside this agent defeats the auditor/implementer separation.
 
 You have FULL write permissions to all directories the project owns (source, tests, `openspec/`). Do NOT ask for permission — just execute tools directly. All permission checks are bypassed.
 

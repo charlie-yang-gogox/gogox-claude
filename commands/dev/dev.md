@@ -107,21 +107,70 @@ Scan the ticket description, comments, and attachments for any Figma URL (`figma
 4. Call `mcp__plugin_figma_figma__search_design_system` for relevant components.
 5. Call `mcp__plugin_figma_figma__get_variable_defs` for design tokens (colors, spacing, typography).
 6. Store all Figma data as `<figma-context>` — passed to `/opsx:ff` and used during `/opsx:apply`.
+7. **Persist to disk (MANDATORY)**: Write two artifacts. Step 3b gates on both — a single-line stub no longer passes.
+
+   a. **Raw response per node** — for each `<fileKey>:<nodeId>` fetched, save the raw `get_design_context` response JSON (the entire response body, unmodified) to `.dev/figma-raw/<sanitized-nodeId>.json`. Sanitize by replacing `:` with `_` for the filename. Compute the sha256 of each raw file:
+
+      ```bash
+      shasum -a 256 .dev/figma-raw/<sanitized-nodeId>.json | awk '{print $1}'
+      ```
+
+   b. **Summary** — write `.dev/figma-context.md`. The first line MUST be a `Fetched:` receipt of the form below. Every `<fileKey>:<nodeId>` parsed from the ticket's Figma URL(s) MUST appear at least once in the body. Step 3b validates both.
+
+      ```markdown
+      Fetched: <ISO-8601 timestamp> sha256=<rawNodeId1>=<hash1>,<rawNodeId2>=<hash2>
+
+      # Figma context — <ticket-id>
+
+      ## Nodes
+
+      ### <fileKey>:<nodeId>
+      - URL: <original Figma URL>
+      - Title: <node title from get_design_context>
+      - Key sections / layers: <bulleted list>
+      - Components used: <from search_design_system — name + library match>
+      - Design tokens: <from get_variable_defs — token name → value>
+      - Notes / a11y / interaction: <anything else from the response that affects implementation>
+
+      ### <next fileKey>:<nodeId>
+      ...
+      ```
+
+      In the `sha256=` portion, list `<rawNodeId>=<hash>` pairs separated by commas. The `=` between id and hash is the unambiguous separator: node IDs may contain `:` (Figma chained sub-node syntax), but hashes are hex and never contain `=`. Use the original node ID (with `:`), not the sanitized filename form. Example: `Fetched: 2026-05-06T11:30:00Z sha256=713:12154=abc123…,713:12515=def456…`.
+
+   Use **Write** even if `.dev/` or `.dev/figma-raw/` do not yet exist.
 
 **If a Figma API call fails:**
 
-- Retry once. If it fails again, log: "Figma design was requested but unavailable due to API error. Proceeding with OpenSpec artifacts only. Visual discrepancies should be reviewed manually."
-- Set `<figma-context>` to empty and continue — do NOT block the entire workflow on a transient Figma error.
+- Retry once.
+- **If still failing in `<auto-mode>`**: write `.dev/figma-context.md` with first line `Fetched: FAILED — <error message>` listing the attempted URL(s). Step 3b will STOP the pipeline. Do NOT silently continue to implementation — UI work without design context is the failure mode this gate exists to prevent.
+- **If still failing in default mode**: write the same FAILED stub, then use **AskUserQuestion** to surface the failure with two options: `Abort` (stop the skill, retry later) or `Proceed without Figma` (artifact will be flagged; user must accept the visual risk explicitly).
 
 **If no Figma URL is found:**
 
-- **If `<auto-mode>`**: Log "No Figma URL found in ticket. Proceeding without Figma design reference." Set `<figma-context>` to empty.
+- **If `<auto-mode>`**: Log "No Figma URL found in ticket. Proceeding without Figma design reference." Do not create `.dev/figma-context.md`.
 - **If not `<auto-mode>`**: Use **AskUserQuestion** to ask: "No Figma URL found in the ticket. Do you have a Figma link for this feature?"
   - If the user provides one, fetch it as above.
   - If the user says no, proceed without Figma — but note in artifacts that no Figma design was available.
 
-**Figma provenance check**: If `<figma-context>` exists but existing OpenSpec artifacts (State B/C in Step 4) were created without Figma reference, warn:
-> "Artifacts exist but may have been created without Figma design reference. Recommend reviewing artifacts against the Figma design before proceeding."
+### 3b: Figma provenance gate (hard block)
+
+Before proceeding to Step 4, run all four checks below in order. The previous test-only check (`test -s`) was insufficient — a one-line stub passed it. None of the rules below can be skipped.
+
+1. **File presence**: if a Figma URL was detected in 3a, `.dev/figma-context.md` must exist. Missing → STOP with:
+   > "Figma URL was detected in the ticket but `.dev/figma-context.md` is missing. The skill refuses to proceed without a real `get_design_context` fetch."
+
+2. **Failure stub**: if the file's first line starts with `Fetched: FAILED`:
+   - **In `<auto-mode>`**: STOP. Auto pipelines do not silently fall back to Figma-less implementation.
+   - **In default mode**: STOP and ask the user (via **AskUserQuestion**) whether to proceed without Figma. Continue only on explicit opt-in; record the opt-in in the final artifact summary.
+
+3. **Hash & content validation**: parse the `sha256=<nodeId>=<hash>,...` portion of the first line by splitting on `,` first, then splitting each pair on the LAST `=` (since node IDs may contain `:` but hashes never contain `=`). For each pair:
+   - Recompute `shasum -a 256 .dev/figma-raw/<sanitized-nodeId>.json | awk '{print $1}'` and compare to the recorded hash. Mismatch → STOP.
+   - The raw `<nodeId>` (including the `:` separator) must appear at least once in the body of `.dev/figma-context.md`. Missing → STOP.
+
+   Additionally, every `<fileKey>:<nodeId>` parsed from the ticket's Figma URL(s) must have an entry in the receipt AND a `### <fileKey>:<nodeId>` section in the body. Any URL-listed node not represented → STOP.
+
+4. **Anti-pattern reminder**: `grep`-ing existing OpenSpec artifacts for figma node IDs does NOT satisfy this gate. Artifacts may have been authored by another agent (e.g. an upstream port pipeline) that copied node IDs as metadata without ever loading the design. The only acceptable proof is a fresh `.dev/figma-context.md` written this run that passes 1–3.
 
 ## Step 4: Detect OpenSpec state
 
@@ -147,6 +196,33 @@ Determine state from `applyRequires` and the artifacts array:
 
 Announce the detection result, e.g.:
 > "Detected state: B (apply-ready). Change: `add-favourite-driver-from-rating-screen`."
+
+## Step 4.5: Figma alignment check (State B/C only)
+
+_Skip this step entirely if state is A, or if `.dev/figma-context.md` does not exist._
+
+Existing OpenSpec artifacts authored by an upstream pipeline (e.g. `/port`) often carry Figma node IDs as **copied metadata** without the original author ever having loaded the design. State B/C reuse means `/opsx:apply` will execute against those artifacts as-is — so any Figma narrative that was inferred rather than fetched will silently propagate into implementation. This step closes that gap.
+
+Run the alignment check:
+
+1. Extract every `fileKey:nodeId` and every `figma.com/design/...` URL referenced in the existing artifacts:
+   ```bash
+   grep -rEn 'figma\.com/design/|node-id=|[0-9]+:[0-9]+' openspec/changes/<change-name>/ || true
+   ```
+2. For each `<fileKey>:<nodeId>` that appears in `.dev/figma-context.md` (the freshly-fetched receipt):
+   - **Node ID citation**: confirm the artifacts cite that exact node ID. If an artifact mentions Figma in narrative text but cites no node ID, treat as a conflict (the prose was likely inferred).
+   - **Token grounding (structural rule)**: from the receipt's `### <fileKey>:<nodeId>` section, extract every token name listed under `Components used:` and `Design tokens:`. The artifacts' narrative for that node MUST cite at least one of those tokens **verbatim** (case-sensitive substring match). If zero tokens match, treat as a conflict — the narrative was generated without grounding in the actual fetch.
+
+   This is an algorithmic check, not LLM-judged "does the prose feel right." Run it as: for each node, `grep -F` each token from the receipt against `openspec/changes/<change-name>/**/*.md` — at least one hit per node is required.
+3. **If any inferred-but-not-supported narrative is found**:
+   - **In `<auto-mode>`**: STOP and write the conflict list to `claude-reports/<ticket-id>/figma-alignment.md`. Do not run `/opsx:apply` on artifacts that contain hallucinated visual claims.
+   - **In default mode**: list the conflicts to the user and use **AskUserQuestion**:
+     - `Rebuild affected sections` — call `/opsx:rebuild <change-name> --section <section>` for each affected artifact (or guide the user to do so), then re-run Step 4.
+     - `Proceed anyway (accept risk)` — record the opt-in in the artifact summary.
+     - `Stop` — end the skill.
+4. If the artifacts cite all node IDs and the spot-checks pass, log `Figma alignment: OK` and continue.
+
+This step is the structural answer to "why did /port-generated specs need 80% rewrite during archive sync" — catch the divergence before `/opsx:apply` builds on top of it, not after.
 
 ## Step 5A: Generate artifacts (no agents)
 
@@ -187,13 +263,39 @@ Announce the detection result, e.g.:
 
 _Skip Steps 6–9 entirely if `<auto-mode>` is false. Jump to Output._
 
-### Step 6: Test, format, and commit
+### Step 6: Test, verify, format, and commit
 
 1. Run `/check-test --fix` (if available for `{platform}`) or fall back to `{test_cmd}` directly to run tests and auto-fix failures.
    - If still failing after fix attempts, note in report and proceed.
-2. Run `/format` to format and lint the codebase.
+2. **Spawn `verify-agent`** to audit the diff. This is mandatory in auto mode — same-session self-audit cannot catch the misses it produced (CAF-467 checkbox case). Pass:
+   - `base` — the trunk ref the worktree branched from (e.g. `origin/trunk`).
+   - `change name` — the OpenSpec change name from Step 4.
+   - `figma context path` — `.dev/figma-context.md` if it exists.
+   Use `mode: "bypassPermissions"` per the auto-mode rules.
+
+   After `verify-agent` returns, read `.dev/verify-pass.md`:
+   - **`Status: CLEAR`** → proceed to step 3.
+   - **`Status: BLOCKED`** → run the recovery sequence below.
+   - **File missing** → treat as `BLOCKED`. Do NOT fall back to "trust the implementer" — the absence of the report is the failure signal.
+
+   **BLOCKED recovery sequence (executed in order, exactly once):**
+   1. For each finding in `.dev/verify-pass.md`, edit the affected files to address it.
+   2. Re-run `/check-test --fix` (or `{test_cmd}`) to confirm the fixes did not regress tests.
+   3. Re-spawn `verify-agent` with the same inputs as the first call.
+   4. Read `.dev/verify-pass.md` again:
+      - `Status: CLEAR` → proceed to step 3.
+      - `Status: BLOCKED` (still) → ABORT. Attach the verify report to the final session report and STOP. Do not loop further — a second BLOCKED means the implementer cannot self-correct from auditor feedback in this session.
+3. Run `/format` to format and lint the codebase.
    - If there are lint issues that `/format` cannot auto-fix, fix them.
-3. Run `/commit` to commit all changes.
+   - If `/format` made changes, return to step 1 (re-run tests) before committing.
+4. Sanitize the index of runtime artifacts before committing:
+   - If `.dev/` is not yet listed in the project's `.gitignore`, add it in this commit. `.dev/figma-context.md`, `.dev/figma-raw/**`, and `.dev/verify-pass.md` are proof-of-work runtime artifacts, not source.
+   - Evict any already-tracked `.dev/` paths from the index (one-time cleanup for repos that didn't yet have the gitignore):
+     ```bash
+     git ls-files .dev/ 2>/dev/null | xargs -r git rm --cached -- 2>/dev/null || true
+     ```
+   This must run before `/commit`. Skipping it lets stale `.dev/` files leak into the PR; the previous commit's `.gitignore` does not retroactively untrack files.
+5. Run `/commit` to commit all changes.
 
 ### Step 7: Code review
 
