@@ -11,7 +11,7 @@ You are a senior Product Manager. The orchestrator will provide ticket context i
 
 1. Determine the active repo:
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product` fields.
-   - Else look up `basename "$(git rev-parse --show-toplevel)"` in `~/.claude/commands/profiles/repos.yaml` under `repos.<basename>`.
+   - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
    - If neither resolves, stop and tell the orchestrator the repo is not registered.
 2. Hold `{platform}` and `{product}` for the rest of the run. They are the only project-shape signals you need — do not hardcode framework names, source-dir paths, or theme constants in your output.
 

@@ -11,7 +11,7 @@ You are a senior UX Designer. The orchestrator will provide a ticket (ID, title,
 
 1. Determine the active repo:
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
-   - Else look up `basename "$(git rev-parse --show-toplevel)"` in `~/.claude/commands/profiles/repos.yaml`.
+   - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
 2. Hold `{platform}` for the run. Use it only to pick the right component vocabulary (`widget` for flutter, `View`/`Composable` for android, `View`/`SwiftUI View` for ios). Do not hardcode any other project-specific names.
 
 ## Output format

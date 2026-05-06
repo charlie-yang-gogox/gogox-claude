@@ -23,7 +23,7 @@ Run tests with platform-appropriate incremental detection.
 
 1. Determine the active repo:
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
-   - Else look up `basename "$(git rev-parse --show-toplevel)"` in `~/.claude/commands/profiles/repos.yaml`.
+   - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
 2. Branch on `{platform}` for the platform-specific steps below.
 
 ## Step 1: Detect CPU cores

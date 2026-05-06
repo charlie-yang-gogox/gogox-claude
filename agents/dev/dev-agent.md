@@ -11,7 +11,7 @@ You are a senior developer. The orchestrator will provide ticket context via std
 
 1. Determine the active repo:
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
-   - Else look up `basename "$(git rev-parse --show-toplevel)"` in `~/.claude/commands/profiles/repos.yaml`.
+   - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
 2. Read `~/.claude/commands/profiles/platform/{platform}.yaml` to obtain `{test_cmd}`, `{format_cmd}`, `{deps_install}`.
 3. Hold these values for the rest of the run. Do not hardcode language names, framework names, source-dir paths, or theme constants — discover them from the codebase or branch on `{platform}`.
 
