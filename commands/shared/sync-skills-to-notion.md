@@ -1,197 +1,191 @@
 ---
 name: sync-skills-to-notion
 description: >
-  Sync all Claude Code skills from .claude/commands/ to the Moonshot Note page in Notion.
-  Scans skill files, categorizes them, creates/updates child pages, rebuilds main page sections.
+  Sync all Claude Code skills from gogox-claude into a single Notion database.
+  Each skill becomes one row tagged with its source folder as Category. Filtering
+  and grouping happens in Notion's native database views.
 ---
 
 # Sync Skills to Notion
 
-Scan all skill files in `.claude/commands/`, compare with the Moonshot Note page in Notion,
-and create/update child pages. Rebuilds category sections and dependency graph on the main page.
+Maintain a Notion database of every gogox-claude installable as the team's living
+index. Three asset trees are covered — slash **commands**, model-invoked **skills**,
+and sub-**agents** — all upserted into one flat database. Each entry is a single
+row; the row's page body holds the full detail.
 
-**Target Notion page ID:** `31bf54d1149880f1922ad891e6cf538f`
+This skill **must run from the `gogox-claude` repo root** — it relies on the
+source folder structure to determine each entry's `Category`. The folders are
+flattened by `install.sh` once symlinked into `~/.claude/`, so running from there
+would lose category information.
 
----
+## Step 1: Bootstrap
 
-## Step 1: Scan all skill files
+1. Verify cwd is the gogox-claude repo root:
+   - Run `git rev-parse --show-toplevel` and confirm the basename is `gogox-claude`,
+     OR confirm `install.sh` exists at the root with the gogox-claude header.
+   - If not, abort with: `Run this skill from the gogox-claude repo root.`
 
-1. Glob `.claude/commands/**/*.md` to find all skill files.
-2. For each file, read its content and extract:
+2. Load `commands/shared/sync-skills-to-notion.config.yaml`.
+   Required fields: `notion.parent_page_id`, `notion.database_title`.
+   `notion.database_id` may be empty (first-run case).
 
-| Field | How to extract |
-|-------|----------------|
-| **slug** | Filename without `.md`. For `opsx/*.md`, use `opsx:<name>` (e.g., `opsx:apply`). |
-| **display_name** | `/<slug>` (e.g., `/commit`, `/opsx:apply`) |
-| **title** | From frontmatter `name`, or from first `# heading`, or derive from filename. |
-| **description** | From frontmatter `description`, or first non-heading paragraph. |
-| **category** | See categorization rules below. |
-| **arguments** | From `**Arguments:**` line if present. |
-| **dependencies** | Scan for patterns: `Invoke /xxx`, `/xxx` as sub-skill call, `Use /xxx`. Collect skill slugs. |
-| **content** | Full markdown body after frontmatter. |
+3. Verify Notion MCP is authenticated. The `claude.ai Notion` server's concrete
+   tool schemas (create database, query database, create page, update page,
+   archive page) are only exposed after authentication. If the only Notion tool
+   available is `mcp__claude_ai_Notion__authenticate`, prompt the user to run it
+   and stop.
 
-### Categorization rules
+4. Use `ToolSearch` to load the Notion tool schemas you'll need this run
+   (search terms: "notion database", "notion page create", "notion page update",
+   "notion archive"). Do NOT hardcode tool names in this file — they may version.
 
-| Pattern | Category |
-|---------|----------|
-| `opsx/*.md` | **OpenSpec** |
-| `check-*.md` | **Atomic** |
-| Everything else | **Orchestration** |
+## Step 2: Resolve the database
 
-## Step 2: Fetch existing Notion state
+Goal: end this step with a known-good `database_id` pointing at a database under
+`parent_page_id` whose title is `database_title`.
 
-1. Fetch the Moonshot Note page (`31bf54d1149880f1922ad891e6cf538f`).
-2. Extract all child page URLs and titles from `<page url="...">` tags in the content.
-3. Build a lookup map: match each child page title to a skill slug.
-   - Title `"Use /commit with Claude skills"` -> slug `commit`
-   - Title `"Use /opsx:apply with Claude skills"` -> slug `opsx:apply`
+1. If `notion.database_id` is non-empty, fetch the database to confirm it still
+   exists. If the fetch succeeds, proceed to Step 3.
 
-## Step 3: Create or update each child page
+2. Otherwise (empty or fetch failed), look for a child database of
+   `parent_page_id` whose title matches `database_title`. If found, reuse that
+   database's ID.
 
-For each skill from Step 1:
+3. If still no match, **create** a new database under `parent_page_id` with this
+   schema:
 
-### If a matching Notion page exists:
+   | Property | Type | Notes |
+   |---|---|---|
+   | Name | Title | The skill display name, `/<slug>` |
+   | Category | Select | Options: `dev`, `design`, `pm`, `shared`, `agent` |
+   | Description | Rich text | One-line summary |
+   | Last Synced | Date | Timestamp of last sync |
 
-1. Fetch the existing page content.
-2. Compare with the new content (below). If materially different, update using `replace_content`.
-3. If substantially the same, skip.
+4. Write the resulting database ID back into
+   `commands/shared/sync-skills-to-notion.config.yaml` under `notion.database_id`.
+   Use `Edit` to do an in-place replacement of the empty value — preserve all
+   other lines and comments.
 
-### If no matching page exists:
+## Step 3: Scan asset files
 
-Create a new child page under the Moonshot Note page with:
+1. Scan three asset trees (do NOT recurse beyond these patterns — `commands/dev/profiles/` holds YAML data, and skill directories may contain helper scripts that are not entries):
+   - `commands/{dev,design,pm,shared}/*.md` → **command** entries
+   - `skills/{dev,design,pm,shared}/*/SKILL.md` → **skill** entries
+   - `agents/{dev,design,pm,shared}/*.md` → **agent** entries
 
-- **Title:** `Use <display_name> with Claude skills`
-- **Icon:** `🪄`
-- **Parent:** `{ "type": "page_id", "page_id": "31bf54d1149880f1922ad891e6cf538f" }`
+2. Skip:
+   - Any file containing merge-conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`). Record a warning and continue.
 
-### Child page content template
+   The sync skill itself (`commands/shared/sync-skills-to-notion.md`) IS included — the team needs visibility into every installable, including this one.
 
-Generate this content for each skill. Adapt the sections based on what's available in the
-skill file — omit sections that have no content rather than leaving them empty.
+3. For each remaining file, extract:
 
-IMPORTANT: Before writing any Notion content, fetch the Notion Markdown spec at
-`notion://docs/enhanced-markdown-spec` to ensure correct syntax.
+   | Field | How |
+   |---|---|
+   | `slug` | for commands/agents: filename without `.md`. For skills: parent directory name (since file is always `SKILL.md`). |
+   | `display_name` | `/<slug>` (consistent prefix across all three asset types) |
+   | `category` | for agents: always `agent` (regardless of subfolder — agents are their own bucket, not commands/skills). For commands: parent folder name (`dev`/`design`/`pm`/`shared`). For skills: grandparent folder name (`skills/<category>/<slug>/SKILL.md`). |
+   | `kind` | `command` / `skill` / `agent` — derived from which tree the file came from. Used in the row body, NOT a Notion property. |
+   | `title` | frontmatter `name`, else first H1, else humanized slug |
+   | `description` | first line of frontmatter `description` (collapse multi-line YAML scalars) |
+   | `arguments` | text after `**Arguments:**` if present (commands/skills only) |
+   | `dependencies` | scan body for `/<name>` references; keep only those whose `<name>` matches another scanned entry's slug (drops noise like `/path/to/file`) |
+   | `body` | the post-frontmatter markdown — used to summarize "What It Does" and "Rules" sections |
 
-```markdown
-# `<display_name>` — <title>
+## Step 4: Upsert each skill as a database row
 
-<description>
+For each scanned skill:
 
----
+1. Query the database for an existing row where `Name == /<slug>` (or matching
+   the title property exactly).
 
-## Category
+2. Build the new row content:
+   - **Properties**:
+     - `Name` = `/<slug>`
+     - `Category` = `<category>`
+     - `Description` = the one-line description
+     - `Last Synced` = today's date
+   - **Page body**:
 
-<Orchestration | Atomic | OpenSpec>
+     ```markdown
+     # /<display_name> — <title>
 
-## Usage
+     <description>
 
-\`\`\`
-<display_name> [arguments if any]
-\`\`\`
+     ## Usage
 
-<argument details if present>
+     For commands/skills: `/<display_name> [arguments if any]`
+     For agents: invoked via the Agent tool with `subagent_type: "<slug>"`.
 
----
+     <argument detail line, omitted if none>
 
-## What It Does
+     ## What It Does
 
-<Summarize the Steps section from the skill file as a concise numbered list.
-Each step should be 1-2 sentences. Aim for 3-8 steps. Do NOT copy verbatim —
-rewrite for a reader who wants to understand the skill, not execute it.>
+     <Numbered list, 3–8 items, summarizing the Steps section of the source
+     skill file. Rewrite for a reader who wants to understand, not execute.
+     1–2 sentences per item. Do NOT copy verbatim.>
 
----
+     ## Dependencies
 
-## Dependencies
+     <Bulleted list of `/xxx — purpose`, one per detected dependency.
+     If none, write: "None — standalone skill.">
 
-<List of other skills this one calls, formatted as bullet points:>
-- `/check-clean` — verifies working tree is clean
-- `/format` — runs dart format pipeline
+     ## Rules
 
-<If no dependencies: "None — standalone skill.">
+     <Up to 5–8 bullets distilling the most important constraints from the
+     source file's Rules section. Drop implementation detail.>
 
----
+     ---
 
-## Rules
+     Source: `<commands|skills|agents>/<category>/<slug>.md` (skills use `<slug>/SKILL.md`)
+     ```
 
-<Key rules from the skill file, reformatted as bullet points. Keep the important
-constraints; drop implementation details. Max 5-8 bullets.>
-```
+3. Decide action:
+   - **No existing row** → create a new row with the above.
+   - **Row exists** → fetch the existing row's properties + body. Diff against
+     the new content (ignore the `Last Synced` field when diffing — it always
+     changes). If material difference, update properties and replace the page
+     body. If substantively identical, skip and count as unchanged.
 
-## Step 4: Rebuild main page content
+## Step 5: Reconcile deletions
 
-After all child pages are handled, rebuild the Moonshot Note main page.
+1. List all rows currently in the database.
+2. For each row whose `Name` does NOT correspond to any scanned skill, archive
+   it (Notion's standard delete — reversible from trash).
+3. Record the archived names for the report.
 
-1. Re-fetch the Moonshot Note page to get all current child page `<page url="...">` tags.
-2. Build the new content using this structure:
+## Step 6: Report
 
-```markdown
-## Orchestration Skills
-
-High-level commands that coordinate multiple sub-skills to complete a workflow.
-
-<page url="...">Use /work with Claude skills</page>
-<page url="...">Use /commit with Claude skills</page>
-...sorted alphabetically by skill name...
-
-## Atomic Skills
-
-Single-purpose checks and operations, reusable by orchestration skills.
-
-<page url="...">Use /check-archive with Claude skills</page>
-...sorted alphabetically...
-
-## OpenSpec Skills
-
-Artifact workflow commands for the OpenSpec development process.
-
-<page url="...">Use /opsx:new with Claude skills</page>
-<page url="...">Use /opsx:continue with Claude skills</page>
-<page url="...">Use /opsx:ff with Claude skills</page>
-<page url="...">Use /opsx:apply with Claude skills</page>
-<page url="...">Use /opsx:verify with Claude skills</page>
-<page url="...">Use /opsx:archive with Claude skills</page>
-<page url="...">Use /opsx:bulk-archive with Claude skills</page>
-<page url="...">Use /opsx:sync with Claude skills</page>
-<page url="...">Use /opsx:onboard with Claude skills</page>
-<page url="...">Use /opsx:explore with Claude skills</page>
-
-## Dependency Graph
-
-\`\`\`plain text
-<Generate a dependency graph from all skills' dependency data.
-Format like the existing graph — show Orchestration skills on the left
-with their dependency trees, Atomic/OpenSpec on the right.>
-\`\`\`
-```
-
-3. Use `replace_content` on the Moonshot Note page. CRITICAL: preserve all `<page url="...">` tags — these are references to child pages and must not be lost.
-
-## Step 5: Report
-
-Show a summary:
+Print a summary like:
 
 ```
 Sync complete.
 
-Created: <N> new pages
-  - /dev
-  - /opsx:apply
-  ...
-Updated: <N> pages
-  - /commit (content changed)
-  ...
-Unchanged: <N> pages
+Database: https://www.notion.so/<database_id>
 
-Moonshot Note: https://www.notion.so/31bf54d1149880f1922ad891e6cf538f
+Created:   <N>
+  - /<slug>
+  ...
+Updated:   <N>
+  - /<slug>
+  ...
+Unchanged: <N>
+Archived:  <N>  (skill files removed from repo)
+  - /<slug>
+  ...
+Warnings:  <N>
+  - <message>
+  ...
 ```
-
----
 
 ## Rules
 
-- Always fetch existing pages before creating to avoid duplicates.
-- Preserve all `<page url="...">` references when rebuilding the main page.
-- If a skill file has merge conflict markers (`<<<<<<<`), skip it and report a warning.
-- If a Notion MCP call fails, log the error and continue with remaining skills.
-- OpenSpec skills sort order: new → continue → ff → apply → verify → archive → bulk-archive → sync → onboard → explore.
-- Do NOT create a child page for `sync-skills-to-notion` itself — skip this skill file.
+- Always run from the gogox-claude repo root. Abort otherwise.
+- Read config before any Notion call; never hardcode IDs in this file.
+- Keep the database table view minimal — Name / Category / Description / Last Synced only. All other detail belongs in the row's page body.
+- Skill detail belongs in the database **row's page body**, not as separate child pages of the parent.
+- Include every command, skill, and agent — including `sync-skills-to-notion.md` itself. The team's index should be complete.
+- If a Notion call fails for one skill, log the error and continue with the rest.
+- Use Notion's archive (not destroy) when reconciling deletions — gives a recovery window.
+- After auto-creating the database, write its ID back to the config file using `Edit` (preserve comments and surrounding lines).
+- Do not regenerate or maintain a dependency graph — Notion DB views replace the old hand-curated section layout.

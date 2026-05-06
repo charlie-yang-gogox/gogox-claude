@@ -102,7 +102,7 @@ Dev/Designer.         co-owner from        Co-owner co-signs    skill earns Noti
 
 - Validation CI / GitHub Action for SKILL.md format. Defer until first real PR breaks something.
 - CODEOWNERS file. Defer until skill count > 20.
-- Notion mirror or Slack bot. Defer until a specific high-frequency skill proves PM/Designer demand.
+- Slack bot. Defer until a specific high-frequency skill proves PM/Designer demand. (Notion mirror was built 2026-05 via `/sync-skills-to-notion` — see README § Skill discovery.)
 - Data integration layer (skills reading past PRs/PRDs/postmortems). Gated on v1 usage data — only invest in integrations for skills that prove themselves used.
 - Central telemetry endpoint. Local jsonl is sufficient for v1.
 

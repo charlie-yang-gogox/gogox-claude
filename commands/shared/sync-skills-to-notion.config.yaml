@@ -1,0 +1,10 @@
+# Config for /sync-skills-to-notion. Read at runtime; not symlinked by install.sh.
+# Skill must run from the gogox-claude repo root.
+
+notion:
+  parent_page_id: 357f54d1149880c98674f8b1218ee1f1
+  parent_page_url: https://www.notion.so/gogox/claude-gogox-357f54d1149880c98674f8b1218ee1f1
+
+  # Auto-populated on first run after the database is created. Do not edit by hand.
+  database_id: ed14d40a03494858bf1ff653c41dec9c
+  database_title: Claude Skills
