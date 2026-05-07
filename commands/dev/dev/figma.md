@@ -22,7 +22,13 @@ Authoritative Figma fetch + provenance gate for the dev pipeline. Either every F
 
 ## Step 0: Validate state
 
-Run `/dev:_state-check figma`. If exit != 0, STOP. Parse the emitted JSON for `ticket_id` and `mode`.
+Run `/dev:_state-check figma`. If exit != 0, STOP. Parse the emitted JSON for `ticket_id`, `mode`, and `figma`.
+
+**Pre-declared no-source short-circuit**: if `state.figma.declared_no_source == true` (set by `/dev:start --no-figma`), this stage should never have entered — `/dev:start` advances `current_stage` directly to `detect` when the flag is set. If we somehow do enter (e.g. `--from figma` after a `--no-figma` start), refuse:
+
+> "state.figma.declared_no_source is true — user pre-declared no Figma source at /dev:start. To re-enable Figma fetch, restart the pipeline without --no-figma."
+
+STOP. Do not silently overwrite the prior decision.
 
 ## Step 1: Re-fetch ticket
 
@@ -87,7 +93,12 @@ Run all four checks in order. None can be skipped:
 2. **Failure stub** — if first line starts with `Fetched: FAILED`:
    - `auto`: STOP.
    - `default`: STOP and **AskUserQuestion** whether to proceed; record opt-in.
-3. **Hash & content** — parse `sha256=<id>=<hash>,...` by splitting on `,` first, then on the LAST `=` per pair (since node IDs contain `:` but hashes never contain `=`). For each pair:
+3. **Hash & content** — parse the receipt's hash portion in this exact order:
+   1. **Strip the leading `sha256=` literal** from the hash portion of the receipt line. Without this step a naive splitter leaves the first pair as `sha256=<id1>=<hash1>` (two `=` characters) and "split on last `=`" works by luck rather than by contract.
+   2. Split the remainder on `,` to get individual `<id>=<hash>` pairs.
+   3. For each pair, split on the LAST `=` (since node IDs may contain `:` but hashes are hex and never contain `=`).
+
+   Then for each pair:
    - Recompute `shasum -a 256 .dev/figma-raw/<sanitizedNodeId>.json | awk '{print $1}'` and compare. Mismatch → STOP.
    - The raw `<nodeId>` must appear at least once in the body. Missing → STOP.
    - Every `<fileKey>:<nodeId>` parsed in Step 2 must have an entry in the receipt AND a `### <fileKey>:<nodeId>` section. Any missing → STOP.
