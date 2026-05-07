@@ -127,13 +127,13 @@ Port pipeline complete: <ticket-id> — <change-name>
 Branch     : feat/<ticket-id> (pushed)
 Spec tree  : <tree-url>
 Linear     : description updated + summary comment posted
-Worktree   : <worktree-path> (kept for /opsx:apply)
+Worktree   : <worktree-path> (kept for /dev:ff)
 
 Mode       : <HITL | auto>
 Duration   : <total ms from .port/timings.jsonl summed>
 Auto-fixes : <count, in --auto mode> 
 
-Next: cd <worktree-path> && /opsx:apply <change-name>
+Next: cd <worktree-path> && /dev:ff
 ```
 
 In `--auto` mode also print the path to `claude-reports/<session>/` for the dispatcher to inspect.

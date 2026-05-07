@@ -10,7 +10,7 @@ description: >
 
 # /port:ship — Commit, Push, Linear Write-back
 
-Ship the reviewed OpenSpec change. After this stage the branch is on origin, Linear has the updated description + summary comment, and `/opsx:apply <change-name>` is the next step for the implementer.
+Ship the reviewed OpenSpec change. After this stage the branch is on origin, Linear has the updated description + summary comment, and `/dev:ff` is the next step for the implementer (it will detect the spec as state B and route directly to `/dev:apply`).
 
 **Usage**: `/port:ship [--ticket:<ID>] [--auto]`
 
@@ -187,7 +187,7 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
       - [.port/context.md](<tree-url>/.port/context.md)
 
       ### Next step
-      `cd <worktree-path> && /opsx:apply <change-name>`
+      `cd <worktree-path> && /dev:ff`
       ```
 
 12. **Post the summary comment with retry.**
@@ -214,7 +214,7 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
     Linear      : description updated (PRD region) + summary comment posted<auto: + label need-spec-review>
     Worktree    : <worktree-path> (disposable — spec is on origin)
 
-    Next: cd <worktree-path> && /opsx:apply <change-name>
+    Next: cd <worktree-path> && /dev:ff
     ```
 
 ---

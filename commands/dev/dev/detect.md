@@ -1,6 +1,6 @@
 ---
 name: detect
-description: "Stage 3 — detect the OpenSpec change state (A: no artifacts, B: apply-ready, C: partial). Decides whether to run /dev:align next (B/C with Figma) or skip directly to /dev:apply (state A or no Figma)."
+description: "Stage 3 — detect the OpenSpec change state (A: no artifacts, B: apply-ready, C: partial). In default mode on state A, asks the user whether to inline-author via /opsx:ff or abort to run /port:ff first. Otherwise routes to /dev:align (B/C with Figma) or /dev:apply."
 ---
 
 # `/dev:detect`
@@ -17,6 +17,7 @@ Determines what state the OpenSpec change is in and routes the pipeline accordin
 - `state.openspec = { state: "A"|"B"|"C", change_dir: <path> }`.
 - `state.current_stage = "align"` (B/C with figma.receipt) or `"apply"` (otherwise).
 - A `skipped` entry for `align` in `stage_history` if we route directly to `apply`.
+- **Abort path (state A, default mode, user picks `/port:ff`)**: no state mutation. Pipeline STOPs; re-running `/dev:ff` re-dispatches `/dev:detect` and re-asks the gate.
 
 ## Step 0: Validate state
 
@@ -45,11 +46,40 @@ Announce: `Detected state: <A|B|C>. Change: <change-name>.`
 
 ## Step 3: Routing
 
-- **State A** → `current_stage = "apply"`. Append `align` to stage_history as `skipped` with reason `"state A — no existing artifacts to align against"`.
+- **State A AND `mode == default`** → run the State-A gate (Step 3a). Two outcomes:
+  - User picks `inline-author` → `current_stage = "apply"`. Append `align` to stage_history as `skipped` with reason `"state A — no existing artifacts to align against"`. Continue to Step 4.
+  - User picks `abort-to-port` → STOP. Do not mutate `.dev/state.json`. Skip Steps 4–5 entirely. Print the abort hint (Step 3a). Re-running `/dev:ff` will re-dispatch `/dev:detect` and re-ask the gate (idempotent).
+- **State A AND `mode == auto`** → `current_stage = "apply"`. Append `align` to stage_history as `skipped` with reason `"state A — no existing artifacts to align against"`. (Auto mode must not block on prompts; the dispatcher accepts inline-author quality for unattended runs.)
 - **State B/C with `state.figma.receipt` present** → `current_stage = "align"`.
 - **State B/C with `state.figma == null` or `state.figma.receipt == null`** → `current_stage = "apply"`. Append `align` as `skipped` with reason `"no figma receipt — alignment check has nothing to compare"`.
 
+## Step 3a: State-A gate (default mode only)
+
+Runs only when state == A AND mode == default. Skip otherwise.
+
+Use **AskUserQuestion** with this single question:
+
+> No OpenSpec artifacts exist for this ticket. `/dev:apply` can inline-author a lightweight spec via `/opsx:ff` (no pm/designer/synth grounding). For larger features that need stronger spec, `/port:ff` produces a properly-grounded one. How do you want to proceed?
+
+Options (mutually exclusive, single-select):
+
+1. **Inline author + apply** (recommended for bug fix / chore / small features)
+   - Continue with `/dev:apply`'s lightweight authoring via `/opsx:ff`. Best when the spec quality bar is low and you want to ship fast. The current `/dev:apply` Step 1A.5 review gate still surfaces the authored artifacts before `/opsx:apply` runs.
+2. **Abort to use `/port:ff`** (recommended for real features needing pm/designer/synth grounding)
+   - Stop `/dev:ff`. Run `/port:ff <ticket-id>` separately to author a properly-grounded spec, then re-run `/dev:ff` (state will be B on the next `/dev:detect` run, so this gate does not re-fire).
+
+On `abort-to-port`, print:
+
+```
+/dev:ff aborted at /dev:detect.
+Run /port:ff <ticket-id> to author the spec, then re-run /dev:ff to resume implementation.
+```
+
+Then STOP. Do not run Steps 4 or 5. State remains untouched — re-running `/dev:ff` re-enters `/dev:detect` and re-asks the gate (idempotent by design; an audit entry is unnecessary because no side effect occurred).
+
 ## Step 4: Commit transition
+
+_Skip this step entirely if Step 3a's `abort-to-port` branch was taken._
 
 ```bash
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
