@@ -55,16 +55,27 @@ Stop when all tasks complete, or when `/opsx:apply` pauses for clarification (in
 
 ## Step 3: Commit transition
 
+The successor depends on `state.mode`:
+
+- `mode == auto` → next stage is `verify`. The auto pipeline continues end-to-end.
+- `mode == default` → terminal. Default mode does NOT run verify/review/ship — those are auto-mode-only. The pipeline ends at `done_default`; the user drives format / commit / PR manually.
+
 ```bash
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-jq --arg ts "$TS" '
-  .current_stage = "verify"
+MODE=$(jq -r '.mode' .dev/state.json)
+NEXT=$([ "$MODE" = "auto" ] && echo "verify" || echo "done_default")
+
+jq --arg ts "$TS" --arg next "$NEXT" '
+  .current_stage = $next
   | .stage_history += [{ stage: "apply", status: "done", ts: $ts }]
 ' .dev/state.json > .dev/state.json.tmp && mv .dev/state.json.tmp .dev/state.json
 ```
 
 ## Step 4: Stop
 
-Print: `Apply complete. Next: /dev:verify.`
+Print one of:
 
-In `mode == default`, also note that `/dev:verify` is auto-mode-only territory — the default-mode user typically stops here and drives commit / format / PR manually. To proceed, run `/dev:verify --force-default` (NOT IMPLEMENTED YET — currently default mode terminates after apply).
+- `mode == auto`: `Apply complete. Next: /dev:verify.`
+- `mode == default`: `Apply complete. Pipeline terminated at done_default. Drive next steps manually: /format → /commit → /pull-request. To upgrade to auto and chain through verify/review/ship: /dev:ff --auto.`
+
+`/dev:ff --auto` from `done_default` mutates `mode = auto` and resumes at `verify` — see `/dev:ff` Step 0b. Default mode is NOT a dead-end; it is a deliberate terminal that can be upgraded.

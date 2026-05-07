@@ -15,7 +15,7 @@ Every `/dev:*` atomic command reads this file to validate its preconditions and 
 | `ticket_id` | string | yes | `/dev:start` | e.g. `CAF-207` |
 | `ticket_title` | string | yes | `/dev:start` | From Linear |
 | `change_name` | string | yes | `/dev:start` | kebab-case derived from ticket title |
-| `mode` | enum: `auto` \| `default` | yes | `/dev:start` | Set once, immutable |
+| `mode` | enum: `auto` \| `default` | yes | `/dev:start` | Set at start. `default → auto` upgrade IS permitted on resume via `/dev:ff --auto` (the orchestrator mutates `mode = auto`). `auto → default` downgrade is NOT permitted — auto-only state like `verify` would be orphaned. |
 | `platform` | enum: `flutter` \| `android` \| `ios` | yes | `/dev:start` | From profile resolution |
 | `base_ref` | string | yes | `/dev:start` | e.g. `origin/trunk` |
 | `worktree_path` | string | auto only | `/dev:start` | Absolute path; required when `mode == auto` |
@@ -28,21 +28,28 @@ Every `/dev:*` atomic command reads this file to validate its preconditions and 
 ## Stage names and transitions
 
 ```
-start → figma → detect → align? → apply → verify → review → ship → done
-                          ↑                           ↓
-                       (B/C only)              (BLOCKED → loop once)
+default mode: start → figma → detect → align? → apply → done_default
+auto mode:    start → figma → detect → align? → apply → verify → review → ship → done
+                                          ↑                       ↓
+                                       (B/C only)          (BLOCKED → loop once)
 ```
 
 | Stage | Predecessor | Successor on success | Skip if |
 |---|---|---|---|
-| `start` | — | `figma` | — |
-| `figma` | `start` | `detect` | — |
+| `start` | — | `figma` (or `detect` if `--no-figma`) | — |
+| `figma` | `start` | `detect` | `--no-figma` was passed at `/dev:start` (skip set by start, never enters this stage) |
 | `detect` | `figma` | `align` if state ∈ {B, C}; `apply` if state == A | — |
 | `align` | `detect` | `apply` | `openspec.state == A` OR `figma.receipt` is null |
-| `apply` | `align` (or `detect` if skipped) | `verify` | — |
-| `verify` | `apply` | `review` | — |
-| `review` | `verify` | `ship` | — |
-| `ship` | `review` | `done` | — |
+| `apply` | `align` (or `detect` if skipped) | `verify` if `mode == auto`; `done_default` if `mode == default` | — |
+| `verify` | `apply` | `review` | `mode == default` (terminal: pipeline ends at `done_default`) |
+| `review` | `verify` | `ship` | `mode == default` |
+| `ship` | `review` | `done` | `mode == default` |
+
+**Terminal states**:
+- `done` — auto mode complete (PR opened, Linear updated).
+- `done_default` — default mode complete (artifacts applied; user owns format/commit/PR manually).
+
+A `default → auto` upgrade via `/dev:ff --auto` from `done_default` resets `current_stage` to `verify` and mutates `mode = auto`.
 
 When a stage is skipped, append `{stage, status: "skipped", ts, reason}` to `stage_history` and advance `current_stage` to the successor.
 
@@ -89,7 +96,9 @@ A stage that fails mid-mutation must NOT leave `state.json` in a partial state. 
 The strict `current_stage == EXPECTED` rule can be bypassed only via explicit flags on the calling stage:
 
 - `--force` — re-run current stage. The `current_stage` check is skipped, but per-stage required-fields check still runs. The matching `stage_history` entry is overwritten.
-- `--from <stage>` — reset `current_stage = <stage>` and truncate `stage_history` after the entry for `<stage>`. Then proceed. Used to redo from an earlier point (e.g. re-fetch Figma after design update).
+- `--from <stage>` — reset `current_stage = <stage>` and **drop the `<stage>` entry plus everything after it** from `stage_history`. Then proceed. The next run re-appends a fresh entry on completion (no duplicate "done" entries). Used to redo from an earlier point (e.g. re-fetch Figma after design update).
+
+  Implementation requires last-index slicing — there may be earlier `<stage>` entries from prior `--from` cycles, and we want to truncate at the most recent one. See `/dev:ff` Step 0a for the canonical jq filter.
 
 Both flags are surface-level; the validator `_state-check` does not interpret them — the calling stage decides whether to skip the strict check.
 

@@ -11,6 +11,8 @@ Strict precondition validator for the `/dev:*` atomic command pipeline. Refuses 
 
 `<expected-stage>` ∈ `{start, figma, detect, align, apply, verify, review, ship}`
 
+`done_default` and `done` are terminal states — `_state-check` is never called against them by a stage's body. If a caller ever passes them, the validator falls through to the unknown-stage branch and FAILs.
+
 ## Behavior
 
 1. Read `.dev/state.json`. Missing → FAIL.
@@ -72,7 +74,13 @@ case "$EXPECTED" in
     ;;
   align)
     jq -e '.figma.receipt and (.openspec.state == "B" or .openspec.state == "C") and .openspec.change_dir' "$STATE_FILE" > /dev/null \
-      || { echo "FAIL: align requires figma.receipt, openspec.state in {B,C}, and openspec.change_dir." >&2; exit 1; }
+      || {
+        echo "FAIL: align requires figma.receipt, openspec.state in {B,C}, and openspec.change_dir." >&2
+        echo "      If this run has no Figma source (--no-figma at /dev:start, or no URL in ticket)," >&2
+        echo "      align is not the right stage. Advance to apply directly: /dev:apply --from apply" >&2
+        echo "      then run from there." >&2
+        exit 1
+      }
     ;;
   apply)
     jq -e '.change_name and .openspec.state' "$STATE_FILE" > /dev/null \
