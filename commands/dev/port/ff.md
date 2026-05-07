@@ -138,6 +138,22 @@ Next: cd <worktree-path> && /opsx:apply <change-name>
 
 In `--auto` mode also print the path to `claude-reports/<session>/` for the dispatcher to inspect.
 
+### Step 11: Cleanup port-internal runtime files
+
+Run ONLY on full success (after step 10's report has been printed). Skip entirely on any abort path — the file is the audit trail for debug.
+
+`.port/timings.jsonl` accumulates a per-stage telemetry line across the chain (start → explore → plan → synth → revise → ship). Step 10 reads + summarizes it. After that summary is in the user's hand, the file has served its purpose — keeping it around leaks port-internal observability into the project repo (and dirties the working tree for the next pipeline).
+
+Delete it:
+
+```bash
+rm -f "<worktree>/.port/timings.jsonl"
+```
+
+Rationale: the gitignore in `/port:ship` step 5 prevents the file from being committed, but doesn't prevent it from existing on disk. Physical deletion is what the chain orchestrator owes the user — `.port/` should look the same after a successful pipeline as it did before, minus the consultative artifacts that the ship commit captured.
+
+If a user invokes individual stages manually (no `/port:ff`), they own their own cleanup — the gitignore still protects them from accidental commits.
+
 ---
 
 ## Auto-mode decision rules (G1–G9)
@@ -163,7 +179,8 @@ When the wrapper aborts:
 1. Append a JSONL line to `<worktree>/.port/timings.jsonl` (D22) with stage `ff` and `outcome: aborted-<reason>`.
 2. Atomic-write `claude-reports/<session>/ff-aborted.md` with: ticket id, stage at which abort happened, reason, and pointer to the stage's own report (e.g. `/port:revise`'s `auto-accepted.md`, `/port:ship`'s `ship-pending.md`).
 3. Linear comment: stages that abort already post their own Linear comment (locate-low, push-fail). The wrapper does not duplicate.
-4. STOP — do not proceed to later stages.
+4. **Do NOT run step 11's cleanup.** `timings.jsonl` is the audit trail; on abort it is the user's only visibility into how far the chain got. Gitignore protects against accidental commit; preservation is intentional for debug.
+5. STOP — do not proceed to later stages.
 
 ---
 

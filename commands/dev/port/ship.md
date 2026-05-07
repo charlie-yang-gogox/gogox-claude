@@ -54,18 +54,38 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
      printf '%s\n%s\n' "$$" "<ISO-now>" > "$tmp"
      mv "$tmp" "<port-dir>/.lock"
      ```
-   - The lock is removed only on full success (step 13). Every STOP path between here and step 13 leaves it in place so the user can inspect.
+   - The lock is removed only on full success (step 14). Every STOP path between here and step 14 leaves it in place so the user can inspect.
 
-5. **Commit via `/commit`.**
+5. **Sanitize the index of `.port/` runtime artifacts.**
+   - `.port/` is a mixed directory: `{dev,pm,design}-notes.md`, `prd.md`, `synth-report.md`, and `context.md` are consultative artifacts that DO get committed. `.lock`, `timings.jsonl`, and `ship-pending.md` are pure runtime — they must NOT be tracked.
+   - Step 14 below writes `.port/timings.jsonl` AFTER `/commit` returns. Without gitignoring + evicting, that write either leaks into a future commit or leaves the working tree dirty for the next pipeline run (the `/dev:start` and `/check-clean` failure mode users have hit). The chain-end deletion in `/port:ff` step 11 is the success-path cleanup; this step is the per-commit defense.
+   - Run before `/commit` so the gitignore change + eviction land in the same commit:
+     ```bash
+     # Add the runtime entries if not already present. Patterns work at any depth
+     # (gitignore patterns without a leading slash match anywhere in the tree).
+     for entry in '.port/.lock' '.port/timings.jsonl' '.port/ship-pending.md'; do
+       if ! grep -qxF "$entry" .gitignore 2>/dev/null; then
+         printf '%s\n' "$entry" >> .gitignore
+       fi
+     done
+
+     # Evict any already-tracked instances (one-time cleanup; safe no-op after).
+     git ls-files \
+       | grep -E '(^|/)\.port/(\.lock|timings\.jsonl|ship-pending\.md)$' \
+       | xargs -r git rm --cached -- 2>/dev/null || true
+     ```
+   - Skipping this step lets `.port/timings.jsonl` and friends leak into every commit forever; the previous commit's `.gitignore` does not retroactively untrack files.
+
+6. **Commit via `/commit`.**
    - Invoke the existing `/commit` skill. It analyses the working tree and writes one or more atomic commits.
    - Format-hook failure inside `/commit` → STOP. Surface the error verbatim. Do NOT amend, do NOT retry blindly. The user fixes the hook, re-runs `/port:ship`. Lock stays in place. Append timings with `outcome:"aborted-commit-failed"`.
    - After `/commit` returns, verify the working tree is clean: `git status --porcelain` must be empty. Non-empty → STOP with `working tree dirty after /commit; investigate`. Lock stays in place.
 
-6. **Push.**
+7. **Push.**
    - `git push -u origin "feat/<ticket-id>"`.
    - Push failure (auth, network, non-fast-forward, hook reject):
      - Keep `<port-dir>/.lock`.
-     - Post a Linear comment via `mcp__claude_ai_Linear__save_comment` (with retry — see step 9 retry policy):
+     - Post a Linear comment via `mcp__claude_ai_Linear__save_comment` (with retry — see step 10 retry policy):
        ```
        Port aborted: push failed (auth/network/rejected). Worktree preserved at <worktree-path>.
        Branch is local-only; re-run /port:ship after fixing the push issue.
@@ -73,17 +93,17 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
      - Append timings line: `{"stage":"ship","outcome":"aborted-push-failed",...}`.
      - STOP. Do NOT proceed to Linear description write — branch is local-only and writing the PRD now would advertise a non-existent spec tree URL.
 
-7. **Build spec tree URL.**
+8. **Build spec tree URL.**
    - `<repo-url-raw>` = `git config --get remote.origin.url`.
    - Convert SSH form `git@github.com:<org>/<repo>.git` → `https://github.com/<org>/<repo>`. HTTPS form: strip a trailing `.git`.
    - `<tree-url>` = `<repo-url>/tree/feat/<ticket-id>/openspec/changes/<change-name>`.
 
-8. **Re-fetch Linear ticket description.**
+9. **Re-fetch Linear ticket description.**
    - `mcp__claude_ai_Linear__get_issue` with `id: <ticket-id>`. Capture `<current-description>`.
    - This is mandatory — never use a cached `<ticket-context>` from `/port:start`. PMs may have edited in the interim and those edits live OUTSIDE the port markers, which we must preserve.
 
-9. **Build new description.**
-   - Read `<port-dir>/prd.md`. If missing or whitespace-only, **skip this entire step** (no description write). Jump to step 10.
+10. **Build new description.**
+   - Read `<port-dir>/prd.md`. If missing or whitespace-only, **skip this entire step** (no description write). Jump to step 11.
    - Build the marker block:
      ```
      <!-- port:prd:start -->
@@ -116,7 +136,7 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
        ```
        STOP with: `manual fix needed: <ticket-id> Linear sync incomplete (see <port-dir>/ship-pending.md)`. Append timings line `outcome:"aborted-linear-description-failed"`. Lock stays in place.
 
-10. **Build summary comment body.**
+11. **Build summary comment body.**
     - Pull pieces from artifacts:
       - **Capabilities** — from `.port/pm-notes.md` "Proposed Capabilities" section: one bullet per capability (`` `<cap>` — <one-liner> ``).
       - **Validation** — read the `openspec validate` line preserved by `/port:synth` in `.port/synth-report.md` (or, if absent, run `openspec validate <change-name> --type change` and capture the summary).
@@ -170,23 +190,23 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
       `cd <worktree-path> && /opsx:apply <change-name>`
       ```
 
-11. **Post the summary comment with retry.**
+12. **Post the summary comment with retry.**
     - `mcp__claude_ai_Linear__save_comment` with `issueId: <ticket-id>` and `body: <summary>`.
-    - Retry policy: same exponential backoff as step 9 (1 s, 4 s, 16 s).
-    - Final failure → atomic-write `<port-dir>/ship-pending.md` (or append a `## Comment payload` section if it already exists from step 9). STOP with `manual fix needed: <ticket-id> Linear comment failed (see <port-dir>/ship-pending.md)`. Append timings `outcome:"aborted-linear-comment-failed"`. Lock stays in place.
+    - Retry policy: same exponential backoff as step 10 (1 s, 4 s, 16 s).
+    - Final failure → atomic-write `<port-dir>/ship-pending.md` (or append a `## Comment payload` section if it already exists from step 10). STOP with `manual fix needed: <ticket-id> Linear comment failed (see <port-dir>/ship-pending.md)`. Append timings `outcome:"aborted-linear-comment-failed"`. Lock stays in place.
 
-12. **Label transition (auto only).**
+13. **Label transition (auto only).**
     - In `--auto` only: `mcp__claude_ai_Linear__save_issue` with `id: <ticket-id>` and an updated label set that adds `need-spec-review` (preserve all existing labels). Same 3× backoff retry policy. Final failure → log a soft warning to stdout but do NOT abort — the label is auxiliary; description + comment are the contract.
     - HITL: skip. The reviewer applies the label themselves after eyeballing the comment.
 
-13. **Release lock + emit timings.**
+14. **Release lock + emit timings.**
     - Remove `<port-dir>/.lock` (only on full success).
     - Append one line to `<port-dir>/timings.jsonl`:
       ```json
       {"stage":"ship","ticket":"<ticket-id>","start":"<ISO-start>","end":"<ISO-end>","duration_ms":<int>,"outcome":"ok"}
       ```
 
-14. **Print final block.**
+15. **Print final block.**
     ```
     OpenSpec change '<change-name>' shipped.
 
@@ -224,7 +244,7 @@ POSIX `mv` on the same filesystem is atomic — partial files are never visible 
 - **Push always required.** No local-only fallback. If push fails, the Linear description and comment writes are skipped and the lock + worktree are preserved.
 - **Linear description is APPEND-ONLY between markers.** PM content outside `<!-- port:prd:start --> ... <!-- port:prd:end -->` is byte-for-byte preserved on every re-run. Re-fetch description before write — never use the cached `<ticket-context>` from `/port:start`.
 - **Skip description write entirely if `.port/prd.md` is empty.** No empty marker block, no placeholder text. The description is left exactly as the PM wrote it.
-- **Lock acquired at start, released only on full success.** Every STOP path between step 4 and step 13 leaves `.port/.lock` so the operator can inspect; the next run prompts `take-over / abort` (HITL) or auto-takes-over (`--auto`).
+- **Lock acquired at start, released only on full success.** Every STOP path between step 4 and step 14 leaves `.port/.lock` so the operator can inspect; the next run prompts `take-over / abort` (HITL) or auto-takes-over (`--auto`).
 - **Format-hook failure stops the world.** `/commit` failures are surfaced verbatim; the orchestrator never amends or `--no-verify`s past them.
 - **`Review approved` sentinel** is the only signal accepted from `/port:revise`. Without it, ship STOPs (HITL prompts to confirm + retro-write the sentinel; `--auto` stops outright).
 - **Auto-fix + auto-accepted reports** are read from `claude-reports/<session>/auto-fixes.md` and `auto-accepted.md`. Both are written by `/port:revise --auto`. Missing files → render as `(none)` rather than crashing.
