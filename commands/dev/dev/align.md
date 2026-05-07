@@ -38,9 +38,11 @@ For every `### <fileKey>:<nodeId>` section in `.dev/figma-context.md`:
 
 **2a. Node ID citation** — confirm the artifacts cite that exact node ID. If an artifact mentions Figma in narrative text but cites no node ID, treat as a conflict (the prose was likely inferred).
 
-**2b. Token grounding (structural rule)** — from the receipt section, extract every token name listed under `Components used:` and `Design tokens:`. The artifacts' narrative for that node MUST cite at least one of those tokens **verbatim** (case-sensitive substring match). If zero tokens match → conflict.
+**2b. Token grounding with behavioral context (structural rule)** — from the receipt section, extract every token name listed under `Components used:` and `Design tokens:`. The artifacts' narrative for that node MUST contain at least one of those tokens **verbatim** AND in the same paragraph as a behavioral verb (`shows`, `displays`, `renders`, `triggers`, `disabled when`, `enabled when`, `tapping`, `selecting`, `appears`, `hides`, `submits`, `updates`).
 
-This is an algorithmic check, not LLM-judged "does the prose feel right." Implementation:
+A bare `Components used: AppCheckbox, PrimaryButton` line at the top of `proposal.md` does NOT satisfy this — that's exactly the lazy upstream-pipeline pattern this gate exists to catch. The token must appear inside a sentence that says something about WHAT THE COMPONENT DOES, not just that it exists.
+
+Implementation: paragraph-scoped match. A "paragraph" is a contiguous run of non-blank lines.
 
 ```bash
 # For each node in the receipt:
@@ -48,14 +50,26 @@ TOKENS=$(awk '/^### <fileKey>:<nodeId>/,/^### /' .dev/figma-context.md \
   | sed -nE 's/^- (Components used|Design tokens):\s*(.*)$/\2/p' \
   | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
 
+VERBS='shows|displays|renders|triggers|disabled when|enabled when|tapping|selecting|appears|hides|submits|updates'
+
 HIT=0
 for tok in $TOKENS; do
-  if grep -rF "$tok" "$CHANGE_DIR" > /dev/null 2>&1; then HIT=1; break; fi
+  # Find any paragraph in any artifact that contains BOTH the verbatim token AND a verb.
+  # awk paragraph mode: RS='' splits on blank lines.
+  if find "$CHANGE_DIR" -name '*.md' -print0 \
+     | xargs -0 awk -v tok="$tok" -v verbs="$VERBS" '
+         BEGIN { RS=""; }
+         index($0, tok) > 0 && match($0, verbs) > 0 { print FILENAME ":" tok; found=1; exit }
+         END { exit !found }
+       ' > /dev/null 2>&1; then
+    HIT=1
+    break
+  fi
 done
-# HIT=0 → conflict for this node
+# HIT=0 → conflict for this node — narrative is not behaviorally grounded in the receipt
 ```
 
-Adapt the awk range to actual node ID; the goal is one section's tokens at a time.
+Adapt the awk range to actual node ID; the goal is one section's tokens at a time. The verb list is intentionally narrow — adding "uses" or "is" would let any sentence match and defeat the gate. If the design genuinely needs a verb not in this list, expand the list deliberately, not as a workaround for a single artifact.
 
 ## Step 3: On conflict
 
