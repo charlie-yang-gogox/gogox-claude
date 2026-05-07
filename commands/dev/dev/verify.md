@@ -38,7 +38,9 @@ Use the **Agent** tool with `subagent_type: "verify-agent"`, `mode: "bypassPermi
 
 - `base` — `state.base_ref` (e.g. `origin/trunk`)
 - `change name` — `state.change_name`
-- `figma context path` — `state.figma.receipt` if present, else omit
+- `figma raw directory` — `state.figma.raw_dir` if present (typically `.dev/figma-raw/`), else omit
+
+**Pass the raw dir, not the receipt path.** The auditor must read `.dev/figma-raw/*.json` directly, not `.dev/figma-context.md`. The receipt is a curated summary written by the implementing pipeline — sharing it with the auditor would re-converge auditor and implementer onto the same filtered view, defeating the whole point of the split. The receipt is referenced internally by verify-agent only for sha256 cross-check.
 
 After the agent returns, read `.dev/verify-pass.md`:
 
@@ -81,13 +83,20 @@ Run `/commit` to commit all changes. The commit must include the `.gitignore` up
 
 ```bash
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-RETRIES='<0 or 1>'
+
+# RETRIES = 1 if Step 2a's BLOCKED-recovery sequence ran (regardless of outcome here),
+# else 0. The orchestrator tracks this in a local shell variable set when entering 2a;
+# default to 0 if the variable is unset.
+RETRIES="${RETRIES_RAN:-0}"
+
 jq --arg ts "$TS" --argjson r "$RETRIES" '
   .verify = { status: "CLEAR", report: ".dev/verify-pass.md", retry_count: $r }
   | .current_stage = "review"
   | .stage_history += [{ stage: "verify", status: "done", ts: $ts, result: "CLEAR" }]
 ' .dev/state.json > .dev/state.json.tmp && mv .dev/state.json.tmp .dev/state.json
 ```
+
+In Step 2a's recovery sequence, set `RETRIES_RAN=1` before re-spawning the agent. If recovery is not entered, the variable stays unset and the default `0` applies.
 
 Note: `.dev/state.json` itself is gitignored after Step 4, so this write happens after `/commit` — the state update lives only on the local working tree, which is correct (state is per-pipeline-run, not per-branch).
 

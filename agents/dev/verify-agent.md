@@ -15,9 +15,11 @@ The orchestrator MUST provide:
 
 1. **Base reference** — the git ref to diff against (e.g. `origin/main`, `HEAD~3`, or a specific SHA).
 2. **OpenSpec change name** (if applicable) — so you can read `openspec/changes/<name>/specs/**/*.md` and `tasks.md` to know what was supposed to change.
-3. **Figma context path** (if applicable) — typically `.dev/figma-context.md`. UI changes are cross-referenced against it.
+3. **Figma raw directory** (if applicable) — typically `.dev/figma-raw/`. UI changes are cross-referenced against the raw `get_design_context` JSON payloads in this directory.
 
 If any required item is missing, refuse with a single message naming what's missing. Do not start auditing on vibes.
+
+**Why raw, not receipt**: the implementing pipeline writes both `.dev/figma-context.md` (a markdown summary) and `.dev/figma-raw/*.json` (the raw payloads). The summary is the implementer's curated digest — its `Components used:` and `Design tokens:` lists are an LLM-filtered subset of the raw response. If the implementer paraphrased or truncated a token, an auditor reading the same summary will share that blind spot. You — the auditor — read the raw JSON directly so the only state you share with the implementer is the unfiltered source. The receipt is consulted only for sha256 cross-check (see Step 3).
 
 ## Step 0: Resolve project profile
 
@@ -64,7 +66,12 @@ For each contract surface from Step 2:
 3. For every hit:
    - Determine if it was updated in this diff (`git diff <base>...HEAD <file>` — does the hit line appear in the new version?).
    - If it was NOT updated, list it as a missed call site under Findings with `file:line` and the stale reference.
-4. For Figma-driven UI changes: for each `<fileKey>:<nodeId>` listed in `.dev/figma-context.md`, confirm that the screen / widget cited in the receipt has a corresponding code change in this diff. If a node is in the receipt but no implementation file references the matching screen, list it as `Figma node not implemented: <nodeId>` under Findings.
+4. For Figma-driven UI changes: enumerate `.dev/figma-raw/*.json` (one file per node, sanitized filename `<nodeId-with-_-instead-of-:>.json`). For each raw JSON file:
+   - Cross-check sha256 against the receipt's `sha256=<id>=<hash>` line. Mismatch → `BLOCKED` with finding `Figma raw payload tampered or stale: <nodeId>`.
+   - Read the raw JSON. Extract component identifiers (e.g. `componentSetId`, `name` of children) and any token references the payload contains.
+   - For each component / token from the raw payload, grep the diff for that identifier (or the platform-mapped equivalent — `AppCheckbox` for an iOS `Checkbox` symbol, etc.). If the payload mentions a component that has no corresponding code change in this diff AND no rationale in `tasks.md`, list it as `Figma node not implemented: <nodeId> — <component name>` under Findings.
+
+   The receipt (`.dev/figma-context.md`) is reference material only — never the source of truth for what was supposed to be implemented. The raw JSON is.
 
 Cross-platform note: if the diff touches a JSON wire schema, the Findings section must include a line like `Cross-platform schema change — verify <other-platform> client manually` even though grep cannot reach the other repo. Do not silently omit.
 
