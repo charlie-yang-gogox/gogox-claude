@@ -1,11 +1,13 @@
 # `/spec-review` — Adapter TODOs (port + dev)
 
 > **Status**: Not yet started. Do **after** `commands/dev/spec-review.md` ships
-> and is proven on real tickets. Spec-review's legacy fallback (§5.1 of
-> `plans/spec-review.md`) keeps it working in the meantime.
+> and is proven on real tickets. Spec-review's legacy fallback (see the
+> "Marker contract" section of `commands/dev/spec-review.md`) keeps it working
+> in the meantime.
 
 This file tracks the changes needed in the **adjacent** skills so that the
-end-to-end marker contract (defined in `plans/spec-review.md`) is fully wired.
+end-to-end marker contract (defined in `commands/dev/spec-review.md`) is fully
+wired.
 
 ## Why these are separate
 
@@ -114,7 +116,8 @@ adapter landing.
 For ~2 weeks after TODO-1 ships:
 - New tickets carry v1 markers → spec-review uses fast path.
 - Older `need-spec-review` tickets carry legacy markers → spec-review uses
-  fallback regex (§5.1 of PLAN), prints a one-line warning in the output
+  fallback regex (see "Marker contract" in `commands/dev/spec-review.md`),
+  prints a one-line warning in the output
   comment.
 
 After the window, audit `need-spec-review` backlog. If any legacy tickets
