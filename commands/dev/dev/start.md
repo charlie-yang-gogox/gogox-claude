@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Stage 1 of the /dev:* atomic pipeline. Resolves the project profile, parses the ticket, runs pre-flight checks, optionally creates a worktree (auto mode), and assigns the ticket on Linear. Per ff-state-rationalization.md v8 this stage no longer creates state.json — pipeline progress is derived from filesystem markers by /dev:ff's walker."
+description: "Stage 1 of the /dev:* atomic pipeline. Resolves the project profile, parses the ticket, runs pre-flight checks, optionally creates a worktree (auto mode), and assigns the ticket on Linear. This stage no longer creates state.json — pipeline progress is derived from filesystem markers by /dev:ff's walker."
 Prerequisite: >
   - Linear MCP authenticated.
   - Default mode: already on the branch/worktree for the ticket. Git clean.
@@ -16,7 +16,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 
 - `<ticket-id>` — Linear ticket ID (e.g. `CAF-207`). Required.
 - `--auto` — full autonomous pipeline.
-- `--no-figma` — pre-declare that this ticket has no Figma source. Atomic-writes `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` so `/dev:figma` is skipped by the walker. **`/dev:start` is the SOLE writer of the SKIPPED first-line variant** (per `plans/ff-state-rationalization.md` §3.5; figma-subagent only writes `Fetched: <ISO>` or `Fetched: FAILED`).
+- `--no-figma` — pre-declare that this ticket has no Figma source. Atomic-writes `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` so `/dev:figma` is skipped by the walker. **`/dev:start` is the SOLE writer of the SKIPPED first-line variant** (figma-subagent only writes `Fetched: <ISO>` or `Fetched: FAILED`).
 - Linear ticket (fetched).
 - Project profile (`{platform}`, `{deps_install}`, `{test_cmd}`).
 

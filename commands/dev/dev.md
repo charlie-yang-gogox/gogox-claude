@@ -254,7 +254,7 @@ This step is the structural answer to "why did /port-generated specs need 80% re
 
 ## Step 5B: Apply
 
-Execution depends on mode (per `plans/dev-ff-subagent-isolation.md` §3.6 v9):
+Execution depends on mode:
 
 - **If `<auto-mode>`**: Run `/opsx:apply <change-name>` directly in the current session. No agent spawn. `--auto` may run inside a `general-purpose` subagent dispatched by `/ggx-dispatcher`, where nested opus spawn is unreliable — inline is the only safe path.
 - **If not `<auto-mode>`**: Spawn `dev-agent` (opus, worktree-isolated, `commit: false`) to run `/opsx:apply`. Pass the inputs documented in `commands/dev/dev/apply.md` Step 4D.1. Parse `.dev/apply-result.md` afterwards. On `BLOCKED_CLARIFICATION`, surface the question via **AskUserQuestion** and fall back to inline `/opsx:apply` in main to resume from the next `[ ]`.
@@ -377,7 +377,7 @@ On completion, summarize:
 ## Guardrails
 
 - Does **NOT** spawn `pm-agent` or `designer-agent`. Artifact prep (`/opsx:ff` / `/opsx:continue`) runs in the main session.
-- In default mode, **spawns `dev-agent`** (opus, worktree-isolated) for `/opsx:apply` after the HITL gate — see `commands/dev/dev/apply.md` §4D and `plans/dev-ff-subagent-isolation.md` §3.6 v9.
+- In default mode, **spawns `dev-agent`** (opus, worktree-isolated) for `/opsx:apply` after the HITL gate — see `commands/dev/dev/apply.md` §4D.
 - In auto mode, `/opsx:apply` runs inline in the current session (no agent spawn — `--auto` may run inside a `general-purpose` dispatcher subagent where nested opus spawn is unreliable).
 - Default mode scope: artifact prep + apply only. Does **NOT** handle branching, worktree, tests, format, commit, or PR.
 - Auto mode scope: full lifecycle from worktree to PR. Adds Steps 2A and 6–9.

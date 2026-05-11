@@ -9,7 +9,7 @@ Prerequisite: >
 
 # `/dev:ff`
 
-Single-command run-the-whole-pipeline. Per `plans/ff-state-rationalization.md` v8 the orchestrator no longer reads `state.json` — it derives `current_stage` from filesystem markers via `infer_dev_stage`. Stops on the first failure, HITL gate (default mode), or completion.
+Single-command run-the-whole-pipeline. The orchestrator no longer reads `state.json` — it derives `current_stage` from filesystem markers via `infer_dev_stage`. Stops on the first failure, HITL gate (default mode), or completion.
 
 ## Usage
 
@@ -41,7 +41,7 @@ PIPELINE_IN_FLIGHT="no"
 
 ### Step 0a: --from handling
 
-Per `plans/ff-state-rationalization.md` §5: `--from <stage>` deletes the marker files of `<stage>` and everything downstream. The next `infer_dev_stage` re-derives because the precondition for `<stage>` is now unmet.
+`--from <stage>` deletes the marker files of `<stage>` and everything downstream. The next `infer_dev_stage` re-derives because the precondition for `<stage>` is now unmet.
 
 ```bash
 if [ -n "$FROM_STAGE" ]; then
@@ -78,7 +78,7 @@ if [ -n "$FROM_STAGE" ]; then
 fi
 ```
 
-> ⚠️ **Race warning**: do NOT use `--from` while another `/dev:ff` is running on the same worktree. The `rm` and the concurrent writer race; your `--from` intent may be silently lost. This is item #3 of the operator-discipline contract (`plans/ff-state-rationalization.md` §6).
+> ⚠️ **Race warning**: do NOT use `--from` while another `/dev:ff` is running on the same worktree. The `rm` and the concurrent writer race; your `--from` intent may be silently lost.
 
 ## Step 1: Derive current stage via `infer_dev_stage`
 

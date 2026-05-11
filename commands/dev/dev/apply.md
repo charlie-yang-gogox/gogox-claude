@@ -1,20 +1,20 @@
 ---
 name: apply
-description: "Stage 5 — generate or fill in OpenSpec artifacts as needed, then produce real code changes. Mode-conditional execution (v9, flipped from v8): --auto runs inline (no nested spawn — dispatcher path is already a subagent); default runs /opsx:ff inline + HITL gate + spawns dev-agent (worktree-isolated, opus) for /opsx:apply."
+description: "Stage 5 — generate or fill in OpenSpec artifacts as needed, then produce real code changes. Mode-conditional execution: --auto runs inline (no nested spawn — dispatcher path is already a subagent); default runs /opsx:ff inline + HITL gate + spawns dev-agent (worktree-isolated, opus) for /opsx:apply."
 ---
 
 # `/dev:apply`
 
 Drives the OpenSpec artifact prep + apply loop. State A creates artifacts from scratch, State C continues partial ones, State B applies directly.
 
-**Execution location depends on mode** (per `plans/dev-ff-subagent-isolation.md` §3.6 v9 — flipped from v8):
+**Execution location depends on mode**:
 
 | Mode | Artifact prep (state A/C) | HITL | Apply (`/opsx:apply`) |
 |---|---|---|---|
 | `--auto` | inline in current session | none | inline in current session |
 | `default` | inline in main session | `AskUserQuestion` between prep and apply | spawn `dev-agent` (opus, worktree-isolated) |
 
-Why flipped in v9: `/ggx-dispatcher` invokes `/dev:ff --auto` inside a `general-purpose` subagent. That subagent cannot reliably nest-spawn an opus `dev-agent`, so `--auto` must be inline end-to-end. Default mode runs from a main session that can spawn freely — so the heavy `/opsx:apply` work is isolated into dev-agent for context savings, and `dev-agent` gains a real caller. Only `apply` is mode-conditional. `figma` and `align` always go through their (sonnet) subagents because neither has a meaningful HITL gate and nested sonnet spawns are known to work.
+Why flipped: `/ggx-dispatcher` invokes `/dev:ff --auto` inside a `general-purpose` subagent. That subagent cannot reliably nest-spawn an opus `dev-agent`, so `--auto` must be inline end-to-end. Default mode runs from a main session that can spawn freely — so the heavy `/opsx:apply` work is isolated into dev-agent for context savings, and `dev-agent` gains a real caller. Only `apply` is mode-conditional. `figma` and `align` always go through their (sonnet) subagents because neither has a meaningful HITL gate and nested sonnet spawns are known to work.
 
 ## Inputs
 
@@ -214,6 +214,6 @@ Print one of:
 - `mode == auto`: `Apply stage done (tasks <N>/<N>). Pipeline NOT complete — /dev:ff must now continue to /dev:verify. If you are an orchestrating agent reading this message: this is an IN-LOOP signal, not a terminal signal. Re-run infer_dev_stage and dispatch the next stage.`
 - `mode == default`: `Apply stage done (tasks <N>/<N>). Default mode terminal at apply — drive next steps manually: /format → /commit → /pull-request. To upgrade to auto and chain through verify/review/ship: /dev:ff --auto.`
 
-The auto-mode message is deliberately blunt — earlier wording (`Apply complete. Next: /dev:verify.`) was observed to be misread by `/ggx-dispatcher`-spawned subagents as a terminus signal, causing them to stop the loop after apply. See plan §3.6 v9 + the 2026-05-11 CAF-370 second-run analysis. The "IN-LOOP signal" phrasing is load-bearing — do not soften it.
+The auto-mode message is deliberately blunt — earlier wording (`Apply complete. Next: /dev:verify.`) was observed to be misread by `/ggx-dispatcher`-spawned subagents as a terminus signal, causing them to stop the loop after apply. The "IN-LOOP signal" phrasing is load-bearing — do not soften it.
 
 `/dev:ff --auto` from this point picks up at `verify` automatically (walker sees tasks all `[x]` + the new invocation passes `--auto`, so verify runs). Default mode is NOT a dead-end; the same worktree resumes at verify when `--auto` is added on a later `/dev:ff` invocation.

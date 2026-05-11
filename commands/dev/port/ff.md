@@ -51,7 +51,7 @@ If `--auto` is present → **auto mode**, governed by the G1-G9 decision rules b
 
 ### Step 3a: Derive entry point via `infer_port_stage`
 
-Per `plans/ff-state-rationalization.md` v8 — `/port:ff` resumes from the filesystem instead of running every stage unconditionally. If a previous run on this ticket already produced `.port/dev-notes.md`, the walker advances to `plan` and skips `start` + `explore`.
+`/port:ff` resumes from the filesystem instead of running every stage unconditionally. If a previous run on this ticket already produced `.port/dev-notes.md`, the walker advances to `plan` and skips `start` + `explore`.
 
 ```bash
 infer_port_stage() {

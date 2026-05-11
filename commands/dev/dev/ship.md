@@ -83,7 +83,7 @@ Write `claude-reports/$TICKET_ID/report.md`:
 <any test failures noted during /dev:verify>
 ```
 
-(Stage history is no longer persisted — git log + result files cover audit per `plans/ff-state-rationalization.md` §7.)
+(Stage history is no longer persisted — git log + result files cover audit.)
 
 ## Step 5: Post Linear summary
 

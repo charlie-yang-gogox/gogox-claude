@@ -1,10 +1,10 @@
 # Subagent discipline
 
-This file is read by every `/dev:*` and `/port:*` subagent in this repo. It encodes three invariants that keep the orchestrator-subagent contract safe to evolve. Per `plans/dev-ff-subagent-isolation.md` §2.
+This file is read by every `/dev:*` and `/port:*` subagent in this repo. It encodes three invariants that keep the orchestrator-subagent contract safe to evolve.
 
 ## 1. Stay in your lane
 
-A subagent owns exactly **one** output path (or one guarded directory). Do not write outside it. The result file under `.dev/` (see §6 of the plan) is part of that lane.
+A subagent owns exactly **one** output path (or one guarded directory). Do not write outside it. The result file under `.dev/` is part of that lane.
 
 Concretely:
 - `figma-subagent` writes only `.dev/figma-raw/<node>.json` and `.dev/figma-context.md` (status encoded in the receipt's first line — no separate result file).
@@ -19,8 +19,6 @@ If you need to surface information outside your lane, return it via your result 
 `state.json` (or any `.dev/state*.json`) is read-write only by the orchestrator. Subagents must never write it. This includes appending to `stage_history`, mutating `current_stage`, or setting any nested field.
 
 A subagent that needs to communicate "I am done / I failed / I need clarification" does so through its result file's `Status:` line, not by mutating shared state.
-
-(Once `plans/ff-state-rationalization.md` lands, `state.json` will be removed entirely; until then this rule is enforced by CI grep.)
 
 ## 3. HITL belongs in the main session
 
@@ -66,7 +64,7 @@ A subagent refactor that silently changes its result path would otherwise break 
 
 ## Result file contract
 
-Every subagent result file under `.dev/` follows this format (per plan §6):
+Every subagent result file under `.dev/` follows this format:
 
 ```
 Status: <CLEAR | CONFLICT | BLOCKED_<reason> | ABORTED | FAILED | STALLED>

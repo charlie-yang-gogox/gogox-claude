@@ -25,7 +25,6 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `10`, hard cap `20`. Out of range → abort.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
 
-**Refer to** `plans/ggx-dispatcher.md` for design rationale and `plans/ggx-dispatcher-flow.md` for the visual flow.
 
 ---
 
@@ -33,7 +32,7 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 
 - **No `AskUserQuestion`.** Dispatcher never prompts. Every gate either auto-resolves or aborts with a paste-ready remediation message.
 - **All MCP tool calls use `mcp__claude_ai_Linear__*`.** Never the legacy `mcp__linear-server__*`.
-- **stdout is the audit trail.** Every per-ticket lock attempt prints `<ticket>: locked ✓` or `<ticket>: failed (<reason>)`. If MCP outage breaks the recovery chain, the user has the terminal scrollback to fix manually via Linear UI. Cron usage (where stdout is invisible) is explicitly NOT supported in v2 — see `plans/ggx-dispatcher.md` §10 Q2/Q7.
+- **stdout is the audit trail.** Every per-ticket lock attempt prints `<ticket>: locked ✓` or `<ticket>: failed (<reason>)`. If MCP outage breaks the recovery chain, the user has the terminal scrollback to fix manually via Linear UI. Cron usage (where stdout is invisible) is explicitly NOT supported.
 - **Lockfile.** Step 1 acquires `claude-reports/dispatcher/.lock`; every exit path (success, abort, MCP error) releases it.
 
 ---
@@ -330,7 +329,7 @@ Single message, N parallel `Agent` calls (one per ticket):
 
 - `description`: `Dispatch <ticket-id> via <port|dev>:ff`
 - `subagent_type`: `general-purpose`
-- `model`: `"opus"` — required for dev tickets because `/dev:apply --auto` runs `/opsx:apply` inline inside this subagent (per `plans/dev-ff-subagent-isolation.md` §3.6 v9: --auto no longer spawns `dev-agent`, to eliminate nested opus spawn that fails from subagent context). The implementation work needs opus quality reasoning. Port tickets technically don't need opus, but keeping one consistent spawn shape avoids drift.
+- `model`: `"opus"` — required for dev tickets because `/dev:apply --auto` runs `/opsx:apply` inline inside this subagent (--auto no longer spawns `dev-agent`, to eliminate nested opus spawn that fails from subagent context). The implementation work needs opus quality reasoning. Port tickets technically don't need opus, but keeping one consistent spawn shape avoids drift.
 - `prompt`: the dispatch command string built above, plus the explicit loop-driving guidance below. **A short "run X and report outcome" prompt is insufficient** — `/dev:ff` and `/port:ff` are LLM-interpreted dispatch loops (their dispatch steps are pseudocode walked by you, not real shell), and a vague prompt has been observed to make the agent stop after the first visibly-successful stage (e.g. `Apply complete. Next: /dev:verify.`) instead of continuing the loop. The text below MUST be included verbatim after the command:
 
   ```

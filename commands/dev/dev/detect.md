@@ -5,7 +5,7 @@ description: "Stage 3 — detect the OpenSpec change state (A: no artifacts, B: 
 
 # `/dev:detect`
 
-Determines what state the OpenSpec change is in and routes the pipeline accordingly. Per `plans/ff-state-rationalization.md` v8 this stage has **no persistent marker** — classification is re-derived each run via `openspec status --json` (cheap, ~1s, no network).
+Determines what state the OpenSpec change is in and routes the pipeline accordingly. This stage has **no persistent marker** — classification is re-derived each run via `openspec status --json` (cheap, ~1s, no network).
 
 ## Inputs
 

@@ -1,6 +1,6 @@
 ---
 name: dev-agent
-description: "Developer agent that implements code based on OpenSpec artifacts. Runs /opsx:apply to implement tasks, /opsx:verify to confirm correctness, then runs the project's test command. Commits only when commit: true is passed (default false — the orchestrator's /dev:verify owns the commit). Sole live caller is `/dev:apply` in DEFAULT mode (per `plans/dev-ff-subagent-isolation.md` §3.6 v9 — flipped from v8); `--auto` runs inline in the caller's session to avoid nested opus spawn from the `/ggx-dispatcher` general-purpose subagent. Project-agnostic — resolves the active repo profile at runtime."
+description: "Developer agent that implements code based on OpenSpec artifacts. Runs /opsx:apply to implement tasks, /opsx:verify to confirm correctness, then runs the project's test command. Commits only when commit: true is passed (default false — the orchestrator's /dev:verify owns the commit). Sole live caller is `/dev:apply` in DEFAULT mode; `--auto` runs inline in the caller's session to avoid nested opus spawn from the `/ggx-dispatcher` general-purpose subagent. Project-agnostic — resolves the active repo profile at runtime."
 tools: Agent, Bash, Edit, Glob, Grep, Read, Write, Skill, TaskCreate, TaskGet, TaskList, TaskUpdate, ToolSearch, mcp__plugin_figma_figma__get_design_context, mcp__plugin_figma_figma__get_screenshot, mcp__plugin_figma_figma__get_metadata, mcp__plugin_figma_figma__search_design_system, mcp__plugin_figma_figma__get_variable_defs
 model: opus
 ---
@@ -59,7 +59,7 @@ You MUST use the OpenSpec workflow. This is mandatory — do not skip it or impl
 8. **Commit (only if `commit: true`)**: stage all changes with `git add -A`, then exclude the runtime workspace with `git reset -- .dev/` (these files are proof-of-work, not source). Commit with a descriptive message. If `.dev/` is not yet listed in the project's `.gitignore`, add it in this commit.
 
    **`commit: false` is the default** — the orchestrator (typically `/dev:apply` calling you in `--auto`) sets it explicitly. When `commit: false`, leave the working tree dirty: source modified, `tasks.md` checkboxes flipped, but no `git commit` invocation. Commit ownership stays with `/dev:verify` per the auditor/implementer split.
-9. **Write your final status to `.dev/apply-result.md`** before returning. Atomic write (tmp + mv) per `plans/dev-ff-subagent-isolation.md` §6:
+9. **Write your final status to `.dev/apply-result.md`** before returning. Atomic write (tmp + mv):
 
    ```
    Status: <CLEAR | FAILED | BLOCKED_CLARIFICATION>
@@ -69,9 +69,9 @@ You MUST use the OpenSpec workflow. This is mandatory — do not skip it or impl
 
    - `CLEAR` — all `[ ]` tasks flipped to `[x]`, source modified, tests passed.
    - `FAILED` — unrecoverable failure (test repeatedly failing after fix attempts, MCP outage, etc.). Tasks may be partially `[x]`. Put the reason in `Summary:`.
-   - `BLOCKED_CLARIFICATION` — `/opsx:apply` paused mid-loop on an ambiguity you cannot resolve. You must NOT guess — fail fast. Put the open question in `Summary:` so the orchestrator can surface it. Per v9 the orchestrator is in default mode (the only caller), so it can `AskUserQuestion` and resume inline; you are not re-spawned with answers.
+   - `BLOCKED_CLARIFICATION` — `/opsx:apply` paused mid-loop on an ambiguity you cannot resolve. You must NOT guess — fail fast. Put the open question in `Summary:` so the orchestrator can surface it. The orchestrator is in default mode (the only caller), so it can `AskUserQuestion` and resume inline; you are not re-spawned with answers.
 
-   The orchestrator's primary done signal is `tasks.md` checkboxes (`completedTasks == totalTasks` via `openspec list --json`). The `Status:` line in `.dev/apply-result.md` is your reason channel for FAILED/BLOCKED — it is NOT consulted on success (CLEAR is implied by all-`[x]`, but write the file anyway for plan §2 Check B compliance).
+   The orchestrator's primary done signal is `tasks.md` checkboxes (`completedTasks == totalTasks` via `openspec list --json`). The `Status:` line in `.dev/apply-result.md` is your reason channel for FAILED/BLOCKED — it is NOT consulted on success (CLEAR is implied by all-`[x]`, but write the file anyway).
 
    Optionally repeat the same line as the LAST line of chat output for legacy log readers — but the file is authoritative.
 10. Return control to the orchestrator. The orchestrator is required to spawn `verify-agent` against your diff before any push or PR — do NOT spawn it yourself, and do NOT self-audit your work in `.dev/verify-pass.md`. Same-agent self-audit is the pattern this split is designed to break (a previous CAF-467 dev-agent reported "switched to AppCheckbox" but only changed one of two call sites — the user caught it, not self-audit).

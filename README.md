@@ -139,8 +139,6 @@ It sweeps the cwd repo's Linear team for `ready-to-port` and `ready-to-dev` tick
 /ggx-dispatcher --test                       # skip default-branch + clean checks
 ```
 
-Design rationale: [`plans/ggx-dispatcher.md`](./plans/ggx-dispatcher.md). Visual flow: [`plans/ggx-dispatcher-flow.md`](./plans/ggx-dispatcher-flow.md).
-
 ### Setup (per-machine, once per port-target repo)
 
 The pipeline ports FROM an origin codebase that lives somewhere on your disk. Set the path in `.claude/port-settings.json` (gitignored):
