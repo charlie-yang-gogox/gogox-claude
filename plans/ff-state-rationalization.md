@@ -58,7 +58,7 @@ Each stage has a **done marker** — a deterministic on-disk artifact whose pres
 | `/dev:figma` | worktree; ticket has Figma URL (no `.dev/figma/.skipped`) | spawn figma-subagent → fetch design context | `.dev/figma/receipt.md` exists AND `.dev/figma/raw/<node>.json` ≥ 1 |
 | `/dev:detect` | worktree | `openspec status --change <n> --json`, classify A/B/C from artifacts[] | (no persistent marker — re-derived each run; cheap) |
 | `/dev:align` | figma receipt OR `.dev/figma/.skipped`; openspec state B or C | spawn align-subagent | `.dev/align-result.md` contains `Status: CLEAR` OR `.dev/figma/.skipped` (no align needed) |
-| `/dev:apply` | align done OR no Figma | apply-prep-subagent → main HITL gate → dev-agent runs `/opsx:apply` | `openspec list --json \| jq -e '.changes[] \| select(.name==$n) \| .completedTasks == .totalTasks and .totalTasks > 0'` |
+| `/dev:apply` | align done OR no Figma | mode-conditional per `dev-ff-subagent-isolation.md` §3.6 v9: `default` runs `/opsx:ff` inline → AskUserQuestion gate → spawn dev-agent for `/opsx:apply`; `--auto` runs both inline in caller's session (no nested spawn) | `openspec list --json \| jq -e '.changes[] \| select(.name==$n) \| .completedTasks == .totalTasks and .totalTasks > 0'` |
 | `/dev:verify` | apply done | `/check-test` → verify-agent → `/format` → `/commit` | `.dev/verify-pass.md` contains `Status: CLEAR` AND new commit on top of base_ref |
 | `/dev:review` | verify CLEAR | `/code-review` against diff | `claude-reports/<id>/code-review.md` exists AND no `^critical:` line |
 | `/dev:ship` | review clean | `/opsx:archive` → `/check-archive` → `/pull-request --draft` → Linear update | `openspec/changes/archive/<n>/` exists AND PR is OPEN AND Linear status is `In Review` |

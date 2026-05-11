@@ -51,7 +51,12 @@ Capture the PR URL from the output.
 
 ## Step 3: Linear status update
 
-Set ticket status to `In Review` via `mcp__claude_ai_Linear__save_issue`.
+Single `mcp__claude_ai_Linear__save_issue` call that performs both transitions in one payload:
+
+1. Set ticket status to `In Review`.
+2. Remove `dispatcher-dev-in-flight` label if currently present (no-op if absent). This is the canonical "dispatcher work is complete" signal — see `commands/dev/ggx-dispatcher.md` §2 Plan X. Without this, the next `/ggx-dispatcher` run would treat the just-shipped ticket as a recovery candidate via Q4.
+
+If the ticket was NOT dispatched (user ran `/dev:ff --auto` from main with no in-flight label present), step 2 is a no-op — Linear `save_issue` accepts a label-set that excludes labels the ticket doesn't have.
 
 Reviewer assignment is intentionally not automated here — rely on `CODEOWNERS` (or PR template) to invite reviewers.
 
@@ -96,7 +101,7 @@ Use `mcp__claude_ai_Linear__save_comment`:
 
 ## Step 6: Stop
 
-No state mutation. The done markers are: (1) `openspec/changes/archive/$N/` exists, (2) `gh pr view $TICKET_ID --json state -q .state` returns `OPEN`, (3) Linear status is `In Review`.
+No state mutation. The done markers are: (1) `openspec/changes/archive/$N/` exists, (2) `gh pr view $TICKET_ID --json state -q .state` returns `OPEN`, (3) Linear status is `In Review`, (4) `dispatcher-dev-in-flight` label absent on the ticket (per Step 3 + `commands/dev/ggx-dispatcher.md` Plan X).
 
 Print: `Pipeline complete. PR: <PR URL>.`
 

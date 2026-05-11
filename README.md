@@ -122,6 +122,25 @@ Each stage is independently re-runnable. Use them when you want to pause / itera
 
 `/port:explore --simple` is also valid as a standalone — exploration only, no worktree, no spec.
 
+### Batch worker — `/ggx-dispatcher`
+
+For days when you want to clear an inbox of actionable tickets in one go, open a Claude session in the target repo (main worktree, default branch, clean tree) and run:
+
+```
+/ggx-dispatcher
+```
+
+It sweeps the cwd repo's Linear team for `ready-to-port` and `ready-to-dev` tickets, race-locks them, and fans out parallel `/port:ff --auto` / `/dev:ff --auto` agents (default 10 concurrent, hard cap 20). User-invoked only — there's no cron behind this.
+
+```
+/ggx-dispatcher --dry-run                    # plan, no Linear writes
+/ggx-dispatcher --max-parallel:3             # tighter cap
+/ggx-dispatcher --team:CET                   # required for branch_prefix: auto repos
+/ggx-dispatcher --test                       # skip default-branch + clean checks
+```
+
+Design rationale: [`plans/ggx-dispatcher.md`](./plans/ggx-dispatcher.md). Visual flow: [`plans/ggx-dispatcher-flow.md`](./plans/ggx-dispatcher-flow.md).
+
 ### Setup (per-machine, once per port-target repo)
 
 The pipeline ports FROM an origin codebase that lives somewhere on your disk. Set the path in `.claude/port-settings.json` (gitignored):

@@ -190,8 +190,13 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
     - Final failure → STOP with: `manual fix needed: <ticket-id> Linear comment retry exhausted; re-run /port:ship later (idempotent — will skip already-pushed branch and re-attempt only this step)`. Append timings `outcome:"aborted-linear-comment-failed"`. Lock stays in place. **No payload file is written.**
 
 13. **Label transition (auto only, idempotent).**
-    - In `--auto` only: detect — re-fetch ticket labels. If `need-spec-review` already present → SKIP. Otherwise `mcp__claude_ai_Linear__save_issue` with `id: <ticket-id>` and an updated label set that adds `need-spec-review` (preserve all existing labels). Same 3× backoff retry policy. Final failure → log a soft warning to stdout but do NOT abort — the label is auxiliary; description + comment are the contract.
-    - HITL: skip. The reviewer applies the label themselves after eyeballing the comment.
+    - In `--auto` only: detect — re-fetch ticket labels. Compute desired set:
+      1. Preserve every existing label EXCEPT `dispatcher-port-in-flight`.
+      2. Add `need-spec-review` if not already present.
+      3. Drop `dispatcher-port-in-flight` if present — this is the dispatcher's "work complete" signal (see `commands/dev/ggx-dispatcher.md` §2 Plan X). Without dropping it, the next `/ggx-dispatcher` run would re-pick the ticket via Q2.
+    - If the computed set equals the current set (i.e. `need-spec-review` already there AND no in-flight label) → SKIP (idempotent).
+    - Otherwise `mcp__claude_ai_Linear__save_issue` with `id: <ticket-id>` and the new label set. Same 3× backoff retry policy. Final failure → log a soft warning to stdout but do NOT abort — the label changes are auxiliary; description + comment are the contract.
+    - HITL: skip the `need-spec-review` add (reviewer applies it manually), but still drop `dispatcher-port-in-flight` if present — it should never linger past ship regardless of who applied the human-readable label.
 
 14. **Release lock + emit timings.**
     - Remove `<port-dir>/.lock` (only on full success).

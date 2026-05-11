@@ -59,6 +59,23 @@ Set up the worktree, OpenSpec change, and `.port/` working directory for a Linea
    - If the issue is not assigned to the current user, STOP with:
      > `Ticket <ticket-id> is assigned to <assignee>, not you. Aborting to avoid working on someone else's ticket.`
 
+5a. **Auto-mode Linear init (`--auto` only).**
+
+    <!-- SYNC: the Linear init below is duplicated in three places. When changing it, also update:
+         - /dev:start Auto-mode item 4 (commands/dev/dev/start.md, "Step 3b: Mode-specific pre-flight → Auto mode")
+         - /ggx-dispatcher Step 4    (commands/dev/ggx-dispatcher.md)
+         Drift between these breaks dispatcher idempotency. -->
+
+    When `<auto-mode>` is true, perform Linear ticket init **before** any worktree / scaffold work:
+    1. `mcp__claude_ai_Linear__save_issue`: remove `ready-to-port` from labels.
+    2. `mcp__claude_ai_Linear__save_issue`: status → `In Progress`.
+    3. `mcp__claude_ai_Linear__save_issue`: assignee = `$USER_NAME`.
+    4. `mcp__claude_ai_Linear__save_issue`: estimate = `1` if currently null.
+
+    These mutations are idempotent — when `/ggx-dispatcher` already locked the ticket in its Step 4, this re-runs as a no-op.
+
+    HITL mode (no `--auto`) skips this step entirely. Users invoking `/port:start --ticket:CAF-X` interactively get scaffold-only behavior — no Linear writes happen here.
+
 6. **Derive change name and figma URL.**
    - `<change-name>` = kebab-case(title) with any leading `[bracket]`/`[CAF-XXX]`/`<lang>` prefix stripped before slugifying. Lowercase, hyphen-separated, no leading/trailing hyphens.
    - `<figma-url>` = first regex match of `figma\.com/\S+` in description (else empty). Stored only for downstream stages.

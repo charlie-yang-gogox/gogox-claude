@@ -1,6 +1,8 @@
-# `/dev:ff` subagent isolation plan (v7)
+# `/dev:ff` subagent isolation plan (v9)
 
-**Status**: Design v8 (May 2026), aligned with `ff-state-rationalization.md` v8. v8 reverts v7's `.dev/apply-clarifications.jsonl` answer-channel — `--auto` mid-apply clarification now degrades to fail-fast + user re-runs `/dev:ff` in default mode where `AskUserQuestion` is natural (§3.6). Net redundancy reduction: 1 JSONL file, 1 dev-agent prompt prefix, 1 lifecycle rule. Other v7 closures (walker malformed-marker STOP, verify path pin) retained.
+**Status**: Design v9 (May 2026). v9 **flips the mode-conditional `/dev:apply` execution** documented in v8 §3.6 after observing that `/ggx-dispatcher` dispatches `/dev:ff --auto` inside a `general-purpose` subagent, which cannot reliably nest-spawn the opus `dev-agent` (CAF-370 dispatcher run on 2026-05-11 blocked at apply for exactly this reason). New shape: `--auto` runs `/opsx:apply` inline in the caller's session (whether main or dispatcher subagent); `default` mode spawns `dev-agent` from main where the spawn is single-level and reliable. dev-agent now has a real live caller (default mode) instead of zero. See §3.6 v9 and §12 for full rationale.
+
+**v8 history** (still relevant for archive: §3.6 v8 reverted v7's `.dev/apply-clarifications.jsonl` answer-channel — `--auto` mid-apply clarification now degrades to fail-fast + user re-runs `/dev:ff` in default mode where `AskUserQuestion` is natural. Other v7 closures (walker malformed-marker STOP, verify path pin) retained.
 **Owner**: Charlie
 **Trigger**: User asked whether `/dev:ff` puts too much work in the main session, and which stages should be moved into spawned subagents to save main-session context (and where applicable, model cost).
 
@@ -132,81 +134,75 @@ Failure handling: if figma-subagent fails (its result.md says `Status: FAILED`, 
   - Output writes: **`.dev/align-result.md`** (sentinel; doubles as `/dev:align` done marker), and on CONFLICT also `claude-reports/<ticket_id>/figma-alignment.md`
   - Conflict resolution is delegated to main session, which decides whether to call `/opsx:rebuild` or STOP per `--auto`/default mode
 
-### 3.6 `/dev:apply` — mode-conditional execution (v5)
+### 3.6 `/dev:apply` — mode-conditional execution (v9, flipped from v8)
 
 `/dev:apply` is logically a single step but its **execution location depends on mode**:
 
-| Mode | Execution | HITL |
+| Mode | Artifact prep (state A/C) | HITL | Apply (`/opsx:apply`) |
+|---|---|---|---|
+| `--auto` | inline in current session | none — `--auto` is unattended by definition | inline in current session (no agent spawn) |
+| `default` | inline in main session | `AskUserQuestion` (approve / revise / stop) | spawn `dev-agent` (opus, worktree-isolated) |
+
+#### Why flipped in v9 (the headline change)
+
+v8 had it the other way around: `--auto` spawned `dev-agent`; default ran inline. That worked when callers invoked `/dev:ff --auto` from a main session — main has the Agent tool and could spawn opus freely. It **broke** the moment `/ggx-dispatcher` started invoking `/dev:ff --auto` inside a `general-purpose` subagent (the dispatch wrapper for parallel ticket runs): the subagent could not nest-spawn opus `dev-agent`. CAF-370 (2026-05-11) was the first observed blocker — figma + align completed (sonnet subagents nest fine), but apply hit the limit and bailed.
+
+v9 inverts the placement to honor a stricter invariant: **the heavy spawn happens at the level where the spawner is known to have full Agent capability** — main session, not nested. The user is in default mode → user is at the keyboard → user invoked from main → main spawns dev-agent fine. The dispatcher is in `--auto` → dispatcher subagent is the wrapper → no further nesting → apply runs inline at that level.
+
+| Comparison | v8 (broke at dispatcher) | v9 (this plan) |
 |---|---|---|
-| `--auto` | spawn `dev-agent` (opus, worktree-isolated) end-to-end | none — `--auto` is unattended by definition |
-| `default` | **inline in main session** — main runs `/opsx:ff` + `/opsx:continue` (≤3) + `/opsx:apply` directly | natural — between `/opsx:ff` and `/opsx:apply`, main calls `AskUserQuestion` (approve / edit / abort) |
+| `--auto` execution | spawn dev-agent (opus) | inline in caller's session |
+| default execution | inline in main | spawn dev-agent (opus) from main |
+| dev-agent live callers | 1 (`--auto` only) | 1 (`default` only) — same count, different mode |
+| Dispatcher path | nested spawn fails | inline in dispatcher subagent ✓ |
+| Main-direct `/dev:ff --auto` | isolated opus subagent | inline in main (main is already opus) |
+| Main-direct `/dev:ff` default | inline in main (no isolation) | dev-agent isolation → ~30–80K saved |
 
-#### Why mode-conditional, not two-phase split
+#### Why dispatcher upgrades its subagent to `model: opus`
 
-v2/v3/v4 used a two-phase split (apply-prep-subagent → main HITL → dev-agent). User direction in v5 rejected the split as too complex. The mode-conditional approach achieves both goals (single subagent + preserved HITL) with simpler dispatch:
+With v9, `--auto`'s `/opsx:apply` runs inline inside the dispatcher's `general-purpose` subagent. Without a model override that subagent would default to sonnet (or whatever general-purpose's default is), losing the opus reasoning quality that v8's spawn-dev-agent path guaranteed. `commands/dev/ggx-dispatcher.md` §5.3 v9 therefore sets `model: "opus"` on every spawn. Port tickets technically don't need opus, but a uniform spawn shape avoids drift.
 
-| Comparison | Two-phase split (v4) | Mode-conditional (v5) |
-|---|---|---|
-| Subagents involved | 2 (apply-prep + dev-agent) | 1 (dev-agent, only in `--auto`) |
-| HITL machinery | subagent returns BLOCKED → main re-asks → re-spawn | main asks naturally; main runs locally |
-| Dispatch logic | spawn → wait → gate → spawn | if-else by mode |
-| Re-spawn dance on `edit` | yes (apply-prep re-runs) | no (main inline re-runs `/opsx:ff`) |
-| Token saving scope | both modes (modest) | concentrated in `--auto` (the bulk-load case) |
-
-**Trade-off accepted**: default mode loses the ~30–80K context savings that subagent isolation provides. This is acceptable because default mode means a user is already at the keyboard for HITL; their main session is "live" anyway. The high-volume context savings target is `--auto` runs from `/ggx-dispatcher`, which retains full subagent isolation.
+Main-session direct callers of `/dev:ff --auto` already run opus by user default, so no extra hop is needed there.
 
 #### Why ONLY apply is mode-conditional (figma + align stay subagent-isolated regardless of mode)
 
-ai-expert v5 asked why the asymmetry. Answer: **only apply has a meaningful HITL gate**. figma and align are non-interactive — they fetch / classify / report. Even in default mode there's nothing for the user to approve mid-stage; the user only consumes the result (receipt.md or align-result.md) when reviewing the eventual code change. So:
+Same answer as v5/v8: **only apply has a meaningful HITL gate**, and only apply is heavy enough that we care about isolation. figma and align are sonnet subagents — nested sonnet spawn from `general-purpose` works (CAF-370 confirmed: figma and align both completed); only opus nesting from general-purpose hits the limit, which is exactly what we removed by flipping `--auto` to inline.
 
-- `/dev:figma`: spawn figma-subagent in BOTH modes (HITL not relevant here)
-- `/dev:align`: spawn align-subagent in BOTH modes (HITL not relevant here)
-- `/dev:apply`: mode-conditional (HITL between artifact gen and code apply only matters in default)
+- `/dev:figma`: spawn figma-subagent (sonnet) in BOTH modes
+- `/dev:align`: spawn align-subagent (sonnet) in BOTH modes
+- `/dev:apply`: mode-conditional (only opus-class spawn in the system, only from main)
 
-This asymmetry is intentional and contained.
+#### `default` path: spawn dev-agent
 
-#### `--auto` path: spawn dev-agent
-
-- Runs the full `/opsx:ff` + `/opsx:continue` + `/opsx:apply` chain inside the subagent.
-- **Why opus**: highest-stakes stage; weak reasoning here means broken code or missed test signals.
-- **Worktree isolation**: yes.
-- **Commit semantics**: dev-agent does NOT commit. Existing `agents/dev/dev-agent.md:57` commits inline; this must change to opt-in via `commit: true` parameter, defaulting `false`. Commit ownership stays with `/dev:verify`.
-  - **Safety note**: dev-agent has zero live callers as of `commands/dev/dev/apply.md:8,52` (explicitly says "do NOT spawn dev-agent"). Default flip is a no-op for existing pipelines.
-- **Output**:
+- Main runs `/opsx:ff` (+ `/opsx:continue` ≤3) inline to prepare artifacts (state A/C). Cheap; no isolation needed.
+- Main calls `AskUserQuestion` (approve / revise / stop) as the HITL gate.
+- On approve: main spawns `dev-agent` (opus, worktree-isolated, `commit: false`) for `/opsx:apply` only.
+  - **Why opus**: highest-stakes stage; weak reasoning here means broken code or missed test signals.
+  - **Worktree isolation**: yes.
+  - **Commit semantics**: dev-agent does NOT commit. Existing `agents/dev/dev-agent.md` step 8 says commit only when `commit: true`, default `false`. Commit ownership stays with `/dev:verify`.
+- dev-agent output:
   - Modifies source code (handed back via `git status`)
-  - Marks tasks `[x]` in `tasks.md` as it goes (OpenSpec-native checkbox mechanism — also serves as fine-grained progress signal for resume)
-  - Writes **`.dev/apply-result.md`** (sentinel)
-- **Done marker** for `/dev:apply` is `openspec list --json | jq '.changes[] | select(.name==$n) | .completedTasks == .totalTasks AND .totalTasks > 0'` (per rationalization plan §3.2). `.dev/apply-result.md` is supplementary signal for FAILED reasons.
+  - Marks tasks `[x]` in `tasks.md` as it goes
+  - Writes **`.dev/apply-result.md`** with `Status: <CLEAR|FAILED|BLOCKED_CLARIFICATION>` (per agent step 9 v9 + §6)
+- Done marker is `openspec list --json | jq '.changes[] | select(.name==$n) | .completedTasks == .totalTasks AND .totalTasks > 0'`. `.dev/apply-result.md` is supplementary signal for FAILED/BLOCKED reasons.
 
-#### default path: inline in main
+#### `--auto` path: inline in caller's session
 
-- Main session runs `/opsx:ff <change>` directly.
-- After `/opsx:ff` completes (artifacts authored), main calls `AskUserQuestion`:
-  - `approve` → main proceeds to `/opsx:apply`
-  - `edit` → main STOPs; user edits artifacts in main session; user re-runs `/dev:ff`. Inferred stage is still `apply` (tasks not all `[x]`), main re-runs `/opsx:ff` (cheap if cosmetic, regenerates if invalidating)
-  - `abort` → STOP, user owns next steps
-- `/opsx:apply` runs in main session; tasks get marked `[x]` as they complete.
-- Done marker is the same `openspec list --json` check.
+- Caller (main or dispatcher subagent) runs `/opsx:ff` (+ `/opsx:continue` ≤3) inline.
+- No HITL gate — `--auto` is unattended by definition.
+- Caller runs `/opsx:apply <change-name>` inline; tasks get marked `[x]` as they complete.
+- Done marker is the same `tasks.md` checkbox check. `.dev/apply-result.md` is NOT written on the inline path — there's no agent boundary to write a sentinel across.
 
-#### Mid-apply pause behavior (v8 — simplified)
+#### Mid-apply pause behavior
 
-Per `commands/dev/dev/apply.md:54`, `/opsx:apply` may pause mid-test-loop for clarification (e.g. ambiguous spec). Behavior depends on mode:
+`/opsx:apply` may pause mid-test-loop for clarification:
 
-- **default path (inline in main)**: `/opsx:apply` is running in the main session itself. A pause naturally surfaces as a user-facing prompt that the user answers in the same conversation. No special handling needed; this is the same as today's `/dev:apply` behavior in default mode.
-- **`--auto` path (dev-agent subagent)**: dev-agent has no `AskUserQuestion` (per §2 discipline #3). When `/opsx:apply` inside dev-agent hits a clarification need, dev-agent **fails fast**:
-  1. Captures the clarification question text
-  2. Writes `.dev/apply-result.md` with `Status: BLOCKED_CLARIFICATION` + the question text in `Summary`
-  3. Returns to main
+- **`default` path (dev-agent spawn)**: dev-agent has no `AskUserQuestion` (per §2 discipline #3). It writes `Status: BLOCKED_CLARIFICATION` + the question in `Summary` to `.dev/apply-result.md` and returns. Main session reads the file, surfaces the question via `AskUserQuestion`, and then **falls back to inline `/opsx:apply` in main** to resume from the next `[ ]` (the same clarification re-prompts naturally in main and the user answers). One-time fallback per invocation — see `commands/dev/dev/apply.md` Step 4D.3.
+- **`--auto` path (inline)**: `/opsx:apply` may pause for clarification but no `AskUserQuestion`-equivalent UI is available in an unattended dispatcher subagent. STOP with a clear FAIL message; user re-runs `/dev:ff` (no `--auto`) and the default-mode dev-agent + main-fallback path resolves the question naturally.
 
-  Main reports `BLOCKED_CLARIFICATION` and STOPs. The user re-runs `/dev:ff` **without `--auto`** — default mode picks up from the next `[ ]` in `tasks.md`, the same clarification re-prompts naturally in the main session, and the user answers it interactively.
+#### Why fail-fast in `--auto` instead of an answer-channel
 
-#### Why fail-fast instead of an answer-channel
-
-A previous design (v7) added a JSONL answer-channel + dev-agent re-spawn protocol so `--auto` could resolve clarifications without dropping out. That worked but cost a JSONL file, a lifecycle rule, and a dev-agent prompt prefix to read it — all to defend a path that real-world telemetry will rarely hit (well-written specs don't trigger `/opsx:apply` clarifications).
-
-v8 trades that machinery for honesty: when `--auto` cannot continue without human judgment, it surfaces and the user takes over. One extra `/dev:ff` invocation is cheaper than maintaining the answer-channel contract.
-
-OpenSpec's `tasks.md` checkbox resume makes this safe — no work is lost. Tasks already `[x]` are skipped on the default-mode resume; `/opsx:apply` continues from the next `[ ]`.
+Same reasoning as v8 — well-written specs rarely trigger `/opsx:apply` clarifications; the rare miss is cheaper to surface and re-run than to engineer a JSONL answer-channel for. OpenSpec's `tasks.md` checkbox resume makes this safe — no work is lost.
 
 #### Honest cost note for the `edit` resume path
 
@@ -244,9 +240,9 @@ Pure tool orchestration. **No change.**
 │
 ├── /dev:align       → align-subagent (sonnet)
 │
-├── /dev:apply       (mode-conditional)
-│      ├── --auto:    → dev-agent (opus, worktree-iso, commit:false) end-to-end
-│      └── default:   inline in main (opus); HITL between /opsx:ff and /opsx:apply
+├── /dev:apply       (mode-conditional — v9 flipped)
+│      ├── --auto:    inline in caller's session (no agent spawn — dispatcher subagent already provides isolation; main is opus by default)
+│      └── default:   inline /opsx:ff in main → AskUserQuestion → dev-agent (opus, worktree-iso, commit:false) for /opsx:apply
 │
 ├── /dev:verify                     main · opus → verify-agent (opus, existing)
 ├── /dev:review                     main · opus → /code-review (opus, newly pinned)
@@ -261,9 +257,9 @@ Per typical ticket (1 figma node, ~10 files changed, no flaky tests):
 |---|---|---|
 | `/dev:figma` → sonnet subagent | ~3–10K (Figma MCP volume; Linear payload stays in main) | small downgrade |
 | `/dev:align` → sonnet subagent | ~3–8K (full receipt + artifacts read in subagent) | small downgrade |
-| `/dev:apply` (`--auto` only — dev-agent) | ~30–80K (entire `/opsx:ff` + `/opsx:continue` + `/opsx:apply` chain isolated) | none — same model (opus) |
-| `/dev:apply` (default — inline in main) | 0 saving (runs in main) | none |
-| **Per typical ticket main saving** | **~30–60K** | figma + align + prep portion downgraded |
+| `/dev:apply` (default — dev-agent) | ~30–80K (`/opsx:apply` chain isolated; `/opsx:ff` prep stays in main, cheap) | none — same model (opus) |
+| `/dev:apply` (`--auto` — inline in caller) | 0 saving when caller is main; saving accrues via dispatcher's outer subagent isolation, not via this stage | none — caller is opus (main default; dispatcher subagent pinned `model: opus` in §5.3) |
+| **Per typical ticket main saving** | **~30–60K** when running default from main; **~80–150K** when running --auto from dispatcher (outer-subagent isolation covers the whole `/dev:ff` chain) | figma + align downgraded; apply matches caller |
 
 Per worst-case ticket (multi-node figma, large diff, retry loops): ~80–150K main saved. Ranges are estimates; ai-expert flagged that worst-case figures aren't backed by measured data — first real ticket should log token usage to validate.
 
@@ -277,7 +273,7 @@ Every spawned-by-/dev:* subagent writes its result to a fixed file path BEFORE r
 |---|---|
 | `figma-subagent` | `.dev/figma/result.md` |
 | `align-subagent` | `.dev/align-result.md` |
-| `dev-agent` | `.dev/apply-result.md` (only written on `--auto` path; default path runs inline in main and has no agent result file — done marker is `tasks.md` checkboxes) |
+| `dev-agent` | `.dev/apply-result.md` (v9: written on `default` path; `--auto` runs inline in caller and has no agent result file — done marker is `tasks.md` checkboxes) |
 | `verify-agent` (existing) | **`.dev/verify-pass.md`** (canonical; v7 pin) |
 
 **Path constants are pinned** (v4 fix per ai-expert): each subagent's `.md` body MUST contain its result file path as a literal string. CI grep enforces — see §2 enforcement.
@@ -337,15 +333,17 @@ For each new / modified subagent and stage, hand-craft inputs and confirm. **No 
 | **align-subagent** (CLEAR) | matching receipt + artifacts → `.dev/align-result.md` `Status: CLEAR`, no `claude-reports/` write |
 | **align-subagent** (CONFLICT) | mismatched → `.dev/align-result.md` `Status: CONFLICT`, `claude-reports/<id>/figma-alignment.md` written, no artifact edits |
 | **align-subagent prohibition guard** | `git status` after run shows only `.dev/align-result.md` and possibly `claude-reports/`; no `openspec/changes/` modifications |
-| **dev-agent (`--auto`)** | state-B change → runs `/opsx:ff` + `/opsx:apply` end-to-end, `tasks.md` all `[x]`, source modified, **no `git commit`** (verify with `git status` showing staged-but-uncommitted), `.dev/apply-result.md` `Status: CLEAR` |
+| **dev-agent (`default`)** | state-B change → main runs `/opsx:ff` (skipped, already done) → AskUserQuestion approve → main spawns dev-agent → dev-agent runs `/opsx:apply`, `tasks.md` all `[x]`, source modified, **no `git commit`** (verify with `git status` showing uncommitted), `.dev/apply-result.md` `Status: CLEAR` |
 | **dev-agent commit safety** | `commit: false` default; no commit invocation |
-| **/dev:apply default — approve** | main runs `/opsx:ff` → AskUserQuestion → approve → main runs `/opsx:apply` → tasks all `[x]` |
-| **/dev:apply default — edit (cosmetic)** | gate → edit → STOP. user edits text. resume `/dev:ff` → main re-runs `/opsx:ff` (cheap), gate fires, approve, `/opsx:apply` runs |
+| **/dev:apply default — approve** | main runs `/opsx:ff` → AskUserQuestion → approve → main spawns dev-agent → tasks all `[x]` |
+| **/dev:apply default — edit (cosmetic)** | gate → edit → STOP. user edits text. resume `/dev:ff` → main re-runs `/opsx:ff` (cheap), gate fires, approve, dev-agent spawn runs |
 | **/dev:apply default — edit (invalidating)** | gate → edit changes Capability name. resume → main re-runs `/opsx:ff` (~20K), gate fires; user notices regenerated artifacts, approves or re-edits |
-| **/dev:apply default — abort** | abort → STOP; `/opsx:apply` never runs |
-| **/dev:apply default — `/opsx:apply` mid-pause** | mid-test-loop pause surfaces as natural user prompt in main; user answers, `/opsx:apply` continues |
-| **/dev:apply --auto — `/opsx:apply` mid-pause** | dev-agent writes `.dev/apply-result.md` `Status: BLOCKED_CLARIFICATION` + question in `Summary`, returns; main reports BLOCKED and STOPs; user re-runs `/dev:ff` (no `--auto`); default mode resumes from next `[ ]`; same clarification re-prompts in main; user answers; tasks continue |
-| **/dev:apply mid-flight mode switch** | `/dev:ff` (default) → gate → approve → `/opsx:apply` partially done → user kills it → `/dev:ff --auto`. Walker infers `apply` (tasks not all `[x]`); now spawns dev-agent which resumes from next `[ ]`. Tasks already `[x]` are skipped naturally |
+| **/dev:apply default — abort** | abort → STOP; dev-agent never spawned |
+| **/dev:apply default — dev-agent BLOCKED_CLARIFICATION** | dev-agent writes `.dev/apply-result.md` `Status: BLOCKED_CLARIFICATION` + question in `Summary`. Main reads file, surfaces question via `AskUserQuestion`, then runs `/opsx:apply` inline in main to resume from next `[ ]`. Same clarification re-prompts in main; user answers; tasks complete. One-time fallback (no re-spawn loop). |
+| **/dev:apply --auto — inline `/opsx:apply`** | caller (main or dispatcher subagent) runs `/opsx:apply` directly; no agent spawn; tasks all `[x]`; no `.dev/apply-result.md` written |
+| **/dev:apply --auto — `/opsx:apply` mid-pause** | inline `/opsx:apply` pause has no `AskUserQuestion` in unattended caller; STOP with FAIL message. User re-runs `/dev:ff` in default mode where dev-agent path + BLOCKED_CLARIFICATION fallback resolves naturally |
+| **/dev:apply mid-flight mode switch** | `/dev:ff` (default) → gate → approve → dev-agent runs `/opsx:apply` partially → user kills it → `/dev:ff --auto`. Walker infers `apply` (tasks not all `[x]`); --auto path runs inline `/opsx:apply` and resumes from next `[ ]`. Tasks already `[x]` are skipped naturally |
+| **--auto from dispatcher subagent (regression for CAF-370)** | dispatcher spawns `general-purpose` subagent at `model: opus` → subagent runs `/dev:ff --auto` → apply runs inline at subagent level (no nested spawn) → tasks complete → verify / review / ship proceed |
 | **/dev:figma + /dev:detect parallel** | --auto run → both complete; figma's receipt.md exists; detect's classification reflected in next-stage decision (no race because no shared writer) |
 | **/code-review opus pin** | confirm spawned at opus model |
 
@@ -367,7 +365,9 @@ For each new / modified subagent and stage, hand-craft inputs and confirm. **No 
 - [ ] `align-subagent.md` prohibition list explicit per §3.5
 - [ ] `dev-agent.md` updated: `commit` parameter (default false), §6 result file, no `AskUserQuestion`
 - [ ] All 3 modified `/dev:*` stages (`figma.md`, `align.md`, `apply.md`) dispatch the subagent and parse its result file with inline `grep | sed`; no chat-return parsing
-- [ ] `/dev:apply` mode-conditional implemented: `--auto` spawns dev-agent end-to-end; `default` runs `/opsx:ff` + AskUserQuestion + `/opsx:apply` inline in main
+- [ ] `/dev:apply` mode-conditional implemented (v9 flipped): `default` runs `/opsx:ff` inline + AskUserQuestion + spawns dev-agent for `/opsx:apply`; `--auto` runs `/opsx:ff` + `/opsx:apply` inline in caller's session (no nested spawn)
+- [ ] `/ggx-dispatcher` Step 5.3 spawns each dispatch subagent with `model: "opus"` (compensates for `--auto` no longer spawning dev-agent)
+- [ ] CAF-370 regression test: dispatcher → `/dev:ff CAF-X --auto` → apply runs inline at subagent level without nested-spawn failure
 - [ ] `/dev:ff` parallelizes figma+detect in `--auto` only (single message, two tool calls per §3.4); default mode sequential
 - [ ] `/code-review` pinned to opus
 - [ ] All §6 result files verified manually against §7 test matrix
@@ -375,7 +375,7 @@ For each new / modified subagent and stage, hand-craft inputs and confirm. **No 
 - [ ] No subagent writes `state.json` (CI grep confirms; `state.json` should not exist anywhere given rationalization plan)
 - [ ] No subagent edits files outside its declared output lane (manual audit + path-escape guards)
 - [ ] HITL paths verified: edit (cosmetic + invalidating), abort branches return cleanly without partial code changes
-- [ ] `dev-agent` invocation removes any pre-existing `.dev/apply-result.md` before spawning (prevents stale `BLOCKED_CLARIFICATION` from a prior run leaking into the next `--auto` invocation)
+- [ ] `dev-agent` invocation removes any pre-existing `.dev/apply-result.md` before spawning (prevents stale `BLOCKED_CLARIFICATION` from a prior run leaking into the next `default` invocation — v9; was `--auto` pre-v9)
 - [ ] First real ticket end-to-end: log per-stage token usage to validate §5 ranges; record in `.dev/metrics.jsonl` if telemetry desired
 - [ ] **First cosmetic-edit resume measured** (per ai-expert v3 concern): when user picks `edit` for a cosmetic-only change in default mode, log the `/opsx:ff` re-run cost. If >10K, §3.6's optimistic split into "cosmetic ~5K vs invalidating ~20–30K" is wrong; revisit by making `/opsx:ff` cheaper on no-op or adding a fast-path
 
@@ -401,7 +401,8 @@ PR-1b extends §6 to figma and adds the parallel pseudocode. Lands after PR-1a h
 
 ### PR-2: `/dev:apply` mode-conditional execution
 - `dev-agent.md` modifications (§3.6 `--auto` path): `commit` param default false, §6 result file
-- `/dev:apply` rewrite: branch by mode — `--auto` spawns dev-agent end-to-end; `default` runs `/opsx:ff` + AskUserQuestion + `/opsx:apply` inline in main
+- `/dev:apply` rewrite (v9 shape): branch by mode — `default` runs `/opsx:ff` inline + AskUserQuestion + spawns dev-agent for `/opsx:apply`; `--auto` runs both inline in caller's session
+- `commands/dev/ggx-dispatcher.md` §5.3 sets `model: "opus"` on every spawn (compensates for inline apply losing the spawn-time opus pin)
 - Negative tests for default-mode approve/edit/abort paths
 - First-cosmetic-edit token cost measurement
 
@@ -439,7 +440,8 @@ PR-2 carries the largest token saving but also the most behavior change. Land af
 | Cost numbers aspirational | v2 honest accounting + worst-case bounds | ✅ Kept; first ticket telemetry will validate |
 | §3.4 parallel pseudocode missing | v2 added pseudocode | ⚠️ ai-expert v2 flagged incoherence (detect was inline, not subagent); v3 rewrites pseudocode showing Agent + Bash multi-call |
 | `align-subagent` could call `/opsx:rebuild` | v2 explicit prohibition list | ✅ Kept |
-| dev-agent commit-flip safety | v2 noted zero-callers | ✅ Kept |
+| dev-agent commit-flip safety | v2 noted zero-callers | ✅ Kept; in v9 dev-agent has 1 live caller (`/dev:apply` default mode) so `commit: false` default is now load-bearing, not a no-op |
+| v8 architectural flaw: `--auto` spawns opus dev-agent from a `general-purpose` dispatcher subagent | not anticipated in v5–v8 (assumed `--auto` always ran from main) | ✅ **v9** flipped mode-conditional: `--auto` inline in caller, `default` spawns dev-agent. Eliminates nested opus spawn. dev-agent stays a live caller via default mode. Dispatcher pins `model: opus` to compensate for the lost-isolation model upgrade |
 | AGENTS.md not enforced | v2 added file-level CI grep | ❌ ai-expert v2 flagged false-negative; v3 switched to line-level grep |
 | §3.6 fast no-op resume claim was fiction | (not addressed in v2) | ✅ v3 §3.6d honest cost model split by edit type; OpenSpec's tasks.md checkbox makes resume natural |
 | state.json complexity feeding back into subagent design | (not addressed in v2) | ✅ v3 paired with rationalization v3 — no state.json anywhere; result files double as stage markers |

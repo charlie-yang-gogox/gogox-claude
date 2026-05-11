@@ -189,6 +189,19 @@ while CURRENT != "done":
 
 **Failure detection — read the filesystem, not exit codes.** Slash-command sub-invocations don't surface meaningful exit codes; the only reliable signal that a stage finished cleanly is that `infer_dev_stage` advances to a new value. If `NEW == CURRENT`, the stage didn't make progress (failure, HITL gate, or default-mode terminal — handled identically: STOP).
 
+### Loop enforcement — instructions to the executing agent
+
+The dispatch loop above is pseudocode that **you (the agent invoking `/dev:ff`)** must execute by hand: real Bash cannot dispatch slash commands or spawn subagents. This makes loop fidelity entirely a discipline problem, not a runtime guarantee.
+
+CAF-370 (2026-05-11 second-run) failure mode: the `/ggx-dispatcher`-spawned subagent ran `/dev:start` → `/dev:figma` → `/dev:align` → `/dev:apply`, saw "Apply complete." in apply's terminal message, and stopped — never re-ran `infer_dev_stage`, never dispatched `/dev:verify`. Apply finished cleanly (27/27 tasks, tests green), but no commit, no PR, no Linear flip.
+
+Hard rules when you execute this loop:
+
+1. **Stage success is NOT loop terminus.** The only pipeline-terminal conditions are: `infer_dev_stage` echoes `done`; `NEW == CURRENT` (no-progress STOP); a `Status: BLOCKED/FAILED/ABORTED` marker file is written by a stage; or default mode reaches a HITL gate.
+2. **Stage-completion messages are IN-LOOP signals.** Strings like `Apply stage done`, `Verify CLEAR`, `Review clean`, `Apply complete. Next: /dev:verify.` mean "this stage finished — proceed to the next one." They do NOT mean "the pipeline finished." Always re-run `infer_dev_stage` after a stage returns. Never treat a stage's output as the loop's final answer.
+3. **Re-derive after every stage.** Even if you "know" what the next stage should be, run `infer_dev_stage` again. Stages may have written or cleared marker files in ways that change the next derivation (e.g. `/dev:verify` writes `verify-pass.md` with either `CLEAR` → next is `review`, or `BLOCKED` → next is `verify` again).
+4. **When you stop, name the terminal condition.** Report which of (`done`, `NEW == CURRENT at <stage>`, `BLOCKED/FAILED marker at <path>`, `HITL gate at <stage>`) caused the stop. If you can't name one, you stopped early — go back and continue the loop.
+
 ### Default-mode terminal (`/dev:apply` exits without verify)
 
 In default mode, `/dev:apply` does NOT advance to verify (verify/review/ship are auto-only). After `/dev:apply` runs in default mode, `infer_dev_stage` returns `verify` (because tasks are all `[x]`) — but the user is not in `--auto`. The dispatch loop checks `AUTO_FLAG` before invoking auto-only stages:
