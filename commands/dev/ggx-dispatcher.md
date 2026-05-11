@@ -231,15 +231,20 @@ Apply the init protocol to every surviving ticket BEFORE spawning any agent.
 
 ### 4.0 Dry-run gate
 
-If `--dry-run` is set: print the planned dispatch table from Step 3 and STOP. **No mutations from Step 4 onward.** Release lock.
+If `--dry-run` is set: print the dispatch table (§4.3 format, with `status` column reading `planned` instead of `locked ✓`) and STOP. **No mutations from Step 4 onward.** Release lock.
 
 ```
 Planned dispatch (--dry-run, no mutations):
-  1. CAF-212 — "Add SMS verification" — port → /port:ff --ticket:CAF-212 --auto
-  2. CAF-198 — "Fix tip calculation"  — dev  → /dev:ff CAF-198 --auto --no-figma
-  ...
+
+| ticket  | lane       | status  | command                              | link                                  |
+|---------|------------|---------|--------------------------------------|---------------------------------------|
+| CAF-212 | fresh-port | planned | /port:ff --ticket:CAF-212 --auto     | https://linear.app/.../CAF-212        |
+| CAF-198 | fresh-dev  | planned | /dev:ff CAF-198 --auto --no-figma    | https://linear.app/.../CAF-198        |
+
 Total: <N>. Re-run without --dry-run to execute.
 ```
+
+The command string is built per ticket via the same §5.1 / §5.2 rules used for live dispatch; the `--no-figma` auto-detection runs here too so the dry-run preview matches what would actually be spawned.
 
 ### 4.1 Init protocol — apply per ticket, sequentially
 
@@ -293,9 +298,29 @@ If any ticket fails any of steps 1-5 mid-batch:
 
 The user sees the full failure trace in stdout per the audit-trail rule.
 
----
+### 4.3 Dispatch table
 
-## Step 5: Parallel dispatch
+After every surviving ticket is locked, **before** the Step 5 spawn, print the planned dispatch as a single markdown table so the user can audit the batch and click into each Linear issue:
+
+```
+Dispatching <N> tickets:
+
+| ticket  | lane         | status   | command                              | link                                  |
+|---------|--------------|----------|--------------------------------------|---------------------------------------|
+| CAF-212 | fresh-port   | locked ✓ | /port:ff --ticket:CAF-212 --auto     | https://linear.app/.../CAF-212        |
+| CAF-198 | fresh-dev    | locked ✓ | /dev:ff CAF-198 --auto --no-figma    | https://linear.app/.../CAF-198        |
+| CAF-370 | recovery-dev | locked ✓ | /dev:ff CAF-370 --auto               | https://linear.app/.../CAF-370        |
+```
+
+- `ticket` = Linear ticket id (column ordering follows the §2.3 priority sort).
+- `lane` = the §2.1 value (`fresh-port` / `fresh-dev` / `recovery-port` / `recovery-dev`).
+- `status` = `locked ✓` for every row here; failed-lock tickets never reach this step (§4.2 aborts the whole batch).
+- `command` = the exact string Step 5 will pass to its spawn — already computed via §5.1 / §5.2.
+- `link` = the issue `url` field returned by the Step 2 `list_issues` calls. Cache the url alongside the ticket id from Step 2 so this column does not require a re-fetch.
+
+The §4.0 dry-run path reuses this same table shape (with `status: planned`). Keeping one render keeps preview ↔ live output 1:1.
+
+**Roster artifact for §6.1**: while building this table, also accumulate the same rows (without `status`, without `link`) into a `DISPATCH_ROSTER` variable as TSV — one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>`. The §6.1a progress poller persists this to `claude-reports/dispatcher/<RUN_TS>-<PID>/roster.tsv` and walks it every 30s. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention. Build the roster here (not in §6.1a) because §6.1a spawns in the same assistant message as Step 5 and has no separate "compute" turn.
 
 For each locked ticket, build the dispatch command from its selection lane (§2.1):
 
@@ -359,17 +384,82 @@ Single message, N parallel `Agent` calls (one per ticket):
 Print after spawn:
 
 ```
-Spawned <N> agents in parallel. Waiting for all to complete (synchronous join).
+Spawned <N> agents in parallel + 1 progress poller (re-renders every 30s).
 Session must remain open. Do not let the machine sleep.
 ```
+
+See §6.1a for the poller spec — it MUST be included in the same single assistant message as the N `Agent` spawn calls.
 
 ---
 
 ## Step 6: Wait, fallback, finalize
 
-### 6.1 Synchronous join
+### 6.1 Progress poll loop
 
-Wait for all N spawned agents to complete. The dispatcher session remains in this step until the last agent reports back. Closing the session early kills MCP connections and leaves Linear in a half-finalized state.
+The dispatcher session waits here for every spawned agent's background-completion notification — but it does **not** sit silently. A sibling `Bash` poller (also `run_in_background: true`) re-renders a stage-progress table every 30s so the user can monitor the batch in real time. The poller is a separate background process, not LLM-driven, so its cadence is independent of how often agent notifications arrive.
+
+#### 6.1a Spawn the poller (same message as Step 5)
+
+In the same single assistant message that fans out the N `Agent` calls (§5.3), include one additional `Bash` tool call with `run_in_background: true` running the script below. Keeping spawn + poller in one message means the poller starts before the first agent's first stage transition.
+
+```bash
+RUN_DIR="claude-reports/dispatcher/$RUN_TS-$$"
+mkdir -p "$RUN_DIR"
+
+# Write the lane + worktree path + ticket id for each dispatched ticket. One line per ticket:
+# <ticket-id>\t<lane>\t<absolute-worktree-path>
+printf '%s\n' "$DISPATCH_ROSTER" > "$RUN_DIR/roster.tsv"
+# DISPATCH_ROSTER is built in §4.3 alongside the dispatch table. Worktree path is
+# realpath ../<TICKET-ID> from the main repo (the /add-worktree convention).
+
+START_EPOCH=$(date -u +%s)
+
+while true; do
+  # Bail out if dispatcher has cleared the lockfile (= all agents joined, §6.5).
+  [ -f claude-reports/dispatcher/.lock ] || exit 0
+
+  now=$(date -u +%s)
+  elapsed=$(( now - START_EPOCH ))
+  mm=$(printf '%02d' $(( elapsed / 60 )))
+  ss=$(printf '%02d' $(( elapsed % 60 )))
+
+  echo
+  echo "Progress (t+${mm}:${ss}):"
+  echo "| ticket  | lane         | stage   | last marker                                  |"
+  echo "|---------|--------------|---------|----------------------------------------------|"
+
+  while IFS=$'\t' read -r tid lane wt; do
+    # Pick the right walker based on lane (port walker for *-port, dev walker for *-dev).
+    case "$lane" in
+      *-port) stage=$(cd "$wt" 2>/dev/null && infer_port_stage 2>/dev/null || echo "?") ;;
+      *-dev)  stage=$(cd "$wt" 2>/dev/null && infer_dev_stage  2>/dev/null || echo "?") ;;
+    esac
+
+    # last marker = most-recently-modified file under .dev/ or .port/, for the table's
+    # human-readable "what just happened" column. Pure cosmetic — the stage column is the
+    # ground-truth signal.
+    marker=$(find "$wt/.dev" "$wt/openspec/changes"/*/.port -type f 2>/dev/null \
+              | xargs ls -t 2>/dev/null | head -1 \
+              | sed "s|^$wt/||")
+
+    printf '| %-7s | %-12s | %-7s | %-44s |\n' "$tid" "$lane" "$stage" "${marker:-—}"
+  done < "$RUN_DIR/roster.tsv"
+
+  sleep 30
+done
+```
+
+`infer_dev_stage` and `infer_port_stage` are the same walkers defined in `commands/dev/dev/ff.md` and `commands/dev/port/ff.md`. Either source them via a shared shell file or inline them into the poller — implementer's call.
+
+#### 6.1b Join
+
+The dispatcher LLM is notified per spawned agent as each completes. Maintain an in-memory `joined` counter; on each notification, increment. When `joined == N`, proceed to §6.2. The poller is terminated cleanly in §6.5 when the dispatcher removes the lockfile (the script's first check inside the `while` loop exits on missing lock).
+
+#### 6.1c Why polling, not heartbeats
+
+Spawned `/dev:*` / `/port:*` stages already write authoritative marker files (`.dev/figma-context.md`, `.dev/align-result.md`, `.dev/apply-result.md`, `.dev/verify-pass.md`, `.port/dev-notes.md`, `.port/pm-notes.md`, `.port/synth-report.md`, etc.). Reading those files is the dispatcher's only ground truth for "what stage are we in" — adding stage-transition heartbeats would couple every stage command to the dispatcher and drift on the next refactor. The 30s cadence is a compromise: stages take 1–10 min so transitions are caught within one tick; faster would burn terminal scrollback for no signal.
+
+Closing the dispatcher session early still kills MCP connections and leaves Linear in a half-finalized state — that constraint is unchanged.
 
 ### 6.2 Per-ticket fallback
 
