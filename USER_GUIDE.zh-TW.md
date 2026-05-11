@@ -138,13 +138,15 @@ ticket_system: auto
 
 ### 設定（每台電腦一次）
 
-Port 需要知道 origin codebase 在你電腦的哪裡。在 **port target repo** 的根目錄建 `.gogox-claude.local.yaml`（**加進 .gitignore**，是 per-machine 設定）：
+Port 需要知道 origin codebase 在你電腦的哪裡。在 **port target repo** 的根目錄建 `.claude/port-settings.json`（**加進 .gitignore**，是 per-machine 設定）：
 
-```yaml
-origin_project_path: ~/Projects/work_project/gogovan-client-v2-android
+```json
+{
+  "originalProjectPath": "/Users/me/Projects/work_project/gogovan-client-v2-android"
+}
 ```
 
-支援 `~` 和 `$ENV_VAR`。第一次 `/port:start` 會驗路徑、缺就互動式問你補。
+支援 `~` 和 `$ENV_VAR`。第一次 `/port:start` 會驗路徑、缺就互動式問你補。格式沿用 v1 flutter `/port` skill 的 schema，舊 repo 上既有的 `.claude/port-settings.json` 直接相容、不需要遷移。
 
 ### `/spec-lint` 也可以單獨用
 

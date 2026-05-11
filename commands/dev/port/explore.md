@@ -45,10 +45,10 @@ Parse `$ARGUMENTS`. If `--simple` is present, jump to **Simple mode** below. Oth
    - Confirm cwd is the ticket worktree (basename matches ticket-id). If not, STOP with: `run /port:explore from inside the ticket worktree, or pass --ticket:<ID>`.
    - Find `openspec/changes/<change-name>/.port/` (single directory). Zero or multiple → STOP with a directive to re-run `/port:start` or pass `--ticket:`. Hold `<change-name>` and `<port-dir>`.
 
-3. **Resolve `origin_project_path`.**
-   - Read `<repo-root>/.gogox-claude.local.yaml`. Expand `~` and `$ENV_VAR` in `origin_project_path`. Path missing OR not a directory:
-     - HITL → `AskUserQuestion`, validate, atomic-write back via `mktemp` + `mv`.
-     - `--auto` → STOP with: `set origin_project_path in .gogox-claude.local.yaml before re-running`.
+3. **Resolve origin project path.**
+   - Read `<repo-root>/.claude/port-settings.json`. Expand `~` and `$ENV_VAR` in `originalProjectPath`. Path missing OR not a directory:
+     - HITL → `AskUserQuestion`, validate, atomic-write back via `mktemp` + `mv` (writing the JSON `{ "originalProjectPath": "<answer>" }`).
+     - `--auto` → STOP with: `set originalProjectPath in .claude/port-settings.json before re-running`.
 
 4. **Read PRD (optional).**
    - If `<port-dir>/prd.md` exists, read into `<prd-text>`. Else `<prd-text>` = empty.
@@ -137,7 +137,7 @@ Lightweight explore-and-discuss. NO worktree creation, NO OpenSpec scaffold, NO 
    - Missing → STOP with: `Usage: /port:explore --simple --ticket:<ID>`.
 
 2. **Resolve profile + origin path.**
-   - Same yaml resolution as full mode steps 2–3 (read `.gogox-claude.yaml` + `.gogox-claude.local.yaml`, expand path, prompt+write-back if missing).
+   - Same resolution as full mode steps 2–3 (read `.gogox-claude.yaml` + `.claude/port-settings.json`, expand path, prompt+write-back if missing).
 
 3. **Fetch ticket.**
    - `mcp__claude_ai_Linear__get_issue`. Capture title / description / labels / AC into `<ticket-context>`.

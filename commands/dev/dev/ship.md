@@ -9,25 +9,37 @@ Final stage. Closes out the dev loop with archive + PR + Linear update + report.
 
 ## Inputs
 
-- `.dev/state.json` (read for `ticket_id`, `change_name`, `worktree_path`, `verify`, `stage_history`, `mode`).
 - The current branch (committed by `/dev:verify` and possibly amended by `/dev:review`).
+- `ticket_id`, `change_name` derived from environment.
 
 ## Outputs
 
 - OpenSpec change archived (additional commit).
-- Branch pushed; draft PR created via `/pull-request --draft`.
+- Branch pushed; draft PR created via `/pull-request --draft`. **PR open + archive dir IS the done marker.**
 - Linear ticket: status `In Review`.
 - `claude-reports/<ticket_id>/report.md` — final session report.
 - Linear comment summarizing the run.
-- `state.current_stage = "done"`.
 
-## Step 0: Validate state
+## Step 0: Inline precondition
 
-Run `/dev:_state-check ship`. STOP on non-zero. Parse for `ticket_id`, `change_name`, `worktree_path`, `mode`, `verify`, `stage_history`. Refuse if `mode != auto`.
+```bash
+WT=$(git rev-parse --show-toplevel)
+TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
+N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
+MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
+
+[ "$MODE" = "auto" ] || { echo "FAIL: /dev:ship is auto-only." >&2; exit 1; }
+[ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
+[ -n "$TICKET_ID" ] || { echo "FAIL: cannot derive ticket_id from branch name" >&2; exit 1; }
+[ -f "$WT/.dev/verify-pass.md" ] && grep -q '^Status: CLEAR' "$WT/.dev/verify-pass.md" \
+  || { echo "FAIL: verify not CLEAR. Run /dev:verify first." >&2; exit 1; }
+[ -f "claude-reports/$TICKET_ID/code-review.md" ] && ! grep -qiE '^critical:' "claude-reports/$TICKET_ID/code-review.md" \
+  || { echo "FAIL: code-review.md missing or has critical findings. Run /dev:review first." >&2; exit 1; }
+```
 
 ## Step 1: Archive OpenSpec changes
 
-1. Run `/opsx:archive` to archive all OpenSpec changes for `<change-name>`.
+1. Run `/opsx:archive` to archive all OpenSpec changes for `$N`.
 2. Commit the archived changes.
 3. Run `/check-archive` to verify archive integrity.
 
@@ -45,7 +57,7 @@ Reviewer assignment is intentionally not automated here — rely on `CODEOWNERS`
 
 ## Step 4: Write final report
 
-Write `claude-reports/<ticket_id>/report.md`:
+Write `claude-reports/$TICKET_ID/report.md`:
 
 ```markdown
 # Auto-dev report: <ticket_id>
@@ -56,21 +68,17 @@ Write `claude-reports/<ticket_id>/report.md`:
 **Mode**: --auto (unattended)
 **Date**: <YYYY-MM-DD>
 
-## Stages
-
-<For each entry in state.stage_history, render:>
-- [<status icon>] **<stage>** — <result if any> — <ts>
-
 ## Verify
-- Status: <state.verify.status>
-- Retries: <state.verify.retry_count>
-- Report: <state.verify.report>
+- Status: CLEAR (from .dev/verify-pass.md)
+
+## Review
+- Findings: <see claude-reports/<ticket_id>/code-review.md>
 
 ## Errors / warnings
-<any failures from stage_history with status: "failed">
+<any test failures noted during /dev:verify>
 ```
 
-Status icons: `✅ done`, `⏭ skipped`, `❌ failed`. (Use plain ASCII if emojis are off.)
+(Stage history is no longer persisted — git log + result files cover audit per `plans/ff-state-rationalization.md` §7.)
 
 ## Step 5: Post Linear summary
 
@@ -82,24 +90,14 @@ Use `mcp__claude_ai_Linear__save_comment`:
 **PR**: <PR URL>
 **Branch**: <type>/<ticket_id>
 **Tests**: <pass | failed (note in report)>
-**Verify**: CLEAR (retries: <n>)
+**Verify**: CLEAR
 **Review**: <N critical issues addressed>
 ```
 
-## Step 6: Commit transition
+## Step 6: Stop
 
-```bash
-TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-PR_URL='<captured>'
-jq --arg ts "$TS" --arg pr "$PR_URL" '
-  .pr_url = $pr
-  | .current_stage = "done"
-  | .stage_history += [{ stage: "ship", status: "done", ts: $ts, result: $pr }]
-' .dev/state.json > .dev/state.json.tmp && mv .dev/state.json.tmp .dev/state.json
-```
-
-## Step 7: Stop
+No state mutation. The done markers are: (1) `openspec/changes/archive/$N/` exists, (2) `gh pr view $TICKET_ID --json state -q .state` returns `OPEN`, (3) Linear status is `In Review`.
 
 Print: `Pipeline complete. PR: <PR URL>.`
 
-The `.dev/state.json` survives on the local working tree as the run record. Removing `.dev/` is safe at any point after this stage.
+Removing `.dev/` is safe at any point after this stage — all markers survive in git or Linear.

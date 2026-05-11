@@ -7,92 +7,94 @@ description: "Stage 4 (B/C only) — structural Figma alignment check. Verifies 
 
 Catches the divergence pattern: artifacts authored by another agent (e.g. `/port`) that copied Figma node IDs as metadata without ever loading the design. Without this gate, `/opsx:apply` runs on top of inferred prose and visual hallucinations propagate into code.
 
+The heavy lifting (full receipt + full artifact prose scan) runs inside `align-subagent` (sonnet, see `agents/dev/align-subagent.md`). This stage's body is dispatch + result parsing + HITL gating.
+
 ## Inputs
 
-- `.dev/state.json` (read for `figma.receipt`, `openspec.state`, `openspec.change_dir`, `mode`).
-- `.dev/figma-context.md` (the receipt).
-- `openspec/changes/<change-name>/**/*.md`.
+- `.dev/figma-context.md` (the receipt — passed to subagent).
+- `openspec/changes/<change-name>/**/*.md` (read by subagent).
 
 ## Outputs
 
-- On success: `state.current_stage = "apply"`.
-- On conflict in auto: `claude-reports/<ticket-id>/figma-alignment.md` and STOP.
+- `.dev/align-result.md` (subagent's structured return). **This file is the stage's done marker.**
+- On conflict in auto: `claude-reports/<ticket-id>/figma-alignment.md` (subagent-written) and STOP.
 - On conflict in default: HITL prompt with three options.
 
-## Step 0: Validate state
-
-Run `/dev:_state-check align`. STOP on non-zero. Parse for `figma.receipt`, `openspec.change_dir`, `mode`, `ticket_id`.
-
-## Step 1: Extract from artifacts
+## Step 0: Inline precondition
 
 ```bash
-CHANGE_DIR="<openspec.change_dir>"
-grep -rEn 'figma\.com/design/|node-id=|[0-9]+:[0-9]+' "$CHANGE_DIR" || true
+WT=$(git rev-parse --show-toplevel)
+TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
+N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
+CHANGE_DIR="$WT/openspec/changes/$N"
+MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
+
+[ -n "$N" ] && [ -d "$CHANGE_DIR" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
+[ -f "$WT/.dev/figma-context.md" ] || { echo "FAIL: .dev/figma-context.md not found — /dev:figma must run first" >&2; exit 1; }
+# If first line is SKIPPED, walker should have routed past align — refuse if we got here anyway.
+head -1 "$WT/.dev/figma-context.md" | grep -q '^Fetched: SKIPPED' && { echo "FAIL: figma-context.md is SKIPPED — align has nothing to compare. /dev:ff should route to apply directly." >&2; exit 1; }
+
+# Classify state from real openspec status JSON
+status_json=$(openspec status --change "$N" --json 2>/dev/null)
+is_complete=$(echo "$status_json" | jq -r '.isComplete')
+artifacts_ready=$(echo "$status_json" | jq -r '[.artifacts[].status] | map(select(. == "ready" or . == "complete")) | length')
+
+if [ "$is_complete" = "true" ]; then OS_STATE="B"
+elif [ "${artifacts_ready:-0}" -gt 0 ]; then OS_STATE="C"
+else OS_STATE="A"; fi
+
+case "$OS_STATE" in B|C) ;; *) echo "FAIL: align requires state B or C, got $OS_STATE" >&2; exit 1 ;; esac
 ```
 
-Build a list of every `<fileKey>:<nodeId>` cited in the artifacts.
+## Step 1: Dispatch align-subagent
 
-## Step 2: For each node in the receipt, run two checks
+Spawn `align-subagent` (sonnet) with the three required inputs. Provide them as a single prompt block:
 
-For every `### <fileKey>:<nodeId>` section in `.dev/figma-context.md`:
+```
+receipt_path: .dev/figma-context.md
+change_dir: $CHANGE_DIR
+ticket_id: $TICKET_ID
+```
 
-**2a. Node ID citation** — confirm the artifacts cite that exact node ID. If an artifact mentions Figma in narrative text but cites no node ID, treat as a conflict (the prose was likely inferred).
+Wait for the subagent to return. It writes `.dev/align-result.md` atomically and returns control without narrating results in chat (per the contract in `agents/AGENTS.md`).
 
-**2b. Token grounding with behavioral context (structural rule)** — from the receipt section, extract every token name listed under `Components used:` and `Design tokens:`. The artifacts' narrative for that node MUST contain at least one of those tokens **verbatim** AND in the same paragraph as a behavioral verb (`shows`, `displays`, `renders`, `triggers`, `disabled when`, `enabled when`, `tapping`, `selecting`, `appears`, `hides`, `submits`, `updates`).
-
-A bare `Components used: AppCheckbox, PrimaryButton` line at the top of `proposal.md` does NOT satisfy this — that's exactly the lazy upstream-pipeline pattern this gate exists to catch. The token must appear inside a sentence that says something about WHAT THE COMPONENT DOES, not just that it exists.
-
-Implementation: paragraph-scoped match. A "paragraph" is a contiguous run of non-blank lines.
+## Step 2: Parse the result file
 
 ```bash
-# For each node in the receipt:
-TOKENS=$(awk '/^### <fileKey>:<nodeId>/,/^### /' .dev/figma-context.md \
-  | sed -nE 's/^- (Components used|Design tokens):\s*(.*)$/\2/p' \
-  | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
+RESULT=".dev/align-result.md"
 
-VERBS='shows|displays|renders|triggers|disabled when|enabled when|tapping|selecting|appears|hides|submits|updates'
+if [ ! -f "$RESULT" ]; then
+  # Per agents/AGENTS.md §6 failure handling: retry once with prefix instructing
+  # the subagent to write the result file before returning. On second failure,
+  # save its chat output to claude-reports/<ticket_id>/subagent-malformed-align.md and STOP.
+  : retry-or-stop
+fi
 
-HIT=0
-for tok in $TOKENS; do
-  # Find any paragraph in any artifact that contains BOTH the verbatim token AND a verb.
-  # awk paragraph mode: RS='' splits on blank lines.
-  if find "$CHANGE_DIR" -name '*.md' -print0 \
-     | xargs -0 awk -v tok="$tok" -v verbs="$VERBS" '
-         BEGIN { RS=""; }
-         index($0, tok) > 0 && match($0, verbs) > 0 { print FILENAME ":" tok; found=1; exit }
-         END { exit !found }
-       ' > /dev/null 2>&1; then
-    HIT=1
-    break
-  fi
-done
-# HIT=0 → conflict for this node — narrative is not behaviorally grounded in the receipt
+STATUS=$(grep -m1 '^Status:' "$RESULT" | sed 's/^Status:[[:space:]]*//')
+SUMMARY=$(grep -m1 '^Summary:' "$RESULT" | sed 's/^Summary:[[:space:]]*//')
+
+case "$STATUS" in
+  CLEAR)    : ;;          # proceed to Step 4
+  CONFLICT) : ;;          # branch on mode in Step 3
+  ABORTED|FAILED)
+    echo "FAIL: align-subagent returned $STATUS — $SUMMARY" >&2
+    exit 1 ;;
+  *)
+    echo "FAIL: unknown Status '$STATUS' in $RESULT" >&2
+    exit 1 ;;
+esac
 ```
 
-Adapt the awk range to actual node ID; the goal is one section's tokens at a time. The verb list is intentionally narrow — adding "uses" or "is" would let any sentence match and defeat the gate. If the design genuinely needs a verb not in this list, expand the list deliberately, not as a workaround for a single artifact.
+## Step 3: On CONFLICT
 
-## Step 3: On conflict
+The subagent has already written `claude-reports/<ticket_id>/figma-alignment.md` with the per-node conflict list. Branch on mode:
 
-Collect the list of conflicts (per-node: missing citation, missing token grounding, or both).
-
-- **`mode == auto`**: write `claude-reports/<ticket_id>/figma-alignment.md` with the conflict list. STOP — do NOT run `/opsx:apply` on hallucinated artifacts.
-- **`mode == default`**: list the conflicts. Use **AskUserQuestion** with three options:
-  - `Rebuild affected sections` — call `/opsx:rebuild <change-name> --section <section>` for each conflict (or guide the user to do so), then re-run this stage from Step 1.
-  - `Proceed anyway (accept risk)` — record the opt-in in `state.figma.alignment_override = true`, then continue to Step 4.
+- **`mode == auto`**: STOP. Do NOT run `/opsx:apply` on hallucinated artifacts. The conflict report is the user's recovery surface.
+- **`mode == default`**: surface the conflict count from `Summary` and the report path. Use **AskUserQuestion** with three options:
+  - `Rebuild affected sections` — call `/opsx:rebuild <change-name> --section <section>` for each conflict (or guide the user to do so), then re-run this stage from Step 1 (re-dispatch the subagent against the regenerated artifacts).
+  - `Proceed anyway (accept risk)` — overwrite `.dev/align-result.md` with `Status: CLEAR` (with `Summary: opt-in override after CONFLICT`) and continue. The walker reads CLEAR and advances.
   - `Stop` — end the skill.
 
-## Step 4: Commit transition
-
-```bash
-TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-jq --arg ts "$TS" '
-  .current_stage = "apply"
-  | .stage_history += [{ stage: "align", status: "done", ts: $ts, result: "OK" }]
-' .dev/state.json > .dev/state.json.tmp && mv .dev/state.json.tmp .dev/state.json
-```
-
-If the user opted in via `Proceed anyway`, set `result: "OK (opt-in override)"`.
-
-## Step 5: Stop
+## Step 4: Stop
 
 Print: `Figma alignment OK. Next: /dev:apply.`

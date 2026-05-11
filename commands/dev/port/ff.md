@@ -49,7 +49,54 @@ Print "`/port:ff --simple` complete — see Linear ticket for the analysis comme
 If neither `--simple` nor `--auto` is present → **HITL mode**.
 If `--auto` is present → **auto mode**, governed by the G1-G9 decision rules below. Set `<auto-flag>` accordingly so subsequent stage invocations include the right flag.
 
-### Step 4: Stage 1 — `/port:start`
+### Step 3a: Derive entry point via `infer_port_stage`
+
+Per `plans/ff-state-rationalization.md` v8 — `/port:ff` resumes from the filesystem instead of running every stage unconditionally. If a previous run on this ticket already produced `.port/dev-notes.md`, the walker advances to `plan` and skips `start` + `explore`.
+
+```bash
+infer_port_stage() {
+  local n wt id
+  wt=$(git rev-parse --show-toplevel 2>/dev/null)
+  id="<ticket-id from --ticket: argument>"
+  n=$(ls "$wt/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
+
+  # ship complete?
+  if [ -n "$id" ] && gh pr view "$id" --json state -q .state 2>/dev/null | grep -q OPEN; then
+    echo done; return; fi
+
+  if [ -n "$n" ]; then
+    # revise approved? `Review approved` line is appended to synth-report.md by /port:revise step 10
+    if grep -q '^Review approved' "$wt/openspec/changes/$n/.port/synth-report.md" 2>/dev/null; then
+      echo ship; return; fi
+
+    # synth complete?
+    if [ -f "$wt/openspec/changes/$n/.port/synth-report.md" ]; then
+      echo revise; return; fi
+
+    # plan complete?
+    if [ -f "$wt/openspec/changes/$n/.port/pm-notes.md" ] \
+       && [ -f "$wt/openspec/changes/$n/.port/design-notes.md" ]; then
+      echo synth; return; fi
+
+    # explore complete?
+    if [ -f "$wt/openspec/changes/$n/.port/dev-notes.md" ]; then
+      echo plan; return; fi
+
+    # start complete? (proposal skeleton + .port dir)
+    if [ -f "$wt/openspec/changes/$n/proposal.md" ] \
+       && [ -d "$wt/openspec/changes/$n/.port" ]; then
+      echo explore; return; fi
+  fi
+
+  echo start
+}
+
+CURRENT=$(infer_port_stage)
+```
+
+The dispatch loop (Steps 4–9 below) **starts at `$CURRENT`**, not at `start`. Each step's "if `$CURRENT` >= this stage in dependency order, run it" check makes resume free.
+
+### Step 4: Stage 1 — `/port:start` (skip if `$CURRENT` != `start`)
 
 Invoke:
 
@@ -63,7 +110,7 @@ If `/port:start` exits non-zero or aborts (e.g. assignee mismatch, worktree user
 
 After success, cwd is now inside the worktree at `../<ticket-id>`. All subsequent stage invocations run from this cwd.
 
-### Step 5: Stage 2 — `/port:explore`
+### Step 5: Stage 2 — `/port:explore` (skip if `$CURRENT` is past explore: `plan`/`synth`/`revise`/`ship`/`done`)
 
 ```
 /port:explore [<auto-flag>]
@@ -75,7 +122,7 @@ Auto-detect ticket-id from worktree (already verified in step 4). The Locate gat
 - `--auto` Locate `medium` → proceeds with primary candidate, flag is recorded by the stage.
 - HITL Locate `medium` / `low` → user is prompted by `/port:explore`; their choice determines whether the wrapper continues.
 
-### Step 6: Stage 3 — `/port:plan`
+### Step 6: Stage 3 — `/port:plan` (skip if `$CURRENT` is past plan: `synth`/`revise`/`ship`/`done`)
 
 ```
 /port:plan [<auto-flag>]
@@ -85,7 +132,7 @@ Two parallel agents (pm + designer) run inside `/port:plan`. The wrapper waits f
 
 Stage failure handling: if either agent fails twice (per G6), `/port:plan` aborts; the wrapper bubbles up and STOPs.
 
-### Step 7: Stage 4 — `/port:synth`
+### Step 7: Stage 4 — `/port:synth` (skip if `$CURRENT` is past synth: `revise`/`ship`/`done`)
 
 ```
 /port:synth [<auto-flag>]
@@ -93,7 +140,7 @@ Stage failure handling: if either agent fails twice (per G6), `/port:plan` abort
 
 Runs `synth-agent` (opus pinned) + `openspec validate` + `/spec-lint`. Always exits success even with findings — those are the input to revise. Validate errors are surfaced but do not abort the wrapper.
 
-### Step 8: Stage 5 — `/port:revise`
+### Step 8: Stage 5 — `/port:revise` (skip if `$CURRENT` is past revise: `ship`/`done`)
 
 ```
 /port:revise [<auto-flag>]
@@ -106,7 +153,7 @@ In `--auto`:
 
 In HITL: the user drives the clarification batches and the review gate. If the user picks `abort`, the wrapper bubbles up the exit and STOPs (worktree preserved per existing convention).
 
-### Step 9: Stage 6 — `/port:ship`
+### Step 9: Stage 6 — `/port:ship` (skip if `$CURRENT == done`)
 
 ```
 /port:ship [<auto-flag>]
@@ -115,7 +162,7 @@ In HITL: the user drives the clarification batches and the review gate. If the u
 Final stage — commit, push, Linear write-back. Failure handling per its own logic:
 
 - Push failure: the wrapper bubbles up. Worktree + lock retained for manual recovery.
-- Linear MCP failure after retries: `.port/ship-pending.md` written by `/port:ship`; wrapper bubbles up. User finishes manually.
+- Linear MCP failure after retries: `/port:ship` STOPs without writing any payload file; wrapper bubbles up. `/port:ship` is idempotent — user simply re-runs it once the Linear flake clears.
 
 ### Step 10: Final report
 
@@ -177,7 +224,7 @@ The wrapper does not override stage-internal decisions; it only ensures every st
 When the wrapper aborts:
 
 1. Append a JSONL line to `<worktree>/.port/timings.jsonl` (D22) with stage `ff` and `outcome: aborted-<reason>`.
-2. Atomic-write `claude-reports/<session>/ff-aborted.md` with: ticket id, stage at which abort happened, reason, and pointer to the stage's own report (e.g. `/port:revise`'s `auto-accepted.md`, `/port:ship`'s `ship-pending.md`).
+2. Atomic-write `claude-reports/<session>/ff-aborted.md` with: ticket id, stage at which abort happened, reason, and pointer to the stage's own report (e.g. `/port:revise`'s `auto-accepted.md`).
 3. Linear comment: stages that abort already post their own Linear comment (locate-low, push-fail). The wrapper does not duplicate.
 4. **Do NOT run step 11's cleanup.** `timings.jsonl` is the audit trail; on abort it is the user's only visibility into how far the chain got. Gitignore protects against accidental commit; preservation is intentional for debug.
 5. STOP — do not proceed to later stages.
