@@ -9,36 +9,59 @@ Test → audit → format → commit. The verify-agent is the load-bearing piece
 
 ## Inputs
 
-- `.dev/state.json` (read for `base_ref`, `change_name`, `mode`, `figma.receipt`).
 - The current working tree's diff vs `base_ref`.
 - Project profile (for `{test_cmd}`).
+- `base_ref`, `change_name`, `figma_raw_dir` derived from environment.
 
 ## Outputs
 
-- Tests pass (or noted as failing in `state.verify`).
-- `.dev/verify-pass.md` with `Status: CLEAR`.
+- Tests pass (or noted as failing in the verify report).
+- `.dev/verify-pass.md` with `Status: CLEAR`. **This file IS the stage's done marker.**
 - `.gitignore` updated to include `.dev/`; any pre-tracked `.dev/` paths evicted from index.
 - A commit on the current branch (excluding `.dev/`).
-- `state.verify = { status: "CLEAR", report: ".dev/verify-pass.md", retry_count: 0|1 }`.
-- `state.current_stage = "review"`.
 
-## Step 0: Validate state
+## Step 0: Inline precondition
 
-Run `/dev:_state-check verify`. STOP on non-zero. Parse for `base_ref`, `change_name`, `mode`, `figma`. This stage requires `mode == auto` — refuse if default (default-mode users drive verify manually).
+```bash
+WT=$(git rev-parse --show-toplevel)
+N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
+MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
+
+# Resolve base_ref from profile
+if [ -f "$WT/.gogox-claude.yaml" ]; then
+  PLATFORM=$(yq -r '.platform' "$WT/.gogox-claude.yaml")
+else
+  PLATFORM=$(yq -r '.platform' "$HOME/.claude/commands/profiles/registry/$(basename "$WT").yaml")
+fi
+BASE_REF="origin/trunk"   # default; override per profile if needed
+
+[ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
+[ "$MODE" = "auto" ] || { echo "FAIL: /dev:verify is auto-only. Default mode terminates at /dev:apply." >&2; exit 1; }
+
+# Apply must have completed (tasks all [x])
+tasks_done=$(openspec list --json 2>/dev/null \
+  | jq -e --arg n "$N" '.changes[] | select(.name==$n) | (.completedTasks == .totalTasks) and (.totalTasks > 0)' \
+  > /dev/null 2>&1 && echo "yes")
+[ "$tasks_done" = "yes" ] || { echo "FAIL: apply not complete (tasks not all [x]). Run /dev:apply first." >&2; exit 1; }
+
+# Figma raw dir is the auditor's input — pass it through if present
+FIGMA_RAW=""
+[ -d "$WT/.dev/figma-raw" ] && FIGMA_RAW="$WT/.dev/figma-raw/"
+```
 
 ## Step 1: Run tests
 
 Run `/check-test --fix` if available for `{platform}`, else fall back to `{test_cmd}` directly. Auto-fix failures.
 
-If still failing after fix attempts, note in `state.verify.test_status = "failed"` and proceed (the verify-agent + reviewer can still catch issues; abort decision is downstream).
+If still failing after fix attempts, note in the eventual verify report and proceed (the verify-agent + reviewer can still catch issues; abort decision is downstream).
 
 ## Step 2: Spawn verify-agent
 
 Use the **Agent** tool with `subagent_type: "verify-agent"`, `mode: "bypassPermissions"`. Prompt with the three required inputs:
 
-- `base` — `state.base_ref` (e.g. `origin/trunk`)
-- `change name` — `state.change_name`
-- `figma raw directory` — `state.figma.raw_dir` if present (typically `.dev/figma-raw/`), else omit
+- `base` — `$BASE_REF` (e.g. `origin/trunk`)
+- `change name` — `$N`
+- `figma raw directory` — `$FIGMA_RAW` if non-empty, else omit
 
 **Pass the raw dir, not the receipt path.** The auditor must read `.dev/figma-raw/*.json` directly, not `.dev/figma-context.md`. The receipt is a curated summary written by the implementing pipeline — sharing it with the auditor would re-converge auditor and implementer onto the same filtered view, defeating the whole point of the split. The receipt is referenced internally by verify-agent only for sha256 cross-check.
 
@@ -54,8 +77,8 @@ After the agent returns, read `.dev/verify-pass.md`:
 2. Re-run `/check-test --fix` (or `{test_cmd}`) to confirm fixes did not regress tests.
 3. Re-spawn `verify-agent` with the same inputs.
 4. Read `.dev/verify-pass.md` again:
-   - `Status: CLEAR` → proceed to Step 3. Set `state.verify.retry_count = 1`.
-   - `Status: BLOCKED` (still) → ABORT. Write the verify report path into `state.verify`, set `state.current_stage` unchanged, append `{stage: "verify", status: "failed", ts, reason: "BLOCKED after retry"}` to history. STOP — do not loop further.
+   - `Status: CLEAR` → proceed to Step 3.
+   - `Status: BLOCKED` (still) → ABORT. STOP. The walker will see `Status: BLOCKED` next iteration and refuse to advance until the report is fixed (or `/dev:ff --from verify` is used to discard and re-run).
 
 ## Step 3: Format
 
@@ -73,33 +96,14 @@ fi
 git ls-files .dev/ 2>/dev/null | xargs -r git rm --cached -- 2>/dev/null || true
 ```
 
-`.dev/figma-context.md`, `.dev/figma-raw/**`, `.dev/state.json`, and `.dev/verify-pass.md` are runtime artifacts, not source. The previous commit's `.gitignore` does not retroactively untrack files; this eviction is required.
+`.dev/figma-context.md`, `.dev/figma-raw/**`, `.dev/verify-pass.md`, `.dev/align-result.md` are runtime artifacts, not source. The previous commit's `.gitignore` does not retroactively untrack files; this eviction is required.
 
 ## Step 5: Commit
 
 Run `/commit` to commit all changes. The commit must include the `.gitignore` update and the source diff, but exclude every path under `.dev/`.
 
-## Step 6: Commit transition
+## Step 6: Stop
 
-```bash
-TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-# RETRIES = 1 if Step 2a's BLOCKED-recovery sequence ran (regardless of outcome here),
-# else 0. The orchestrator tracks this in a local shell variable set when entering 2a;
-# default to 0 if the variable is unset.
-RETRIES="${RETRIES_RAN:-0}"
-
-jq --arg ts "$TS" --argjson r "$RETRIES" '
-  .verify = { status: "CLEAR", report: ".dev/verify-pass.md", retry_count: $r }
-  | .current_stage = "review"
-  | .stage_history += [{ stage: "verify", status: "done", ts: $ts, result: "CLEAR" }]
-' .dev/state.json > .dev/state.json.tmp && mv .dev/state.json.tmp .dev/state.json
-```
-
-In Step 2a's recovery sequence, set `RETRIES_RAN=1` before re-spawning the agent. If recovery is not entered, the variable stays unset and the default `0` applies.
-
-Note: `.dev/state.json` itself is gitignored after Step 4, so this write happens after `/commit` — the state update lives only on the local working tree, which is correct (state is per-pipeline-run, not per-branch).
-
-## Step 7: Stop
+No state mutation. The done markers are: (1) `.dev/verify-pass.md` `Status: CLEAR`, and (2) a new commit on top of `$BASE_REF`. The walker advances to `review`.
 
 Print: `Verify CLEAR. Commit created. Next: /dev:review.`

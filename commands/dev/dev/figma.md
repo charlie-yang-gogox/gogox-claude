@@ -1,38 +1,42 @@
 ---
 name: figma
-description: "Stage 2 — extract Figma URLs from the Linear ticket, fetch design context for each node, persist raw responses + a hashed receipt, and pass the Step 3b provenance gate. Skipping or faking this stage breaks the verify-pass workflow."
+description: "Stage 2 — extract Figma URLs from the Linear ticket, dispatch figma-subagent to fetch design context for each node, then run the provenance gate. Skipping or faking this stage breaks the verify-pass workflow."
 ---
 
 # `/dev:figma`
 
 Authoritative Figma fetch + provenance gate for the dev pipeline. Either every Figma URL in the ticket has a real `get_design_context` payload on disk with a matching sha256, or the gate STOPs.
 
+The heavy I/O (per-node MCP calls, raw JSON persistence, receipt assembly) runs inside `figma-subagent` (sonnet, see `agents/dev/figma-subagent.md`). This stage's body is URL extraction + dispatch + result parsing + provenance gate + state transition.
+
 ## Inputs
 
-- `.dev/state.json` (read for `ticket_id`, `mode`).
 - Linear ticket (re-fetched here — do not trust prior conversation context).
-- Figma MCP (`mcp__plugin_figma_figma__*`).
+- `ticket_id` derived from the branch name.
+- `mode` from `$ARGUMENTS` (`--auto` flag).
 
 ## Outputs
 
-- `.dev/figma-raw/<sanitized-nodeId>.json` — one per fetched node.
-- `.dev/figma-context.md` — receipt + summary.
-- `state.figma = { node_ids, receipt, raw_dir }`.
-- `state.current_stage = "detect"`.
+- `.dev/figma-raw/<sanitized-nodeId>.json` — one per fetched node (subagent-written).
+- `.dev/figma-context.md` — receipt + summary (subagent-written). **This file is the stage's done marker.** First line encodes status: `Fetched: <ISO> sha256=...` (success) or `Fetched: FAILED — <error>`.
 
-## Step 0: Validate state
+## Step 0: Inline precondition
 
-Run `/dev:_state-check figma`. If exit != 0, STOP. Parse the emitted JSON for `ticket_id`, `mode`, and `figma`.
+```bash
+TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
+[ -n "$TICKET_ID" ] || { echo "FAIL: cannot derive ticket_id from branch name" >&2; exit 1; }
+MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
+```
 
-**Pre-declared no-source short-circuit**: if `state.figma.declared_no_source == true` (set by `/dev:start --no-figma`), this stage should never have entered — `/dev:start` advances `current_stage` directly to `detect` when the flag is set. If we somehow do enter (e.g. `--from figma` after a `--no-figma` start), refuse:
+**Pre-declared no-source short-circuit**: if `.dev/figma-context.md` exists with first line starting `Fetched: SKIPPED` (written by `/dev:start --no-figma` or by `/dev:start` when no Figma URL was found in the ticket), this stage should never have entered — the walker treats SKIPPED as equivalent to a completed figma stage and routes directly to apply. If we do enter (e.g. `/dev:figma --force` against a SKIPPED worktree), refuse:
 
-> "state.figma.declared_no_source is true — user pre-declared no Figma source at /dev:start. To re-enable Figma fetch, restart the pipeline without --no-figma."
+> ".dev/figma-context.md first line is `Fetched: SKIPPED` — user pre-declared no Figma source at /dev:start. To re-enable Figma fetch, rm .dev/figma-context.md first, then re-run /dev:figma."
 
 STOP. Do not silently overwrite the prior decision.
 
 ## Step 1: Re-fetch ticket
 
-Use `mcp__claude_ai_Linear__get_issue` with the `ticket_id` from state. Hold title, description, comments, attachments.
+Use `mcp__claude_ai_Linear__get_issue` with `$TICKET_ID`. Hold title, description, comments, attachments.
 
 ## Step 2: Extract Figma URLs
 
@@ -43,49 +47,63 @@ Scan description, comments, attachments for `figma.com/design/...`. For each mat
 
 Build a list of `<fileKey>:<nodeId>` pairs.
 
-## Step 3: Fetch and persist (when URLs exist)
-
-For each `<fileKey>:<nodeId>`:
-
-1. Call `mcp__plugin_figma_figma__get_design_context` with the fileKey and nodeId.
-2. Call `mcp__plugin_figma_figma__get_screenshot` for the screenshot.
-3. Call `mcp__plugin_figma_figma__search_design_system` for matching components.
-4. Call `mcp__plugin_figma_figma__get_variable_defs` for tokens.
-5. Persist the raw `get_design_context` response (entire body, unmodified) to `.dev/figma-raw/<sanitizedNodeId>.json`. Sanitize by replacing `:` with `_` for the filename.
-6. Compute sha256: `shasum -a 256 .dev/figma-raw/<sanitizedNodeId>.json | awk '{print $1}'`.
-
-Then write `.dev/figma-context.md`. The first line MUST be the receipt:
-
-```
-Fetched: <ISO-8601 UTC> sha256=<rawNodeId1>=<hash1>,<rawNodeId2>=<hash2>
-```
-
-Pairs are comma-separated. The `=` between id and hash is the unambiguous separator (node IDs may contain `:`; hashes are hex and never contain `=`). Use the original node ID with `:`, not the sanitized filename form.
-
-The body must include one `### <fileKey>:<nodeId>` section per fetched node, each with:
-
-```
-- URL: <original Figma URL>
-- Title: <node title from get_design_context>
-- Key sections / layers: <bulleted list>
-- Components used: <name + library match from search_design_system>
-- Design tokens: <token name → value from get_variable_defs>
-- Notes / a11y / interaction: <anything else affecting implementation>
-```
-
-## Step 4: Failure handling
-
-**Figma API call fails** (after one retry):
-
-- `mode == auto`: write `.dev/figma-context.md` with first line `Fetched: FAILED — <error>` listing attempted URL(s). Step 5 (gate) will STOP.
-- `mode == default`: write the same FAILED stub, then **AskUserQuestion**: `Abort` or `Proceed without Figma`.
+## Step 3: Failure / no-URL short-circuits (before dispatch)
 
 **No Figma URL found**:
 
-- `mode == auto`: log "No Figma URL found. Proceeding without Figma reference." Do NOT create `.dev/figma-context.md`. Skip to Step 6.
-- `mode == default`: **AskUserQuestion** "No Figma URL found. Do you have a Figma link?" If yes, fetch as above. If no, skip to Step 6 and note in artifacts.
+This case should not occur — `/dev:start` is the SOLE writer of `.dev/figma-context.md` first line `Fetched: SKIPPED` and writes it whenever the ticket has no Figma URL. If this stage enters with no URLs, it indicates a `/dev:start` bug. STOP with:
 
-## Step 5: Provenance gate (hard block)
+> "FAIL: figma stage entered with no URLs in ticket. /dev:start should have written `.dev/figma-context.md` with `Fetched: SKIPPED` first line. Recovery: write that file manually, then /dev:ff to resume."
+
+## Step 4: Dispatch figma-subagent
+
+When the URL list is non-empty, spawn `figma-subagent` (sonnet, worktree-isolated) with the three required inputs:
+
+```
+ticket_id: <ticket_id>
+urls: <fileKey1>:<nodeId1>, <fileKey2>:<nodeId2>, ...
+worktree_path: <abs path>
+```
+
+Wait for it to return. The subagent writes `.dev/figma-raw/*.json` and `.dev/figma-context.md` atomically and returns control without narrating in chat (per `agents/AGENTS.md`).
+
+### Step 4a: Parse the receipt's first line for status
+
+```bash
+CTX=".dev/figma-context.md"
+
+if [ ! -f "$CTX" ]; then
+  # Subagent didn't write it — retry once with prefix instructing it to write the file
+  # before returning. On second failure, save chat to claude-reports/<ticket_id>/subagent-malformed-figma.md and STOP.
+  : retry-or-stop
+fi
+
+FIRST=$(head -1 "$CTX")
+
+case "$FIRST" in
+  "Fetched: SKIPPED"*)
+    echo "FAIL: figma stage saw SKIPPED first line — /dev:start should have routed past figma. /dev:ff resume to recover." >&2
+    exit 1 ;;
+  "Fetched: FAILED"*)
+    if [ "$MODE" = "default" ]; then
+      # AskUserQuestion: Abort or Proceed without Figma
+      :
+    else
+      echo "FAIL: figma-subagent reported FAILED — $FIRST" >&2
+      exit 1
+    fi
+    ;;
+  "Fetched: "*)
+    : ;;          # success — proceed to Step 5 (provenance gate)
+  *)
+    echo "FAIL: malformed first line '$FIRST' — expected 'Fetched: ...'" >&2
+    exit 1 ;;
+esac
+```
+
+## Step 5: Provenance gate (hard block — main session, not subagent)
+
+The gate runs in the orchestrator, not the subagent. Reasoning: the gate is read-only verification (file presence, sha256 cross-check, body coverage) — keeping it in main means the subagent cannot fake its own provenance.
 
 Run all four checks in order. None can be skipped:
 
@@ -104,22 +122,8 @@ Run all four checks in order. None can be skipped:
    - Every `<fileKey>:<nodeId>` parsed in Step 2 must have an entry in the receipt AND a `### <fileKey>:<nodeId>` section. Any missing → STOP.
 4. **Anti-pattern reminder** — `grep`-ing existing OpenSpec artifacts for figma node IDs does NOT satisfy this gate. The only acceptable proof is `.dev/figma-context.md` written this run.
 
-## Step 6: Commit transition
+## Step 6: Stop
 
-```bash
-TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-NODE_IDS_JSON='<JSON array of node IDs, or [] if none>'
-RECEIPT='<".dev/figma-context.md" or null>'
-
-jq --arg ts "$TS" --argjson nodes "$NODE_IDS_JSON" --arg receipt "$RECEIPT" '
-  .figma = (if $receipt == "null" then null else { node_ids: $nodes, receipt: $receipt, raw_dir: ".dev/figma-raw/" } end)
-  | .current_stage = "detect"
-  | .stage_history += [{ stage: "figma", status: "done", ts: $ts }]
-' .dev/state.json > .dev/state.json.tmp && mv .dev/state.json.tmp .dev/state.json
-```
-
-If receipt is null (no Figma URL, default mode user opted out), set `state.figma = null` and still advance to detect.
-
-## Step 7: Stop
+No state mutation needed. The presence of `.dev/figma-context.md` with `Fetched: <ISO>` first line is the done marker that `infer_dev_stage` reads. (A `Fetched: SKIPPED` first line — written by `/dev:start` — also counts as "figma stage settled" and the walker routes past align directly to apply.)
 
 Print: `Figma stage complete. Next: /dev:detect`.

@@ -33,16 +33,23 @@ Set up the worktree, OpenSpec change, and `.port/` working directory for a Linea
    - When `ticket_system: linear`, `<linear-team-key>` = `branch_prefix`. When `branch_prefix: auto`, derive the team key from the ticket ID prefix (the chars before `-`).
    - When `ticket_system != linear`, STOP with: `/port:start currently supports ticket_system: linear only.`
 
-3. **Resolve `origin_project_path`.**
-   - Read `<repo-root>/.gogox-claude.local.yaml` if it exists. Expand leading `~` and `$ENV_VAR` references in `origin_project_path`.
-   - If field missing OR expanded path does not exist (`[ -d "$ORIGIN" ]`):
-     - HITL mode → `AskUserQuestion`: `Absolute path to the origin project being ported FROM?`. Validate with `ls`. On success, atomic-write back to `.gogox-claude.local.yaml`:
+3. **Resolve origin project path.**
+   - Read `<repo-root>/.claude/port-settings.json` if it exists. JSON schema:
+     ```json
+     {
+       "originalProjectPath": "/abs/path/to/origin/repo"
+     }
+     ```
+     Expand leading `~` and `$ENV_VAR` references in `originalProjectPath`. Set `<origin>` to the expanded value.
+   - If `.claude/port-settings.json` is missing OR `originalProjectPath` is absent/empty OR the expanded path does not exist (`[ -d "$origin" ]`):
+     - HITL mode → `AskUserQuestion`: `Absolute path to the origin project being ported FROM?`. Validate with `ls`. On success, atomic-write back to `.claude/port-settings.json`:
        ```bash
        tmp=$(mktemp)
-       # write new yaml content (preserve any existing fields) to $tmp
-       mv "$tmp" "<repo-root>/.gogox-claude.local.yaml"
+       printf '{\n  "originalProjectPath": "%s"\n}\n' "<answer>" > "$tmp"
+       mkdir -p "<repo-root>/.claude"
+       mv "$tmp" "<repo-root>/.claude/port-settings.json"
        ```
-     - `--auto` mode → STOP with: `set origin_project_path in .gogox-claude.local.yaml before re-running`.
+     - `--auto` mode → STOP with: `set originalProjectPath in .claude/port-settings.json before re-running`.
 
 4. **Fetch ticket.**
    - `mcp__claude_ai_Linear__get_issue` with the ticket ID. Capture title, description, labels, AC, assignee. Store as `<ticket-context>`.
@@ -51,6 +58,23 @@ Set up the worktree, OpenSpec change, and `.port/` working directory for a Linea
 5. **Assignee check.**
    - If the issue is not assigned to the current user, STOP with:
      > `Ticket <ticket-id> is assigned to <assignee>, not you. Aborting to avoid working on someone else's ticket.`
+
+5a. **Auto-mode Linear init (`--auto` only).**
+
+    <!-- SYNC: the Linear init below is duplicated in three places. When changing it, also update:
+         - /dev:start Auto-mode item 4 (commands/dev/dev/start.md, "Step 3b: Mode-specific pre-flight → Auto mode")
+         - /ggx-dispatcher Step 4    (commands/dev/ggx-dispatcher.md)
+         Drift between these breaks dispatcher idempotency. -->
+
+    When `<auto-mode>` is true, perform Linear ticket init **before** any worktree / scaffold work:
+    1. `mcp__claude_ai_Linear__save_issue`: remove `ready-to-port` from labels.
+    2. `mcp__claude_ai_Linear__save_issue`: status → `In Progress`.
+    3. `mcp__claude_ai_Linear__save_issue`: assignee = `$USER_NAME`.
+    4. `mcp__claude_ai_Linear__save_issue`: estimate = `1` if currently null.
+
+    These mutations are idempotent — when `/ggx-dispatcher` already locked the ticket in its Step 4, this re-runs as a no-op.
+
+    HITL mode (no `--auto`) skips this step entirely. Users invoking `/port:start --ticket:CAF-X` interactively get scaffold-only behavior — no Linear writes happen here.
 
 6. **Derive change name and figma URL.**
    - `<change-name>` = kebab-case(title) with any leading `[bracket]`/`[CAF-XXX]`/`<lang>` prefix stripped before slugifying. Lowercase, hyphen-separated, no leading/trailing hyphens.
@@ -130,11 +154,11 @@ The `.port/timings.jsonl` log uses append (`>>`), not the atomic-write pattern, 
 
 - `--ticket:<ID>` is mandatory. No cwd-based inference for entry stages (per §4.4).
 - `ticket_system` must be `linear` (per current scope). Other systems STOP early.
-- Origin path is per-machine and lives in `.gogox-claude.local.yaml` (gitignored). It is NEVER committed and NEVER written to `.gogox-claude.yaml`.
+- Origin path is per-machine and lives in `.claude/port-settings.json` (gitignored). It is NEVER committed and NEVER written to `.gogox-claude.yaml`.
 - Assignee check is non-negotiable — never auto-claim someone else's ticket.
 - All `.port/` writes are atomic via `mktemp` + `mv` (D16). Partial files break filesystem-state-as-progress (D1).
 - `--recreate` means "clean slate": existing worktree + change dir are removed without further prompts.
 - All Linear MCP calls use the `mcp__claude_ai_Linear__*` prefix. Never use the legacy `mcp__linear-server__*`.
 - Timings line is appended even on early STOP paths so observability isn't lost (set `outcome` to `aborted:<reason>`).
-- This stage NEVER writes outside the new worktree's `.port/` and the existing `.gogox-claude.local.yaml`.
+- This stage NEVER writes outside the new worktree's `.port/` and the existing `.claude/port-settings.json`.
 - This stage never spawns sub-agents. It is pure orchestration.

@@ -5,53 +5,60 @@ description: "Stage 3 — detect the OpenSpec change state (A: no artifacts, B: 
 
 # `/dev:detect`
 
-Determines what state the OpenSpec change is in and routes the pipeline accordingly.
+Determines what state the OpenSpec change is in and routes the pipeline accordingly. This stage has **no persistent marker** — classification is re-derived each run via `openspec status --json` (cheap, ~1s, no network).
 
 ## Inputs
 
-- `.dev/state.json` (read for `change_name`, `platform`, `mode`, `figma`).
 - `openspec list --json` and `openspec status --change <name> --json`.
+- `.dev/figma-context.md` first line (existence + `Fetched: <ISO|FAILED|SKIPPED>` inspected for routing).
 
 ## Outputs
 
-- `state.openspec = { state: "A"|"B"|"C", change_dir: <path> }`.
-- `state.current_stage = "align"` (B/C with figma.receipt) or `"apply"` (otherwise).
-- A `skipped` entry for `align` in `stage_history` if we route directly to `apply`.
-- **Abort path (state A, default mode, user picks `/port:ff`)**: no state mutation. Pipeline STOPs; re-running `/dev:ff` re-dispatches `/dev:detect` and re-asks the gate.
+- No on-disk marker. `infer_dev_stage` re-derives based on `align-result.md` and `figma-context.md`'s first line after this stage finishes.
+- In State A + `mode == default` + user picks `abort-to-port`: STOP with no side effect (idempotent re-run).
 
-## Step 0: Validate state
+## Step 0: Inline precondition
 
-Run `/dev:_state-check detect`. STOP on non-zero. Parse JSON for `change_name`, `mode`, `figma`.
+```bash
+WT=$(git rev-parse --show-toplevel)
+N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
+[ -n "$N" ] || { echo "FAIL: no openspec change directory found in $WT/openspec/changes/" >&2; exit 1; }
+MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
+```
 
 ## Step 1: List and match
 
-Run `openspec list --json`. Match against `change_name`. Accept exact matches; if only one loose candidate obviously relates to the ticket, accept it.
+Run `openspec list --json`. Match against `$N` (the directory name). Accept exact matches; if only one loose candidate obviously relates to the ticket, accept it.
 
 - `mode == auto`: if multiple plausible candidates, pick the first. If the matched change has all `applyRequires` done → state B. If partial → state C. If empty/broken → `rm -rf` it and treat as state A.
 - `mode == default`: if multiple candidates, **AskUserQuestion** to let the user pick.
 
 ## Step 2: Determine state
 
-For the chosen change name, run `openspec status --change "<name>" --json`.
+For the chosen change name, run `openspec status --change "$N" --json`.
 
 | State | Condition |
 |---|---|
 | **A** | no matching change directory exists for this ticket |
-| **B** | all artifact IDs in `applyRequires` are `status: "done"` |
-| **C** | change exists but some `applyRequires` artifacts are still pending |
+| **B** | `isComplete == true` (all `applyRequires` artifacts ready) |
+| **C** | change exists but some artifacts are still pending (`isComplete == false`, but at least one artifact is `ready` or `complete`) |
 
-`change_dir` = `openspec/changes/<change-name>/`.
+`change_dir` = `openspec/changes/$N/`.
 
-Announce: `Detected state: <A|B|C>. Change: <change-name>.`
+Announce: `Detected state: <A|B|C>. Change: $N.`
 
 ## Step 3: Routing
 
+Determine the next stage by inspecting filesystem markers; do NOT mutate any state file.
+
 - **State A AND `mode == default`** → run the State-A gate (Step 3a). Two outcomes:
-  - User picks `inline-author` → `current_stage = "apply"`. Append `align` to stage_history as `skipped` with reason `"state A — no existing artifacts to align against"`. Continue to Step 4.
-  - User picks `abort-to-port` → STOP. Do not mutate `.dev/state.json`. Skip Steps 4–5 entirely. Print the abort hint (Step 3a). Re-running `/dev:ff` will re-dispatch `/dev:detect` and re-ask the gate (idempotent).
-- **State A AND `mode == auto`** → `current_stage = "apply"`. Append `align` to stage_history as `skipped` with reason `"state A — no existing artifacts to align against"`. (Auto mode must not block on prompts; the dispatcher accepts inline-author quality for unattended runs.)
-- **State B/C with `state.figma.receipt` present** → `current_stage = "align"`.
-- **State B/C with `state.figma == null` or `state.figma.receipt == null`** → `current_stage = "apply"`. Append `align` as `skipped` with reason `"no figma receipt — alignment check has nothing to compare"`.
+  - User picks `inline-author` → next stage is `apply` (the walker reads `.dev/figma-context.md` — `Fetched: SKIPPED` first line routes past align directly to apply).
+  - User picks `abort-to-port` → STOP. No side effect. Re-running `/dev:ff` re-dispatches `/dev:detect` and re-asks the gate (idempotent).
+- **State A AND `mode == auto`** → next stage is `apply` (auto must not block; dispatcher accepts inline-author quality for unattended runs).
+- **State B/C with Figma receipt present** (`.dev/figma-context.md` exists) → next stage is `align`. Walker reads `.dev/align-result.md` after align runs; CLEAR advances to apply.
+- **State B/C with `.dev/figma-context.md` first line `Fetched: SKIPPED`** → next stage is `apply`. The SKIPPED first line signals "no figma source"; align has nothing to compare against. Walker treats SKIPPED as a completed figma stage and routes directly to apply.
+
+The actual advance happens in `/dev:ff`'s walker — this stage's job is to classify and let routing fall out of the markers naturally.
 
 ## Step 3a: State-A gate (default mode only)
 
@@ -64,9 +71,9 @@ Use **AskUserQuestion** with this single question:
 Options (mutually exclusive, single-select):
 
 1. **Inline author + apply** (recommended for bug fix / chore / small features)
-   - Continue with `/dev:apply`'s lightweight authoring via `/opsx:ff`. Best when the spec quality bar is low and you want to ship fast. The current `/dev:apply` Step 1A.5 review gate still surfaces the authored artifacts before `/opsx:apply` runs.
+   - Continue with `/dev:apply`'s lightweight authoring via `/opsx:ff`. Best when the spec quality bar is low and you want to ship fast. The current `/dev:apply` review gate still surfaces the authored artifacts before `/opsx:apply` runs.
 2. **Abort to use `/port:ff`** (recommended for real features needing pm/designer/synth grounding)
-   - Stop `/dev:ff`. Run `/port:ff <ticket-id>` separately to author a properly-grounded spec, then re-run `/dev:ff` (state will be B on the next `/dev:detect` run, so this gate does not re-fire).
+   - Stop `/dev:ff`. Run `/port:ff <ticket-id>` separately to author a properly-grounded spec, then re-run `/dev:ff` to resume. State will be B on the next `/dev:detect` run, so this gate does not re-fire.
 
 On `abort-to-port`, print:
 
@@ -75,37 +82,10 @@ On `abort-to-port`, print:
 Run /port:ff <ticket-id> to author the spec, then re-run /dev:ff to resume implementation.
 ```
 
-Then STOP. Do not run Steps 4 or 5. State remains untouched — re-running `/dev:ff` re-enters `/dev:detect` and re-asks the gate (idempotent by design; an audit entry is unnecessary because no side effect occurred).
+Then STOP. No filesystem side effect.
 
-## Step 4: Commit transition
-
-_Skip this step entirely if Step 3a's `abort-to-port` branch was taken._
-
-```bash
-TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-OS_STATE='<"A"|"B"|"C">'
-CHANGE_DIR='<path>'
-NEXT='<"align"|"apply">'
-# If next == "apply", also append a skipped align entry
-if [ "$NEXT" = "apply" ]; then
-  SKIP_REASON='<reason string>'
-  jq --arg ts "$TS" --arg s "$OS_STATE" --arg cd "$CHANGE_DIR" --arg reason "$SKIP_REASON" '
-    .openspec = { state: $s, change_dir: $cd }
-    | .current_stage = "apply"
-    | .stage_history += [
-        { stage: "detect", status: "done", ts: $ts, result: $s },
-        { stage: "align",  status: "skipped", ts: $ts, reason: $reason }
-      ]
-  ' .dev/state.json > .dev/state.json.tmp && mv .dev/state.json.tmp .dev/state.json
-else
-  jq --arg ts "$TS" --arg s "$OS_STATE" --arg cd "$CHANGE_DIR" '
-    .openspec = { state: $s, change_dir: $cd }
-    | .current_stage = "align"
-    | .stage_history += [{ stage: "detect", status: "done", ts: $ts, result: $s }]
-  ' .dev/state.json > .dev/state.json.tmp && mv .dev/state.json.tmp .dev/state.json
-fi
-```
-
-## Step 5: Stop
+## Step 4: Stop
 
 Print: `Detect complete. State: <A|B|C>. Next: /dev:<align|apply>.`
+
+(The walker decides the next stage automatically on the next `/dev:ff` iteration; this stage just announces.)

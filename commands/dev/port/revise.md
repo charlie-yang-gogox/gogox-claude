@@ -178,7 +178,7 @@ POSIX `mv` on the same filesystem is atomic — partial reports must never be vi
 - **In `--auto`, NEVER call `AskUserQuestion`.** Both step 6 (clarification loop) and step 9 (review gate) are skipped. Auto-accept all assumptions (G7); auto-approve the final gate (G8); record both audit trails for ship-side reporting.
 - **`Review approved` sentinel** is the only handshake `/port:ship` uses to detect approval. Never write it on `abort` or on a non-converged loop.
 - **Bounded loop** — cap iterations of the partition→fix→re-lint cycle at 3 (4th attempt aborts). Stops the orchestrator from thrashing on a finding that needs human judgment but the LLM keeps re-applying the same Edit.
-- **Per-machine paths** stay in `.gogox-claude.local.yaml`; this stage never reads or writes the yaml files.
+- **Per-machine paths** stay in `.claude/port-settings.json`; this stage never reads or writes config files.
 - All Linear MCP calls (none in this stage by design — Linear writes are owned by `/port:ship`) use `mcp__claude_ai_Linear__*` if ever needed.
 - Timings JSONL is appended even on early STOP paths so observability isn't lost (set `outcome` to `aborted:<reason>`).
 - This stage NEVER runs `git add` / `git commit` / `git push`. Those are owned by `/port:ship`.

@@ -254,8 +254,12 @@ This step is the structural answer to "why did /port-generated specs need 80% re
 
 ## Step 5B: Apply
 
-1. Run `/opsx:apply <change-name>` directly. Do **not** spawn `dev-agent`.
-2. Stop when all tasks are complete, or when `/opsx:apply` pauses for clarification.
+Execution depends on mode:
+
+- **If `<auto-mode>`**: Run `/opsx:apply <change-name>` directly in the current session. No agent spawn. `--auto` may run inside a `general-purpose` subagent dispatched by `/ggx-dispatcher`, where nested opus spawn is unreliable — inline is the only safe path.
+- **If not `<auto-mode>`**: Spawn `dev-agent` (opus, worktree-isolated, `commit: false`) to run `/opsx:apply`. Pass the inputs documented in `commands/dev/dev/apply.md` Step 4D.1. Parse `.dev/apply-result.md` afterwards. On `BLOCKED_CLARIFICATION`, surface the question via **AskUserQuestion** and fall back to inline `/opsx:apply` in main to resume from the next `[ ]`.
+
+Stop when all tasks are complete (`tasks.md` checkboxes all `[x]`), or when `/opsx:apply` pauses for clarification that cannot be resolved.
 
 ---
 
@@ -372,7 +376,9 @@ On completion, summarize:
 
 ## Guardrails
 
-- Does **NOT** spawn any sub-agents (no `pm-agent`, `designer-agent`, `dev-agent`). Everything runs in the main session.
+- Does **NOT** spawn `pm-agent` or `designer-agent`. Artifact prep (`/opsx:ff` / `/opsx:continue`) runs in the main session.
+- In default mode, **spawns `dev-agent`** (opus, worktree-isolated) for `/opsx:apply` after the HITL gate — see `commands/dev/dev/apply.md` §4D.
+- In auto mode, `/opsx:apply` runs inline in the current session (no agent spawn — `--auto` may run inside a `general-purpose` dispatcher subagent where nested opus spawn is unreliable).
 - Default mode scope: artifact prep + apply only. Does **NOT** handle branching, worktree, tests, format, commit, or PR.
 - Auto mode scope: full lifecycle from worktree to PR. Adds Steps 2A and 6–9.
 - Auto mode never calls `AskUserQuestion`. All decisions are pre-determined.
