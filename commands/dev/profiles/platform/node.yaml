@@ -1,0 +1,7 @@
+# Node.js platform profile.
+# Read by gogox-claude commands at runtime when the resolved platform is "node".
+
+deps_install: npm ci
+test_cmd: npm test
+format_cmd: npx prettier --write . && npx eslint --fix .
+ide_open_hint: "open the worktree in VS Code, or /list-worktrees to see all active worktrees"
