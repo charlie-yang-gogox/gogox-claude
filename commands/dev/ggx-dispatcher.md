@@ -310,7 +310,7 @@ The user sees the full failure trace in stdout per the audit-trail rule.
 
 ### 4.3 Print the dispatch table
 
-**Required step, not optional preview prose.** After every surviving ticket is locked and before any Step 5 spawn, the next thing emitted in stdout must be this table. Step 5 does not start in the same assistant message — first message ends with the table; the spawn happens in the following message. This applies on every sweep, including a same-lock re-sweep where the batch is small (1–2 tickets) and the §4.1 `locked ✓` lines might feel sufficient — they are not.
+**Required step, not optional preview prose.** After every surviving ticket is locked and before any Step 5 spawn, the next thing emitted in stdout must be this table. **The table is text output, the N `Agent` spawn calls (§5.3), and the poller `Bash` call (§6.1a) all emit in the SAME single assistant message** — print the table, then immediately follow with the spawn tool calls in the same turn. Do NOT end the turn after the table to "let the user confirm". That artificial stop has been observed to force the user to type "are you done?" before any agent spawn actually happens — by the time they nudge, the perceived dispatcher has been idle for minutes. This applies on every sweep, including a same-lock re-sweep where the batch is small (1–2 tickets) and the §4.1 `locked ✓` lines might feel sufficient — they are not.
 
 ```
 Dispatching <N> tickets:
@@ -360,7 +360,7 @@ Avoids `/dev:ff` stalling on missing Figma in unattended batches.
 
 ### 5.3 Spawn
 
-**You MUST emit all N `Agent` tool calls in a single assistant message.** Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. Narration belongs after the join in Step 6.
+**You MUST emit the §4.3 dispatch table, all N `Agent` tool calls, and the §6.1a poller `Bash` call in a single assistant message.** Print the table text first, then the N parallel `Agent` calls, then the poller `Bash` call — back-to-back, no turn break, no intermediate "ready to spawn?" pause. Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. It may also be tempted to end the turn after the table so the user can review — do not. The table is the review; spawning follows immediately in the same turn. Narration belongs after the join in Step 6.
 
 Single message, N parallel `Agent` calls (one per ticket):
 
@@ -468,7 +468,7 @@ done
 
 #### 6.1b Join
 
-The dispatcher LLM is notified per spawned agent as each completes. Maintain an in-memory `joined` counter; on each notification, increment. When `joined == N`, proceed to §6.2. The poller is terminated cleanly in §6.5 when the dispatcher removes the lockfile (the script's first check inside the `while` loop exits on missing lock).
+The dispatcher LLM is notified per spawned agent as each completes. Maintain an in-memory `joined` counter; on each notification, increment AND emit one short status line so the user sees progress without scanning the poller table — format: `[<joined>/<N>] <ticket-id> finished (<terminal-condition>).` When `joined == N`, proceed to §6.2. The poller is terminated cleanly in §6.5 when the dispatcher removes the lockfile (the script's first check inside the `while` loop exits on missing lock).
 
 #### 6.1c Why polling, not heartbeats
 
