@@ -21,6 +21,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import urllib.error
 from collections import defaultdict
@@ -211,6 +212,14 @@ def find_current_session(cwd: str):
 
 TICKET_RE = re.compile(r"(CAF-\d+)", re.IGNORECASE)
 
+# Matches the Agent tool_use `description` field that /ggx-dispatcher emits
+# when spawning a per-ticket subagent. Format defined in commands/dev/ggx-dispatcher.md §5.3:
+#   description: `Dispatch <ticket-id> via <port|dev>:ff`
+DISPATCHER_DESC_RE = re.compile(
+    r"^\s*Dispatch\s+([A-Z]+-\d+)\s+via\s+(port|dev):ff\b",
+    re.IGNORECASE,
+)
+
 
 def detect_ticket_id(cwd: str, git_branch: str | None = None) -> str:
     if git_branch:
@@ -263,6 +272,195 @@ def get_agent_model(session_dir: Path, agent_id: str) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+# ===================================================================
+# Dispatcher contribution lookup
+# ===================================================================
+
+
+def find_dispatcher_contribution(
+    ticket_id: str,
+    current_session_id: str,
+    lookback_days: int = 7,
+) -> list[dict]:
+    """Find /ggx-dispatcher subagent runs that targeted this ticket and return
+    one synthetic agent entry per run (shape compatible with ``metrics["agents"]``).
+
+    Background-spawned Agents (``run_in_background: true`` — what dispatcher uses)
+    do NOT write a ``totalDurationMs`` / ``totalTokens`` rollup back to the parent
+    JSONL — the parent only sees an ``isAsync: true`` ack. The actual work lives in
+    ``<project>/<session-id>/subagents/agent-<agentId>.jsonl``. So we cross-reference:
+
+      1. Scan parent JSONLs for Agent ``tool_use`` blocks whose ``description`` matches
+         ``Dispatch <ticket-id> via (port|dev):ff``.
+      2. Find each tool_use's matching ``tool_result`` to recover the ``agentId``.
+      3. Parse the subagent JSONL with ``parse_session`` to get model usage + nested
+         agents, then aggregate into a single rollup entry with pre-computed cost.
+
+    Bounded by ``lookback_days`` so we don't re-scan years of JSONLs every run.
+    """
+    if not PROJECTS_DIR.exists() or ticket_id == "UNKNOWN":
+        return []
+    cutoff = time.time() - lookback_days * 86400
+    target = ticket_id.upper()
+    out: list[dict] = []
+
+    for project in PROJECTS_DIR.iterdir():
+        if not project.is_dir():
+            continue
+        for jsonl in project.glob("*.jsonl"):
+            if jsonl.stem == current_session_id:
+                continue
+            try:
+                if jsonl.stat().st_mtime < cutoff:
+                    continue
+            except OSError:
+                continue
+
+            try:
+                lines = jsonl.read_text(errors="replace").splitlines()
+            except OSError:
+                continue
+
+            # Pass 1: tool_use_id -> (lane, description) for matching dispatcher spawns
+            matching: dict[str, tuple[str, str]] = {}
+            for line in lines:
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = data.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") == "Agent"
+                    ):
+                        continue
+                    inp = block.get("input") or {}
+                    if not isinstance(inp, dict):
+                        continue
+                    desc = inp.get("description", "")
+                    if not isinstance(desc, str):
+                        continue
+                    m = DISPATCHER_DESC_RE.match(desc)
+                    if not m or m.group(1).upper() != target:
+                        continue
+                    tu_id = block.get("id", "")
+                    if tu_id:
+                        matching[tu_id] = (m.group(2).lower(), desc.strip())
+
+            if not matching:
+                continue
+
+            # Pass 2: tool_use_id -> agentId via tool_result (even the async-start
+            # ack carries agentId).
+            tu_to_agent: dict[str, str] = {}
+            for line in lines:
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                tur = data.get("toolUseResult")
+                if not isinstance(tur, dict):
+                    continue
+                agent_id = tur.get("agentId")
+                if not agent_id:
+                    continue
+                msg = data.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                    ):
+                        tu_id = block.get("tool_use_id", "")
+                        if tu_id in matching and tu_id not in tu_to_agent:
+                            tu_to_agent[tu_id] = agent_id
+                            break
+
+            # Pass 3: aggregate each subagent jsonl into one synthetic agent entry.
+            session_dir = jsonl.parent / jsonl.stem
+            for tu_id, agent_id in tu_to_agent.items():
+                sub_jsonl = session_dir / "subagents" / f"agent-{agent_id}.jsonl"
+                if not sub_jsonl.exists():
+                    continue
+                try:
+                    sub_metrics = parse_session(sub_jsonl)
+                except Exception:
+                    continue
+
+                sub_durations = compute_durations(sub_metrics)
+
+                direct_cost = 0.0
+                direct_tokens = 0
+                dominant_model = "unknown"
+                dominant_tokens = -1
+                for model_name, u in sub_metrics["model_usage"].items():
+                    family = get_model_family(model_name)
+                    model_tokens = sum(u.values())
+                    direct_tokens += model_tokens
+                    direct_cost += calculate_cost(
+                        {
+                            "input_tokens": u["input_tokens"],
+                            "output_tokens": u["output_tokens"],
+                            "cache_creation_input_tokens": u["cache_write_tokens"],
+                            "cache_read_input_tokens": u["cache_read_tokens"],
+                        },
+                        family,
+                        model_name,
+                    )
+                    if model_tokens > dominant_tokens:
+                        dominant_tokens = model_tokens
+                        dominant_model = model_name
+
+                nested_cost = sum(
+                    calculate_cost(
+                        a["usage"], get_model_family(a["model"]), a["model"]
+                    )
+                    for a in sub_metrics["agents"]
+                )
+                nested_tokens = sum(
+                    a.get("total_tokens", 0) for a in sub_metrics["agents"]
+                )
+
+                lane, desc = matching[tu_id]
+                out.append(
+                    {
+                        "agent_type": "dispatcher-spawn",
+                        "agent_id": agent_id,
+                        "description": desc,
+                        "total_duration_ms": int(
+                            sub_durations["wall_clock_sec"] * 1000
+                        ),
+                        "active_duration_ms": int(
+                            sub_durations["active_sec"] * 1000
+                        ),
+                        "total_tokens": direct_tokens + nested_tokens,
+                        "total_tool_use_count": sub_metrics["tool_calls"],
+                        # `usage` is unused when `precomputed_cost` is set, but
+                        # kept empty for shape compatibility with regular agents.
+                        "usage": {},
+                        "tool_stats": {},
+                        "model": dominant_model,
+                        "precomputed_cost": direct_cost + nested_cost,
+                        "source_session": jsonl.stem,
+                        "lane": lane,
+                        "nested_agent_count": len(sub_metrics["agents"]),
+                    }
+                )
+
+    return out
 
 
 # ===================================================================
@@ -618,10 +816,15 @@ def format_report(
         for a in all_agents:
             dur = format_duration(a["total_duration_ms"] / 1000)
             family = get_model_family(a["model"])
-            cost = calculate_cost(a["usage"], family, a["model"])
+            cost = (
+                a["precomputed_cost"]
+                if a.get("precomputed_cost") is not None
+                else calculate_cost(a["usage"], family, a["model"])
+            )
             desc = a["description"] or a["agent_type"]
             model_short = family if family not in ("unknown", "synthetic") else a["model"]
-            lines.append(f"- {desc} ({model_short}) — {dur}, {format_cost(cost)}")
+            tag = " [dispatcher]" if a.get("agent_type") == "dispatcher-spawn" else ""
+            lines.append(f"- {desc}{tag} ({model_short}) — {dur}, {format_cost(cost)}")
         for a in in_progress:
             desc = a["description"] or a["subagent_type"]
             lines.append(f"- {desc} — ⏳ in progress")
@@ -1001,6 +1204,21 @@ def main():
         action="store_true",
         help="Hook mode: read context from stdin, CSV only, no Linear",
     )
+    parser.add_argument(
+        "--include-dispatcher",
+        action="store_true",
+        help=(
+            "Pull in metrics from /ggx-dispatcher subagent runs that targeted "
+            "the current ticket within the last 7 days (when the dispatcher "
+            "session and the current session are separate Claude Code sessions)."
+        ),
+    )
+    parser.add_argument(
+        "--dispatcher-lookback-days",
+        type=int,
+        default=7,
+        help="Lookback window for --include-dispatcher (default: 7)",
+    )
     args = parser.parse_args()
 
     # Hook mode: read session info from stdin, force CSV-only
@@ -1070,6 +1288,40 @@ def main():
             model,
         )
 
+    # ---- CSV (raw session metrics, pre-enrichment) ----
+    if not args.no_csv:
+        write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points)
+        print(f"\nCSV updated at {CSV_PATH}", file=sys.stderr)
+
+    # ---- Enrich agents with /ggx-dispatcher contribution ----
+    # Done AFTER write_csv so the CSV row remains a clean per-session ledger;
+    # the dispatcher agents are surfaced only in the human-readable report and
+    # the JSON output.
+    dispatcher_agents: list[dict] = []
+    if args.include_dispatcher:
+        dispatcher_agents = find_dispatcher_contribution(
+            ticket_id, session_id, lookback_days=args.dispatcher_lookback_days,
+        )
+        if dispatcher_agents:
+            metrics["agents"].extend(dispatcher_agents)
+            print(
+                f"Included {len(dispatcher_agents)} dispatcher subagent run(s) "
+                f"for {ticket_id} (lookback {args.dispatcher_lookback_days}d).",
+                file=sys.stderr,
+            )
+        elif ticket_id == "UNKNOWN":
+            print(
+                "Warning: --include-dispatcher set but ticket id could not be "
+                "detected from cwd/branch; skipped.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"No dispatcher subagent runs found for {ticket_id} within "
+                f"{args.dispatcher_lookback_days}d.",
+                file=sys.stderr,
+            )
+
     # ---- Output ----
     if args.json:
         output = {
@@ -1092,6 +1344,17 @@ def main():
                     "model": a["model"],
                 }
                 for a in metrics["agents"]
+            ],
+            "dispatcher_contribution": [
+                {
+                    "description": a["description"],
+                    "lane": a.get("lane"),
+                    "duration_sec": a["total_duration_ms"] / 1000,
+                    "tokens": a["total_tokens"],
+                    "model": a["model"],
+                    "source_session": a.get("source_session"),
+                }
+                for a in dispatcher_agents
             ],
             "message_counts": {
                 "user": metrics["user_msgs"],
@@ -1128,11 +1391,6 @@ def main():
             cumulative, current_total_cost,
         )
         print(report)
-
-    # ---- CSV ----
-    if not args.no_csv:
-        write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points)
-        print(f"\nCSV updated at {CSV_PATH}", file=sys.stderr)
 
     # ---- Linear ----
     if not args.no_linear and ticket_id != "UNKNOWN":
