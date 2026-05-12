@@ -3,9 +3,10 @@ name: remove-worktree
 description: >
   Remove a git worktree and its local branch. Targeted mode accepts a ticket ID
   or auto-detects from the current directory. --auto mode sweeps every
-  secondary worktree, joins PR state with the Linear ticket status, and
-  recommends removal for worktrees whose PR is merged and ticket is
-  "Ready for QA" — always behind a human confirmation gate.
+  secondary worktree, joins PR state with the ticket status (Linear or Jira,
+  resolved from the repo profile), and recommends removal for worktrees whose
+  PR is merged and ticket is "Ready for QA" — always behind a human
+  confirmation gate.
 ---
 
 # Remove Worktree — Clean Up Worktree and Local Branch
@@ -26,6 +27,22 @@ Parse `$ARGUMENTS`:
 
 ## Auto mode (sweep)
 
+### Step A0: Resolve project profile
+
+Before touching any worktree, resolve the active repo's ticket-tracker so the sweep knows whether to call Linear or Jira and which branch prefix(es) count as ticket IDs.
+
+1. Read `<repo-root>/.gogox-claude.yaml` (source of truth). It contains `platform`, `product`, `branch_prefix`, `ticket_system`.
+2. If not found, fallback: read `~/.claude/commands/profiles/registry/{repo-name}.yaml` — same fields.
+3. If neither exists, error: `Run /init-project to set up this repo.` and stop.
+4. Read `~/.claude/commands/profiles/org.yaml` — needed for `jira.cloud_id`, prefix → ticket_system mapping, and the union of recognized prefixes.
+5. Build `ALLOWED_PREFIXES`:
+   - If `branch_prefix` is a concrete value (e.g. `CAF`, `CET`, `DAF`, `DET`): `ALLOWED_PREFIXES = [branch_prefix]`.
+   - If `branch_prefix` is `auto`: `ALLOWED_PREFIXES = org.jira.prefixes ∪ org.linear.prefixes` (the full union of recognized prefixes).
+6. Resolver function `resolve_ticket_system(prefix)`:
+   - If profile `ticket_system` is `linear` or `jira`, return it (single-system repo).
+   - If profile `ticket_system` is `auto`, look up `prefix` in `org.jira.prefixes` → return `jira`; else in `org.linear.prefixes` → return `linear`; else return `unknown`.
+7. If `ticket_system` resolves to `jira`, capture `JIRA_CLOUD_ID = org.jira.cloud_id` for use in Step A2.
+
 ### Step A1: Enumerate worktrees
 
 1. Run `git worktree list --porcelain`.
@@ -33,11 +50,12 @@ Parse `$ARGUMENTS`:
 3. For each remaining (secondary) entry, parse:
    - `path` — from the `worktree <path>` line.
    - `branch` — from the `branch refs/heads/<branch>` line. If absent (detached HEAD), the worktree is excluded from auto-removal because it cannot be mapped back to a ticket — list it under KEEP with reason `detached HEAD`.
-   - `ticket-id` — first match of `[A-Z]+-\d+` in the branch name. If none, list under KEEP with reason `no ticket ID in branch`.
+   - `ticket-id` — first match of `(<ALLOWED_PREFIXES joined with |>)-\d+` in the branch name (e.g. for a Linear `ca-revamp` repo: `CAF-\d+`; for an `auto` repo: `(CET|DET|CAF|DAF)-\d+`). If none, list under KEEP with reason `no ticket ID in branch`.
+   - `ticket-prefix` — the matched prefix (e.g. `CAF`). Pass through `resolve_ticket_system(prefix)` to get the per-worktree `ticket_system`. If it resolves to `unknown`, list under KEEP with reason `unknown ticket prefix: <prefix>`.
 4. Store `MAIN_REPO_PATH` (path of the dropped main-worktree entry) for later session-return.
 5. If there are zero secondary worktrees, print `No active worktrees.` and stop.
 
-### Step A2: Fetch PR + Linear + dirty status (in parallel)
+### Step A2: Fetch PR + ticket + dirty status (in parallel)
 
 For every secondary worktree that has a ticket ID, gather the following — **in parallel across worktrees** (a single tool-call batch per worktree, but all worktrees fan out together):
 
@@ -46,10 +64,10 @@ For every secondary worktree that has a ticket ID, gather the following — **in
    - Capture `state` ∈ {`OPEN`, `MERGED`, `CLOSED`} plus `number` and `url`.
    - If the array is empty, record `No PR`.
    - If `gh` exits non-zero, record `PR: unknown` and capture the stderr snippet.
-2. **Linear ticket**:
-   - Call `mcp__claude_ai_Linear__get_issue` with `id: "<ticket-id>"`.
-   - Capture the ticket's current status name (Linear's workflow state name, e.g. `Ready for QA`, `In Review`, `Done`, `In Progress`).
-   - If the call fails, record `Linear: unknown`.
+2. **Ticket** — branch on the worktree's resolved `ticket_system`:
+   - **`linear`**: call `mcp__claude_ai_Linear__get_issue` with `id: "<ticket-id>"`. Capture the workflow state name (e.g. `Ready for QA`, `In Review`, `Done`).
+   - **`jira`**: call `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` with `cloudId: JIRA_CLOUD_ID`, `issueIdOrKey: "<ticket-id>"`, `responseContentFormat: "markdown"`. Capture `fields.status.name` (e.g. `Ready for QA`, `In Review`, `Done`).
+   - On failure or `unknown` ticket_system, record `Ticket: unknown` with the failure reason.
 3. **Dirty status**: `git -C "<path>" status --porcelain`. Non-empty → `dirty (N files)`.
 
 ### Step A3: Classify
@@ -58,31 +76,48 @@ For each worktree, assign exactly one bucket:
 
 - **RECOMMENDED** — requires **all three** of:
   - PR state is `MERGED`, AND
-  - Linear status matches `Ready for QA` (case-insensitive, trimmed), AND
+  - Ticket status matches `Ready for QA` (case-insensitive, trimmed) — applies to both Linear workflow states and Jira `fields.status.name`, AND
   - Working tree is clean.
 - **KEEP** — anything else. Compute a single short `reason` from the first applicable rule below (top-down):
-  1. `PR or Linear status unavailable` — any UNKNOWN signal.
+  1. `PR or ticket status unavailable` — any UNKNOWN signal.
   2. `dirty working tree` — uncommitted changes present.
   3. `PR not merged` — PR exists but state ≠ `MERGED`.
   4. `no PR` — no PR found for the branch.
-  5. `Linear status: <name>` — PR merged but Linear status is not `Ready for QA`.
-  6. `no ticket ID in branch` / `detached HEAD` — set in Step A1.
+  5. `<system> status: <name>` — PR merged but ticket status is not `Ready for QA` (use the resolved tracker name, e.g. `Linear status: In Review` or `Jira status: In Progress`).
+  6. `no ticket ID in branch` / `unknown ticket prefix: <prefix>` / `detached HEAD` — set in Step A1.
 
 ### Step A4: Present the report
 
-Print two sorted sections (RECOMMENDED first, then KEEP, each sorted by ticket ID). Format:
+Build a **ticket URL** per worktree from the per-worktree resolved `ticket_system` plus the org constants captured in Step A0:
+
+- `linear` → `{org.linear.base_url}/{TICKET-ID}` (e.g. `https://linear.app/gogox/issue/CAF-272`).
+- `jira` → `{org.jira.base_url}/{TICKET-ID}` (e.g. `https://gogotech.atlassian.net/browse/CET-7911`).
+- `unknown` → leave blank (`—`).
+
+Build a **PR cell** as a single markdown link wrapping both the number and the state: `[#<num> <state>](<pr-url>)`. If no PR was found, show `No PR` (no link); if `gh` errored, show `unknown` (no link).
+
+Print two markdown tables (RECOMMENDED first, then KEEP, each sorted by ticket ID). Both use the same column layout so the user can eyeball both halves side-by-side:
 
 ```
-RECOMMENDED for deletion (N):
-  <ticket-id>  <branch>            PR #<num> merged · Linear: Ready for QA · clean    → SAFE
-  ...
+RECOMMENDED for deletion (N)
 
-KEEP (M):
-  <ticket-id>  <branch>            PR #<num> <state>  · Linear: <status>     · <dirty?>  → <reason>
-  ...
+| Ticket | Branch | Tracker | Status | PR | Clean | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| [CAF-272](<ticket-url>) | feat/CAF-272 | Linear | Ready for QA | [#418 merged](<pr-url>) | ✓ | SAFE |
+| ...
+
+KEEP (M)
+
+| Ticket | Branch | Tracker | Status | PR | Clean | Reason |
+| --- | --- | --- | --- | --- | --- | --- |
+| [CET-7911](<ticket-url>) | feat/CET-7911 | Jira | In Review | [#503 open](<pr-url>) | ✓ | PR not merged |
+| [DAF-12](<ticket-url>) | bug/DAF-12 | Linear | Done | [#290 merged](<pr-url>) | ✗ (3 files) | dirty working tree |
+| ...
 ```
 
-- Always include the PR URL (or "No PR") and the Linear status name.
+- The `Ticket` cell is a markdown link to the ticket URL built above; if `ticket-id` is missing (detached HEAD or no prefix match), show the raw branch identifier with no link.
+- `Tracker` column shows `Linear` / `Jira` / `—` (the resolved per-worktree value, not the profile-level setting — relevant when `ticket_system: auto` mixes both).
+- `Clean` column: `✓` for clean, `✗ (N files)` for dirty.
 - If RECOMMENDED is empty, print `No safe-to-delete candidates found.` and stop — no human gate, no deletion.
 
 ### Step A5: Human gate (mandatory)
@@ -183,6 +218,6 @@ After the loop:
 - Never delete remote branches — only clean up local worktree and local branch.
 - Always move the session out of a worktree before removing it.
 - **Auto mode** must always present the human gate (`AskUserQuestion`) before any deletion. Empty RECOMMENDED list ⇒ stop without prompting.
-- **Auto mode** classifies a worktree as RECOMMENDED only when PR state, Linear status, and clean state are all known and all match. Any UNKNOWN ⇒ KEEP.
+- **Auto mode** classifies a worktree as RECOMMENDED only when PR state, ticket status (Linear or Jira, resolved per worktree via Step A0), and clean state are all known and all match. Any UNKNOWN ⇒ KEEP.
 - If worktree removal fails, do not attempt to delete the branch.
 - If branch deletion fails after worktree removal, report partial completion status.
