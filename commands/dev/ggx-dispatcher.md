@@ -115,21 +115,31 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 
 Run **four** independent `mcp__claude_ai_Linear__list_issues` queries — `label` and `state` are singular per the MCP schema:
 
-| # | label                         | state          | team       | assignee | Catches                                  |
-|---|-------------------------------|----------------|------------|----------|------------------------------------------|
-| Q1 | `ready-to-port`              | `unstarted`    | `<team_key>` | `me`     | Fresh port tickets (`To-do`, `Reopened`) |
-| Q2 | `dispatcher-port-in-flight`  | `In Progress`  | `<team_key>` | `me`     | Crash-recovery: port mid-pipeline        |
-| Q3 | `ready-to-dev`               | `unstarted`    | `<team_key>` | `me`     | Fresh dev tickets (`To-do`, `Reopened`)  |
-| Q4 | `dispatcher-dev-in-flight`   | `In Progress`  | `<team_key>` | `me`     | Crash-recovery: dev mid-pipeline         |
+| # | label                         | state          | team       | assignee | Catches                                                                                  |
+|---|-------------------------------|----------------|------------|----------|------------------------------------------------------------------------------------------|
+| Q1 | `ready-to-port`              | *(omit)*       | `<team_key>` | `me`     | Fresh port tickets — any status; status post-filtered in §2.0                            |
+| Q2 | `dispatcher-port-in-flight`  | `In Progress`  | `<team_key>` | `me`     | Crash-recovery: port mid-pipeline                                                        |
+| Q3 | `ready-to-dev`               | *(omit)*       | `<team_key>` | `me`     | Fresh dev tickets — any status (incl. post-port handoff where status is still In Progress) |
+| Q4 | `dispatcher-dev-in-flight`   | `In Progress`  | `<team_key>` | `me`     | Crash-recovery: dev mid-pipeline                                                         |
 
 Selection model (Plan X, May 2026):
 
-- **Fresh dispatch** = ticket has `ready-to-port` / `ready-to-dev`. At lock time the dispatcher swaps the actionable label for the corresponding `dispatcher-*-in-flight` label (§4.1).
+- **Fresh dispatch** = ticket has `ready-to-port` / `ready-to-dev`. The label IS the "ready to dispatch" signal — **Q1/Q3 deliberately omit the `state` filter** because the port→spec-review→dev handoff transitions the label without resetting status to `To-do`: port leaves status as `In Progress`, the human reviewer relabels `need-spec-review` → `ready-to-dev` without touching status, so any `state: unstarted` filter on Q3 silently drops every post-port dev ticket. The status-level exclusion of completed / in-review tickets is enforced post-fetch (§2.0) instead. At lock time the dispatcher swaps the actionable label for the corresponding `dispatcher-*-in-flight` label (§4.1).
 - **Crash recovery** = ticket has `dispatcher-port-in-flight` / `dispatcher-dev-in-flight` left over from a prior run that didn't reach ship. Q2/Q4 catch these. `/port:ship` and `/dev:ship` remove the in-flight label only on full success, so its presence is a hard signal that "dispatcher claimed this and didn't finish."
 - The two-label split (port vs dev) means the dispatcher can route to `/port:ff` vs `/dev:ff` from the Linear signal alone, without re-deriving the pipeline type from the worktree.
-- Q1/Q3 use state type `unstarted` so renamed statuses (e.g. `Reopened`, `Up Next`) still resolve. Q2/Q4 use state name `In Progress` exactly — `In Review` / `Ready for QA` are post-work and must NOT be re-dispatched. (If a team renames `In Progress`, Q2/Q4 silently miss; verify with `mcp__claude_ai_Linear__list_issue_statuses` on onboarding.)
+- Q2/Q4 use state name `In Progress` exactly — `In Review` / `Ready for QA` are post-work and must NOT be re-dispatched. (If a team renames `In Progress`, Q2/Q4 silently miss; verify with `mcp__claude_ai_Linear__list_issue_statuses` on onboarding.)
 
-States explicitly EXCLUDED: `Triage`, `Backlog`, `In Review`, `Ready for QA`, `Done`, `Canceled`, `Duplicate`.
+### 2.0 Post-fetch status filter (Q1/Q3 only)
+
+Because Q1/Q3 return tickets at any status, apply this filter on the merged Q1+Q3 result before §2.1 dedup:
+
+- Drop survivors whose `statusType` is `completed` or `canceled` (the work is already done or thrown away).
+- Drop survivors whose `status` name is `In Review` or `Ready for QA` (the work is past dispatcher scope — dispatching would dup-PR or no-op).
+- Keep everything else: `To-do`, `In Progress`, `Reopened`, `Up Next`, `Backlog`, `Triage` are all acceptable starting states. Backlog/Triage are unusual but if a human explicitly labeled `ready-to-*` from those states it's intentional.
+
+Q2/Q4 do not need this post-filter — their `state: In Progress` filter is already narrow enough.
+
+States explicitly EXCLUDED from dispatch: `In Review`, `Ready for QA`, `Done`, `Canceled`, `Duplicate`. (Triage/Backlog are allowed; the label is what gates dispatch.)
 
 ### 2.1 Dedup
 
@@ -298,9 +308,9 @@ If any ticket fails any of steps 1-5 mid-batch:
 
 The user sees the full failure trace in stdout per the audit-trail rule.
 
-### 4.3 Dispatch table
+### 4.3 Print the dispatch table
 
-After every surviving ticket is locked, **before** the Step 5 spawn, print the planned dispatch as a single markdown table so the user can audit the batch and click into each Linear issue:
+**Required step, not optional preview prose.** After every surviving ticket is locked and before any Step 5 spawn, the next thing emitted in stdout must be this table. Step 5 does not start in the same assistant message — first message ends with the table; the spawn happens in the following message. This applies on every sweep, including a same-lock re-sweep where the batch is small (1–2 tickets) and the §4.1 `locked ✓` lines might feel sufficient — they are not.
 
 ```
 Dispatching <N> tickets:
@@ -312,15 +322,17 @@ Dispatching <N> tickets:
 | CAF-370 | recovery-dev | locked ✓ | /dev:ff CAF-370 --auto               | https://linear.app/.../CAF-370        |
 ```
 
+The §4.0 dry-run path emits the same table with `status: planned` instead of `locked ✓`. Same shape, one render path.
+
+Column rules:
+
 - `ticket` = Linear ticket id (column ordering follows the §2.3 priority sort).
 - `lane` = the §2.1 value (`fresh-port` / `fresh-dev` / `recovery-port` / `recovery-dev`).
 - `status` = `locked ✓` for every row here; failed-lock tickets never reach this step (§4.2 aborts the whole batch).
 - `command` = the exact string Step 5 will pass to its spawn — already computed via §5.1 / §5.2.
 - `link` = the issue `url` field returned by the Step 2 `list_issues` calls. Cache the url alongside the ticket id from Step 2 so this column does not require a re-fetch.
 
-The §4.0 dry-run path reuses this same table shape (with `status: planned`). Keeping one render keeps preview ↔ live output 1:1.
-
-**Roster artifact for §6.1**: while building this table, also accumulate the same rows (without `status`, without `link`) into a `DISPATCH_ROSTER` variable as TSV — one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>`. The §6.1a progress poller persists this to `claude-reports/dispatcher/<RUN_TS>-<PID>/roster.tsv` and walks it every 30s. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention. Build the roster here (not in §6.1a) because §6.1a spawns in the same assistant message as Step 5 and has no separate "compute" turn.
+While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention. §6.1a inlines this value into the poller's heredoc when spawning. **Held in session state only — do NOT write a roster.tsv file.** Build the roster here (not in §6.1a) because §6.1a spawns in the same assistant message as Step 5 and has no separate "compute" turn.
 
 For each locked ticket, build the dispatch command from its selection lane (§2.1):
 
@@ -406,11 +418,14 @@ In the same single assistant message that fans out the N `Agent` calls (§5.3), 
 RUN_DIR="claude-reports/dispatcher/$RUN_TS-$$"
 mkdir -p "$RUN_DIR"
 
-# Write the lane + worktree path + ticket id for each dispatched ticket. One line per ticket:
-# <ticket-id>\t<lane>\t<absolute-worktree-path>
-printf '%s\n' "$DISPATCH_ROSTER" > "$RUN_DIR/roster.tsv"
-# DISPATCH_ROSTER is built in §4.3 alongside the dispatch table. Worktree path is
-# realpath ../<TICKET-ID> from the main repo (the /add-worktree convention).
+# Roster is inlined here by the dispatcher when emitting this Bash call —
+# one line per ticket, format <ticket-id>\t<lane>\t<absolute-worktree-path>.
+# Built in §4.3 alongside the dispatch table; in-memory only, no roster.tsv file.
+# Worktree path = realpath ../<TICKET-ID> (the /add-worktree convention).
+ROSTER=$(cat <<'TSV'
+<paste DISPATCH_ROSTER value here, literal tab-separated lines>
+TSV
+)
 
 START_EPOCH=$(date -u +%s)
 
@@ -443,7 +458,7 @@ while true; do
               | sed "s|^$wt/||")
 
     printf '| %-7s | %-12s | %-7s | %-44s |\n' "$tid" "$lane" "$stage" "${marker:-—}"
-  done < "$RUN_DIR/roster.tsv"
+  done <<< "$ROSTER"
 
   sleep 30
 done
@@ -568,7 +583,7 @@ STOP.
 - **Never use `isolation: "worktree"` on the spawned Agents** — `/port:ff` and `/dev:ff` create their own worktrees; nesting collides.
 - **Never auto-stash, auto-checkout, or auto-clean the user's tree.** Pre-flight aborts are explicit; the user fixes their own state.
 - **Never proceed past Step 4.0 dry-run gate.** `--dry-run` must be 100% read-only end-to-end.
-- **Never assume `state` filter accepts names.** Always use the type (`unstarted` / `started`) so renamed Linear states across teams still resolve.
+- **Q1/Q3 omit the `state` filter — never re-add one.** The label is the dispatch signal; status is filtered post-fetch (§2.0). Re-adding `state: unstarted` to Q3 silently drops every post-port dev handoff (port leaves the ticket at `In Progress` and the human reviewer relabels without touching status). Q2/Q4 deliberately use the state name `In Progress` for recovery — that's the only path where a state-name filter is used.
 - **Never write to a registered repo's `claude-reports/` from outside that repo.** Only the spawned ff agents touch their own worktree's reports; dispatcher's own writes stay in `<main>/claude-reports/dispatcher/`.
 - **Lock is released on every exit path.** Including aborts in Step 0/1, empty-tickets in Step 2/3, port config missing in Step 3.5, dry-run in Step 4, partial lock in Step 4.2, and normal completion in Step 6.5.
 - **`branch_prefix: auto` repos require `--team:<KEY>`.** No silent fan-out across teams.
