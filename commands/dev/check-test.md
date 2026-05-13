@@ -165,7 +165,16 @@ If any tests **fail**:
   ```
   ❌ Tests failed: X passed, Y failed
   ```
-- Include each failure's test name and error message (parse from the platform's runner output — flutter test stdout, gradle test reports under `build/reports/tests/`, xcodebuild result bundle).
+- Parse the platform's runner output (flutter test stdout, gradle test reports under `build/reports/tests/`, xcodebuild result bundle) and present a **failure table** with every failing test:
+
+  | # | Test Name | File:Line | Error Message |
+  |---|-----------|-----------|---------------|
+  | 1 | `group › test description` | `test/foo_test.dart:42` | `Expected: 3  Actual: 5` |
+  | 2 | `another group › other test` | `test/bar_test.dart:118` | `type 'Null' is not a subtype of type 'String'` |
+
+  - **Test Name**: the full test path including group/suite hierarchy.
+  - **File:Line**: file path and line number where the failure was reported. If the runner does not provide a line number, use the line from the top of the stack trace.
+  - **Error Message**: the assertion or exception message. Truncate to 120 characters if longer, appending `…`.
 
 **Without `--fix`**: stop and fail.
 
