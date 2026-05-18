@@ -97,17 +97,34 @@ Otherwise `confidence = rule-based`.
 
 #### Step 4.bug — lane is `bug`
 
-`/bug:ff` does not yet exist. Recommend `/dev:ff <ticket-id>` and surface
-the gap. Skip to Step 5 with:
+Bug-fix pipeline. Same phase-detection shape as Step 4.port but simpler:
+no `port:ship marker` probe needed — bug tickets never go through the port
+pipeline. The only phase information `/route` surfaces is whether the bug
+ticket is already done (PR open + Linear `In Review`); everything else
+delegates to `/bug:ff`'s own `infer_bug_stage` walker.
 
 ```
-recommended_command  = "/dev:ff <ticket-id>"
-phase                = "bug-pipeline-not-implemented"
-reasoning            = "Classification is `bug`, but /bug:ff is not yet
-                       implemented in this repo. Fall back to /dev:ff — the
-                       dev pipeline handles bug-shaped tickets adequately
-                       until the dedicated bug pipeline lands."
-next_after_recommended = "(none — /dev:ff terminates at /dev:ship)"
+locate worktree at ../<ticket-id> (case-insensitive, via `git worktree list`
+or fallback to ../<ticket-id> directly)
+check: is the ticket already shipped? (gh pr view <id> state == OPEN, OR
+       Linear status == In Review). If yes:
+  recommended_command  = "(none — /bug:ff terminates at /dev:ship)"
+  phase                = "done"
+  reasoning            = "Classification is `bug`. PR is open and Linear
+                         status is In Review — the bug pipeline has shipped."
+
+Otherwise:
+  recommended_command  = "/bug:ff <ticket-id>"
+  phase                = "bug" (the walker inside /bug:ff resolves the
+                                 sub-phase: start / fix-pending / verify /
+                                 review / ship)
+  reasoning            = "Classification is `bug`. /bug:ff will run the
+                         appropriate stage based on .dev/mode.md and
+                         current worktree state. If the human has not yet
+                         written the fix, /bug:ff will pause at
+                         fix-pending — write your fix in the worktree,
+                         commit, then re-run /bug:ff."
+next_after_recommended = "(none — /bug:ff terminates at /dev:ship)"
 ```
 
 #### Step 4.feature — lane is `feature`
