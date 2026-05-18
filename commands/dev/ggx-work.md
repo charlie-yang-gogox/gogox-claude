@@ -3,13 +3,13 @@ name: ggx-work
 description: >
   Single-ticket orchestrator. Drives one Linear ticket through every
   pipeline it needs (port → spec-review → dev, or just dev, or bug)
-  by repeatedly calling `/route` for decisions and executing the
-  recommended command. Stops cleanly at HITL gates (spec-review,
-  missing classification label) so a human can take over, then can
-  be re-invoked to resume. Designed to replace direct `/port:ff` /
-  `/dev:ff` invocation in `/ggx-dispatcher` so the cross-pipeline
-  routing logic lives in ONE place (`/route`) instead of being
-  re-implemented in every caller.
+  by repeatedly calling `/route --non-interactive` (in --auto mode)
+  for decisions and executing the recommended command. Stops cleanly
+  at HITL gates (spec-review via Step 4.4a short-circuit; missing
+  classification label via Step 4.3) so a human can take over, then
+  can be re-invoked to resume. Used by `/ggx-dispatcher` as the
+  uniform spawn target so the cross-pipeline routing logic lives in
+  ONE place (`/route`) instead of being re-implemented in every caller.
 Prerequisite: >
   - Linear MCP authenticated.
   - `<ticket-id>` references a real Linear ticket with a single
@@ -92,14 +92,38 @@ if <iter> > <iter-cap>:
 
 #### Step 3.2: Call `/route`
 
-Invoke `/route <ticket-id>` inline. Parse its output for:
+Build the invocation:
+
+```
+<route-cmd> = "/route <ticket-id>"
+if <auto-mode>:
+    <route-cmd> += " --non-interactive"
+```
+
+`--non-interactive` is sticky to `--auto`: every spawned subagent path
+runs in a context where `AskUserQuestion` cannot be answered (no human
+attached), so `/route` must surface gates as structured errors instead
+of prompts. Interactive mode does not pass the flag — `/route`'s own
+AskUserQuestion path is the user-facing recovery there.
+
+Invoke `<route-cmd>` inline. Parse its output for:
 
 - `recommended_command` — the one-line command from the `Recommendation:` block
 - `phase` — from the `Phase:` line
 - `lane` — from the `Lane:` line (for logging)
 
-If `/route` itself failed (exit non-zero, malformed output) → STOP per the
-`<auto-mode>` rules in Step 4.3 with reason `route-call-failed`.
+`/route` failure dispatch:
+
+- Exit non-zero with `Status: UNKNOWN_LANE` on stdout → STOP per the
+  `<auto-mode>` rules in Step 4.3 with
+  `reason = unknown-lane: missing classification label`. Auto mode posts
+  the standard ggx-work-error Linear comment so a human can attach the
+  right classification label and re-invoke.
+- Exit non-zero with `Status: MISSING_TICKET_ID` → should not happen
+  (`/ggx-work` always passes an explicit ticket id), but if it does →
+  STOP via Step 4.3 with `reason = route-internal: missing-ticket-id`.
+- Any other failure (exit non-zero with no recognized `Status:` line, or
+  malformed output) → STOP via Step 4.3 with `reason = route-call-failed`.
 
 #### Step 3.3: Classify `recommended_command` → branch
 
@@ -131,7 +155,16 @@ Exit 0.
 #### Step 4.2: HITL (recommended_command is `/spec-review …`)
 
 A human action is required. Both modes exit 0 (no error — this is a
-designed pause point), differing only in messaging:
+designed pause point), differing only in messaging.
+
+This branch is normally **unreachable** when the loop just finished
+running `/port:ff`, because Step 4.4's post-pipeline short-circuit
+catches the `need-spec-review` label and terminates before `/route`
+is called a second time. Step 4.2 still exists for the residual case
+where `/ggx-work` is invoked directly against a ticket that already
+sits at `need-spec-review` (e.g. someone re-runs `/ggx-work` after
+human spec-review was forgotten); in that case there is no upstream
+`/port:ship` comment to lean on, so the messaging below still fires.
 
 **Interactive mode (`<auto-mode> == False`)**:
 
@@ -149,22 +182,19 @@ Exit 0.
 
 **Auto mode (`<auto-mode> == True`)**:
 
-Post a single Linear comment via `mcp__claude_ai_Linear__save_comment`:
+Silent exit. Do NOT post a Linear comment. The Step 4.4 short-circuit
+already covers the common case (port pipeline just shipped and dropped
+the `need-spec-review` label, with `/port:ship` having posted its own
+human-facing comment). Auto-mode re-entries that bypass Step 4.4
+(direct `/ggx-work <id> --auto` against a ticket already at
+`need-spec-review`) should be invisible — the Linear state already says
+what the human needs to know; double-posting from `/ggx-work` is noise.
+
+Print one line to stdout for the dispatcher's audit trail:
 
 ```
-<!-- ggx-work-hitl -->
-`/ggx-work --auto` paused at HITL gate.
-
-Phase   : <phase>
-Next    : `<recommended_command>`
-
-This ticket needs a human to run `/spec-review <ticket-id>` (or equivalent)
-before the dev pipeline can proceed.
+Ticket <ticket-id>: already at need-spec-review (HITL). No comment posted.
 ```
-
-Idempotency: before posting, list existing comments and skip if any body
-starts with `<!-- ggx-work-hitl -->` for this ticket and the recommended
-command matches — prevents duplicate comments on re-runs.
 
 Exit 0.
 
@@ -225,7 +255,13 @@ When the spawned pipeline terminates:
 
 - **Success** (the FF wrapper reported `done` and exited cleanly, OR
   reported a designed pause like `Status: BLOCKED` for `need-spec-review`
-  handoff that `/port:ship` writes) → continue loop (go to Step 3.1).
+  handoff that `/port:ship` writes):
+    1. If the spawned pipeline was `/port:ff`, run the **port → spec-review
+       short-circuit** (Step 4.4a) before looping. This catches the
+       canonical port-handoff state — `/port:ship` has added the
+       `need-spec-review` label and posted its own user-facing comment —
+       and exits the loop cleanly without a second `/route` call.
+    2. Otherwise, continue loop (go to Step 3.1).
 
 - **Failure** (FF wrapper exited non-zero, raised an error, hit its own
   abort path, or a stage marker file shows `Status: FAILED` / `ABORTED`) →
@@ -235,6 +271,47 @@ When the spawned pipeline terminates:
 
   **Do NOT re-spawn the failed pipeline.** Do NOT post-fix. The user
   investigates, fixes the root cause, and re-invokes `/ggx-work`.
+
+##### Step 4.4a: port → spec-review short-circuit
+
+Triggered only when Step 4.4 just finished a successful `/port:ff`
+invocation. Purpose: terminate the loop without re-invoking `/route` or
+posting a duplicate HITL comment.
+
+```
+re-fetch ticket labels via mcp__claude_ai_Linear__get_issue <ticket-id>
+if "need-spec-review" ∈ labels:
+    print:
+      Ticket <ticket-id>: port complete, paused for human spec review.
+      /port:ship has notified Linear. Re-invoke /ggx-work <ticket-id>
+      after the human runs /spec-review and flips the label to
+      ready-to-dev.
+    exit 0   (terminal — do NOT continue the loop)
+else:
+    # Unexpected: /port:ff terminated cleanly but did not leave
+    # need-spec-review on the ticket. Don't paper over — fall through
+    # to the normal continue-loop path and let /route re-derive.
+    continue loop (go to Step 3.1)
+```
+
+**Why a fresh `get_issue` call rather than trusting cached labels**:
+`/ggx-work` last saw the ticket at Step 2 pre-flight, before `/port:ship`
+ran. The `need-spec-review` label is added inside `/port:ship`'s ship
+step, so the cached copy is stale by design. One MCP call here is cheap;
+the alternative — letting the loop continue, re-calling `/route`, and
+posting a Step 4.2 comment — is the noise this short-circuit exists to
+eliminate.
+
+**Why this lives in Step 4.4, not as a Step 3.3 routing case**:
+`/route` is read-only and lane-agnostic; making it post-process
+`/port:ff`'s side effects would couple it to a specific pipeline. The
+short-circuit belongs to `/ggx-work`'s pipeline-result interpretation,
+which Step 4.4 already owns.
+
+**Why this does NOT fire for `/dev:ff` or `/bug:ff`**: dev and bug
+pipelines terminate at PR-open. Their "done" is unambiguous — the next
+`/route` call returns `(none)` and the loop terminates via Step 4.1.
+Only port has a mid-pipeline handoff that requires a human gate.
 
 ---
 
@@ -337,25 +414,28 @@ where it left off via `infer_dev_stage`.
 
 ## Relationship to `/ggx-dispatcher`
 
-Today `/ggx-dispatcher` spawns `/port:ff --auto` or `/dev:ff --auto`
-per ticket, having pre-computed the lane via its `fresh-port` /
-`fresh-dev` selection (see `ggx-dispatcher.md` §2.1, §5.1, §5.2).
+`/ggx-dispatcher` now spawns `/ggx-work <id> --auto` for every locked
+ticket regardless of lane (see `ggx-dispatcher.md` §5.1). Inside each
+spawned subagent, `/ggx-work` calls `/route --non-interactive` to pick
+`/port:ff` / `/dev:ff` / `/bug:ff` from the classification label plus
+worktree filesystem state.
 
-Once `/ggx-work --auto` is in place, dispatcher can migrate to:
+Label ownership is split (see `ggx-dispatcher.md`'s "Label ownership
+boundary" section for the canonical statement):
 
-```diff
-- spawn /port:ff --ticket:<id> --auto
-- spawn /dev:ff <id> --auto [--no-figma]
-+ spawn /ggx-work <id> --auto
-```
+- **Workflow labels** (`ready-to-port`, `ready-to-dev`,
+  `dispatcher-*-in-flight`, `need-spec-review`) stay owned by the
+  dispatcher + `/port:ship` + `/dev:ship`. `/ggx-work` reads
+  `need-spec-review` exactly once (Step 4.4a short-circuit after a
+  `/port:ff` success) and never writes any of them.
+- **Classification labels** (`bug`, `port`, `feature`) are owned by
+  humans and read only by `/route`.
 
-Benefits:
-- Lane selection collapses into `/route` (single source of truth)
-- Dispatcher loses lane-specific spawn branches
-- Recovery (Q2/Q4 `dispatcher-*-in-flight` lanes) no longer needs to
-  encode "which pipeline was in flight" — `/route` re-derives from
-  worktree state on re-entry
+What `/ggx-work` contributes on top of plain ff spawn:
 
-The migration is out of scope for this command's initial landing; the
-contract above (`/ggx-work --auto` ≡ dispatcher's per-pipeline spawn)
-exists to make the dispatcher migration a mechanical change later.
+- Handles the port → spec-review HITL handoff cleanly via Step 4.4a
+  (no duplicate Linear comment).
+- Translates `/route`'s `Status: UNKNOWN_LANE` structured failure into
+  a Linear comment via Step 4.3 (auto mode).
+- Same spawn shape for every lane, so dispatcher §5 has no
+  lane-specific branching.
