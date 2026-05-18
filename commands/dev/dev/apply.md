@@ -34,8 +34,12 @@ Why flipped: `/ggx-dispatcher` invokes `/dev:ff --auto` inside a `general-purpos
 ```bash
 WT=$(git rev-parse --show-toplevel)
 TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
-N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
+
+# Pipeline mode: bug vs feature. Resolved by pipe_mode (lib/dev-mode.sh);
+# .dev/mode.md is written by /dev:start --bug.
+source "$HOME/.claude/lib/dev-mode.sh"
+PIPE_MODE=$(pipe_mode "$WT")
 
 # Resolve project profile
 if [ -f "$WT/.gogox-claude.yaml" ]; then
@@ -44,8 +48,18 @@ else
   PLATFORM=$(yq -r '.platform' "$HOME/.claude/commands/profiles/registry/$(basename "$WT").yaml")
 fi
 
-[ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
 [ -n "$TICKET_ID" ] || { echo "FAIL: cannot derive ticket_id from branch name" >&2; exit 1; }
+```
+
+**Mode dispatch**:
+
+- `PIPE_MODE == bug` → jump to **Step 0-bug** below. Steps 1–5 (OpenSpec artifact prep + apply) are SKIPPED entirely. There is no `change_name`, no `tasks.md`, no `/opsx:*` invocation.
+- `PIPE_MODE == feature` → continue with the OpenSpec precondition below, then Steps 1–5.
+
+```bash
+# Feature mode only — bug mode does not need an OpenSpec change directory.
+N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
+[ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
 
 # Classify openspec state for state-A/C branching
 status_json=$(openspec status --change "$N" --json 2>/dev/null)
@@ -57,7 +71,111 @@ elif [ "${artifacts_ready:-0}" -gt 0 ]; then OS_STATE="C"
 else OS_STATE="A"; fi
 ```
 
-Both modes share artifact prep (Steps 1–2). They diverge at Step 3 (HITL gate, default only) and Step 4 (apply path).
+Feature mode shares artifact prep (Steps 1–2). It diverges at Step 3 (HITL gate, default only) and Step 4 (apply path).
+
+---
+
+## Step 0-bug: Agent-autonomous bug fix (bug mode only)
+
+_Run when `PIPE_MODE == bug`. This entire section REPLACES Steps 1–5. After it finishes, return to `/dev:ff` (same "in-loop signal" contract as feature mode)._
+
+The agent is responsible for the **full fix loop** — investigate, hypothesize, implement, commit. The user is NOT asked to find root cause, write code, or pick files. In `--auto` mode there is no HITL at all. In `default` mode there is ONE HITL gate to confirm the agent's fix plan (not to delegate work back to the human).
+
+### Step 0-bug.1: Refresh ticket context
+
+Re-fetch the ticket via `mcp__claude_ai_Linear__get_issue` so the agent has the latest description, comments, and any attached repro steps. Capture into local variables `ticket_title`, `ticket_description`, `ticket_comments`.
+
+If the ticket description is empty or contains less than ~50 chars of substantive content, write `.dev/apply-result.md` with `Status: FAILED — bug ticket is too thin to act on autonomously; needs reproduction steps or symptoms` and STOP. The agent should not fabricate a bug from nothing.
+
+### Step 0-bug.2: Investigate (LLM-driven)
+
+The agent reads the codebase to locate the root cause. **You (the agent) do this yourself using Grep / Read / Glob tools** — do not ask the user where to look.
+
+A minimal investigation procedure:
+
+1. Extract symptoms, affected feature paths, and any file / class names from the ticket text.
+2. Grep the worktree for those names + adjacent vocabulary (provider names, error messages, route names).
+3. Read suspect files end-to-end (not snippets) — bugs in state management, lifecycle, async ordering are not visible in 20-line windows.
+4. Form a hypothesis about where the bug lives and why. Bias toward state / lifecycle / ordering bugs over "wrong constant" bugs — they're more common in tickets that reach this pipeline.
+
+Write `.dev/bug-analysis.md` with this structure (the agent owns the content):
+
+```markdown
+# Bug analysis: <ticket-id>
+
+**Symptoms** (from ticket):
+- ...
+
+**Investigation**:
+- Files read: <list>
+- Key findings: <2-5 bullets about what state / flow is involved>
+
+**Hypothesis**:
+<one paragraph stating root cause>
+
+**Planned fix**:
+- File: <path>
+  Change: <one-line description>
+- File: <path>
+  Change: <one-line description>
+
+**Risk / tests to update**:
+- <what could regress, which tests to add or modify>
+```
+
+This file is the agent's audit trail — useful for post-hoc review even if the fix is correct.
+
+### Step 0-bug.3: HITL gate (default mode only)
+
+_Skip entirely if `MODE == auto`._
+
+This is the **only** HITL gate in bug-default mode. Surface the `.dev/bug-analysis.md` "Hypothesis" + "Planned fix" sections to the user via **AskUserQuestion**, and **explicitly warn them what `Proceed` will do**:
+
+> **Warning to surface in the question text**: "Proceeding will run the full pipeline end-to-end — Edit files → `/commit` → `/dev:verify` (tests + audit) → `/dev:review` (code review) → `/dev:ship` (push branch, open draft PR, flip Linear to In Review). This is NOT a `default` pause-after-apply flow like feature mode. To inspect intermediate state, pick `Stop here` instead."
+
+Options:
+
+- `Proceed with this fix (runs end-to-end to draft PR)` — go to Step 0-bug.4. The pipeline will run all downstream stages without further prompts.
+- `Revise the plan` — agent re-reads, updates `.dev/bug-analysis.md`, re-asks this gate.
+- `Stop here` — STOP. User inspects manually. The walker will see no `apply-result.md` and re-emit `apply` on next `/dev:ff`, which re-enters this Step.
+
+**This HITL is for confirming the agent's plan, NOT for the user to find root cause or pick a fix.** If the user picks "Stop here", that is their explicit choice to take over — not the agent giving up.
+
+**Why bug-default runs end-to-end after this gate** (and feature-default stops at apply): bug mode has no user-decision gap left after apply — the agent already wrote the fix, committed it, and produced `.dev/apply-result.md`. The remaining verify/review/ship steps are mechanical (test + audit + push) with no further authoring. Feature mode, by contrast, stops at apply because the user typically wants to inspect the generated artifacts before committing.
+
+`--auto` skips this gate entirely. The Linear ticket already represents a human decision that this is a bug to fix; auto mode trusts that decision.
+
+### Step 0-bug.4: Apply the fix
+
+Edit / Write the files listed in `.dev/bug-analysis.md`'s "Planned fix" section. Keep changes minimal and focused on the root cause — do NOT take the opportunity to refactor surrounding code.
+
+If the platform has a test target that maps obviously to the changed code path (e.g. a `*_test.dart` next to `*.dart` in flutter), add or modify a test that would have caught this bug. Bug fix without a regression test is acceptable but flagged in `apply-result.md`.
+
+### Step 0-bug.5: Commit
+
+Run `/commit` to stage and commit the changes. The commit message should reference `<ticket-id>` and summarize the fix in one sentence — `/commit` handles the formatting.
+
+If `/commit` fails (pre-commit hook, etc.), do NOT amend, retry, or paper over. Write `.dev/apply-result.md` with `Status: FAILED — /commit failed: <hook output>` and STOP. The user resolves the hook issue and re-runs `/dev:ff` (which re-enters this stage; analysis + fix are still in working tree).
+
+### Step 0-bug.6: Write `.dev/apply-result.md`
+
+```markdown
+Status: CLEAR
+Summary: <one-line summary of fix>
+Files changed: <list>
+Regression test: <added | modified | not-applicable | none — reason>
+Analysis: .dev/bug-analysis.md
+```
+
+This file is the walker's done marker for the bug-mode apply stage — `infer_bug_stage` sees `Status: CLEAR` and advances to `verify`.
+
+### Step 0-bug.7: Return to /dev:ff (NOT pipeline-terminal)
+
+Print: `Bug-apply stage done. Pipeline NOT complete — /dev:ff must now continue to /dev:verify. This is an IN-LOOP signal, not a terminal signal. Re-run infer_bug_stage and dispatch the next stage.`
+
+STOP this body. The walker takes over.
+
+---
 
 ## Step 1: Generate artifacts (state A only)
 

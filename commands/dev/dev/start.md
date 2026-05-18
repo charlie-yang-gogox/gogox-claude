@@ -8,7 +8,7 @@ Prerequisite: >
     Environment variables USER_NAME and GH_USER_NAME set.
 ---
 
-# `/dev:start <ticket-id> [--auto] [--no-figma]`
+# `/dev:start <ticket-id> [--auto] [--no-figma] [--bug]`
 
 Prepares the working environment for the dev loop. The done marker for this stage is the worktree (auto) or the on-branch + openspec change dir (default). No `.dev/state.json` is created — `infer_dev_stage` derives the next stage from filesystem.
 
@@ -17,6 +17,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 - `<ticket-id>` — Linear ticket ID (e.g. `CAF-207`). Required.
 - `--auto` — full autonomous pipeline.
 - `--no-figma` — pre-declare that this ticket has no Figma source. Atomic-writes `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` so `/dev:figma` is skipped by the walker. **`/dev:start` is the SOLE writer of the SKIPPED first-line variant** (figma-subagent only writes `Fetched: <ISO>` or `Fetched: FAILED`).
+- `--bug` — bug-fix mode. Skips `/dev:detect` / `/dev:align` (no OpenSpec change to align), and `/dev:apply` takes its Step 0-bug branch: the agent re-fetches the ticket, investigates the codebase, writes the fix, and commits — autonomously. The human is NOT asked to find root cause or write code. In `default` mode there is one HITL gate confirming the agent's fix plan; in `--auto` even that is skipped. Writes `.dev/mode.md` so downstream stages take the bug branch.
 - Linear ticket (fetched).
 - Project profile (`{platform}`, `{deps_install}`, `{test_cmd}`).
 
@@ -24,6 +25,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 
 - Worktree at `../<ticket-id>` (auto only).
 - `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` (when `--no-figma` OR ticket has no Figma URL after parsing).
+- `.dev/mode.md` with single line `bug` (only when `--bug` is set). Absent for the default feature path — readers treat absent as `feature`.
 - Linear ticket: assigned to self, status `In Progress`, `ready-to-dev` label removed (auto only).
 - `/tmp/<ticket-id>.md` — ticket dump (auto only).
 
@@ -34,7 +36,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 
 ## Step 1: Parse input
 
-- Extract `<ticket-id>` from `$ARGUMENTS`. Detect `--auto`. Detect `--no-figma`.
+- Extract `<ticket-id>` from `$ARGUMENTS`. Detect `--auto`. Detect `--no-figma`. Detect `--bug`.
 - Missing ticket-id in `<auto-mode>` → STOP.
 - Missing ticket-id in default mode → use **AskUserQuestion**. Stop if still missing.
 
@@ -112,11 +114,26 @@ fi
 
 `/dev:start` is the SOLE writer of the `Fetched: SKIPPED` first-line variant. figma-subagent only writes `Fetched: <ISO>` (success) or `Fetched: FAILED` (MCP fail). If the SKIPPED first line is missing on a no-Figma ticket, `infer_dev_stage` advances to `figma`; figma-subagent then receives an empty URL list and refuses with FAILED. Recovery: re-run `/dev:start`.
 
+## Step 4b: Bug-mode marker (when --bug)
+
+```bash
+BUG_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--bug' && echo 1 || echo 0)
+
+if [ "$BUG_FLAG" = "1" ]; then
+  mkdir -p .dev
+  printf 'bug\n' > .dev/mode.md.tmp
+  mv .dev/mode.md.tmp .dev/mode.md   # atomic
+fi
+```
+
+`.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. Default (feature) mode does NOT write this file — readers treat absent as `feature`. This keeps existing dev-pipeline runs unchanged and makes bug mode opt-in.
+
 ## Step 5: Announce and stop
 
 Print one of:
 
 - Figma path: `Started /dev pipeline for <ticket-id> (<title>). Mode: <auto|default>. Next: /dev:figma`
 - `--no-figma` path: `Started /dev pipeline for <ticket-id> (<title>). Mode: <auto|default>. Figma source pre-declared as none. Next: /dev:apply (figma + align skipped via .dev/figma-context.md SKIPPED first line)`
+- `--bug` path: `Started /bug pipeline for <ticket-id> (<title>). Mode: <auto|default>. Next: /dev:apply (bug branch) — the agent will investigate the codebase, write the fix, and commit autonomously. OpenSpec stages (detect / align) are skipped.`
 
 In auto mode, the chain orchestrator (`/dev:ff`) will continue automatically. STOP this stage's body.

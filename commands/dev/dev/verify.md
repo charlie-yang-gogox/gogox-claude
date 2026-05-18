@@ -24,8 +24,13 @@ Test → audit → format → commit. The verify-agent is the load-bearing piece
 
 ```bash
 WT=$(git rev-parse --show-toplevel)
-N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
+
+# Pipeline mode: bug (no openspec) vs feature (openspec-driven).
+# Resolved by pipe_mode (lib/dev-mode.sh); .dev/mode.md is written by
+# /dev:start when --bug; absent ⇒ feature.
+source "$HOME/.claude/lib/dev-mode.sh"
+PIPE_MODE=$(pipe_mode "$WT")
 
 # Resolve base_ref from profile
 if [ -f "$WT/.gogox-claude.yaml" ]; then
@@ -35,14 +40,27 @@ else
 fi
 BASE_REF="origin/trunk"   # default; override per profile if needed
 
-[ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
-[ "$MODE" = "auto" ] || { echo "FAIL: /dev:verify is auto-only. Default mode terminates at /dev:apply." >&2; exit 1; }
+if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" != "bug" ]; then
+  echo "FAIL: /dev:verify requires --auto (or bug mode via /bug:ff). Default-mode feature pipelines terminate at /dev:apply." >&2
+  exit 1
+fi
 
-# Apply must have completed (tasks all [x])
-tasks_done=$(openspec list --json 2>/dev/null \
-  | jq -e --arg n "$N" '.changes[] | select(.name==$n) | (.completedTasks == .totalTasks) and (.totalTasks > 0)' \
-  > /dev/null 2>&1 && echo "yes")
-[ "$tasks_done" = "yes" ] || { echo "FAIL: apply not complete (tasks not all [x]). Run /dev:apply first." >&2; exit 1; }
+if [ "$PIPE_MODE" = "bug" ]; then
+  # Bug mode: no openspec change dir, no tasks.md. Sanity-check the human committed something.
+  N=""
+  COMMITS_AHEAD=$(git rev-list --count "$BASE_REF..HEAD" 2>/dev/null || echo 0)
+  [ "$COMMITS_AHEAD" -gt 0 ] || {
+    echo "FAIL: bug-mode /dev:verify requires at least one commit beyond $BASE_REF. Commit your fix first." >&2
+    exit 1; }
+else
+  # Feature mode: require openspec change dir + completed tasks.
+  N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
+  [ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
+  tasks_done=$(openspec list --json 2>/dev/null \
+    | jq -e --arg n "$N" '.changes[] | select(.name==$n) | (.completedTasks == .totalTasks) and (.totalTasks > 0)' \
+    > /dev/null 2>&1 && echo "yes")
+  [ "$tasks_done" = "yes" ] || { echo "FAIL: apply not complete (tasks not all [x]). Run /dev:apply first." >&2; exit 1; }
+fi
 
 # Figma raw dir is the auditor's input — pass it through if present
 FIGMA_RAW=""
@@ -60,7 +78,7 @@ If still failing after fix attempts, note in the eventual verify report and proc
 Use the **Agent** tool with `subagent_type: "verify-agent"`, `mode: "bypassPermissions"`. Prompt with the three required inputs:
 
 - `base` — `$BASE_REF` (e.g. `origin/trunk`)
-- `change name` — `$N`
+- `change name` — `$N` if non-empty, else pass `(bug-mode: no openspec change)` so the auditor knows to skip openspec cross-checks and rely on diff + tests alone.
 - `figma raw directory` — `$FIGMA_RAW` if non-empty, else omit
 
 **Pass the raw dir, not the receipt path.** The auditor must read `.dev/figma-raw/*.json` directly, not `.dev/figma-context.md`. The receipt is a curated summary written by the implementing pipeline — sharing it with the auditor would re-converge auditor and implementer onto the same filtered view, defeating the whole point of the split. The receipt is referenced internally by verify-agent only for sha256 cross-check.

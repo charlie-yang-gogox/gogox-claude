@@ -25,19 +25,36 @@ Final stage. Closes out the dev loop with archive + PR + Linear update + report.
 ```bash
 WT=$(git rev-parse --show-toplevel)
 TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
-N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
-[ "$MODE" = "auto" ] || { echo "FAIL: /dev:ship is auto-only." >&2; exit 1; }
-[ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
+# Pipeline mode: bug vs feature. Resolved by pipe_mode (lib/dev-mode.sh).
+# See /dev:start --bug and /dev:verify Step 0.
+source "$HOME/.claude/lib/dev-mode.sh"
+PIPE_MODE=$(pipe_mode "$WT")
+
+if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" != "bug" ]; then
+  echo "FAIL: /dev:ship requires --auto (or bug mode via /bug:ff)." >&2
+  exit 1
+fi
 [ -n "$TICKET_ID" ] || { echo "FAIL: cannot derive ticket_id from branch name" >&2; exit 1; }
 [ -f "$WT/.dev/verify-pass.md" ] && grep -q '^Status: CLEAR' "$WT/.dev/verify-pass.md" \
   || { echo "FAIL: verify not CLEAR. Run /dev:verify first." >&2; exit 1; }
 [ -f "claude-reports/$TICKET_ID/code-review.md" ] && ! grep -qiE '^critical:' "claude-reports/$TICKET_ID/code-review.md" \
   || { echo "FAIL: code-review.md missing or has critical findings. Run /dev:review first." >&2; exit 1; }
+
+if [ "$PIPE_MODE" = "bug" ]; then
+  N=""   # bug mode: no openspec change to archive
+else
+  N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
+  [ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
+fi
 ```
 
-## Step 1: Archive OpenSpec changes
+## Step 1: Archive OpenSpec changes (feature mode only)
+
+In bug mode (`PIPE_MODE=bug`), there is no OpenSpec change to archive — skip this step entirely and proceed to Step 2.
+
+In feature mode:
 
 1. Run `/opsx:archive` to archive all OpenSpec changes for `$N`.
 2. Commit the archived changes.
@@ -101,7 +118,10 @@ Use `mcp__claude_ai_Linear__save_comment`:
 
 ## Step 6: Stop
 
-No state mutation. The done markers are: (1) `openspec/changes/archive/$N/` exists, (2) `gh pr view $TICKET_ID --json state -q .state` returns `OPEN`, (3) Linear status is `In Review`, (4) `dispatcher-dev-in-flight` label absent on the ticket (per Step 3 + `commands/dev/ggx-dispatcher.md` Plan X).
+No state mutation. The done markers are:
+
+- Feature mode: (1) `openspec/changes/archive/$N/` exists, (2) `gh pr view $TICKET_ID --json state -q .state` returns `OPEN`, (3) Linear status is `In Review`, (4) `dispatcher-dev-in-flight` label absent on the ticket (per Step 3 + `commands/dev/ggx-dispatcher.md` Plan X).
+- Bug mode: (2)–(4) above. Step (1) is intentionally absent — there is no OpenSpec change in bug mode, so the walker derives `done` from PR-open + Linear `In Review` alone.
 
 Print: `Pipeline complete. PR: <PR URL>.`
 
