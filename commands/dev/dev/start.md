@@ -102,17 +102,27 @@ fi
 ```bash
 mkdir -p .dev
 TICKET_BODY=$(mcp__claude_ai_Linear__get_issue ... | jq -r '.description // ""')
-HAS_FIGMA_URL=$(echo "$TICKET_BODY" | grep -cE 'figma\.com/(design|file|board|slides|make)/')
+
+# Concatenate every comment body into one stream so the same regex catches
+# Figma URLs whether they were placed in the description or added later via
+# a comment. This is the move that retired the dispatcher's pre-detection
+# of `--no-figma`: /dev:start is now authoritative.
+TICKET_COMMENTS=$(mcp__claude_ai_Linear__list_comments ... | jq -r '.comments[].body // ""' | tr '\n' ' ')
+
+HAS_FIGMA_URL=$(printf '%s\n%s\n' "$TICKET_BODY" "$TICKET_COMMENTS" \
+  | grep -cE 'figma\.com/(design|file|board|slides|make)/')
 NO_FIGMA_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--no-figma' && echo 1 || echo 0)
 
 if [ "$NO_FIGMA_FLAG" = "1" ] || [ "$HAS_FIGMA_URL" -eq 0 ]; then
-  REASON=$([ "$NO_FIGMA_FLAG" = "1" ] && echo "--no-figma flag at /dev:start" || echo "no Figma URL in ticket description")
+  REASON=$([ "$NO_FIGMA_FLAG" = "1" ] && echo "--no-figma flag at /dev:start" || echo "no Figma URL in ticket description or comments")
   printf 'Fetched: SKIPPED — %s\n' "$REASON" > .dev/figma-context.md.tmp
   mv .dev/figma-context.md.tmp .dev/figma-context.md   # atomic
 fi
 ```
 
 `/dev:start` is the SOLE writer of the `Fetched: SKIPPED` first-line variant. figma-subagent only writes `Fetched: <ISO>` (success) or `Fetched: FAILED` (MCP fail). If the SKIPPED first line is missing on a no-Figma ticket, `infer_dev_stage` advances to `figma`; figma-subagent then receives an empty URL list and refuses with FAILED. Recovery: re-run `/dev:start`.
+
+**Comment scan is intentional.** Designers and reviewers frequently drop Figma links into a follow-up comment rather than editing the ticket description. Looking only at the description silently routed those tickets into the SKIPPED short-circuit, which then forced callers like `/ggx-dispatcher` to maintain a parallel `--no-figma` pre-detection. Scanning both surfaces here means `/dev:start` is the single authority on "does this ticket have Figma source?"; the explicit `--no-figma` flag is preserved as the manual override.
 
 ## Step 4b: Bug-mode marker (when --bug)
 
