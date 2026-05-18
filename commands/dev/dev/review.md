@@ -25,7 +25,14 @@ TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 BASE_REF="origin/trunk"   # default
 
-[ "$MODE" = "auto" ] || { echo "FAIL: /dev:review is auto-only." >&2; exit 1; }
+# Pipeline mode: bug vs feature. Resolved by pipe_mode (lib/dev-mode.sh).
+source "$HOME/.claude/lib/dev-mode.sh"
+PIPE_MODE=$(pipe_mode "$WT")
+
+if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" != "bug" ]; then
+  echo "FAIL: /dev:review requires --auto (or bug mode via /bug:ff)." >&2
+  exit 1
+fi
 [ -f "$WT/.dev/verify-pass.md" ] && grep -q '^Status: CLEAR' "$WT/.dev/verify-pass.md" \
   || { echo "FAIL: .dev/verify-pass.md missing or not CLEAR. Run /dev:verify first." >&2; exit 1; }
 [ -n "$TICKET_ID" ] || { echo "FAIL: cannot derive ticket_id from branch name" >&2; exit 1; }
