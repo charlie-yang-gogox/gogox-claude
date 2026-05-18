@@ -14,8 +14,22 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_DIR="$HOME/.claude/skills"
 AGENTS_DIR="$HOME/.claude/agents"
 COMMANDS_DIR="$HOME/.claude/commands"
+LIB_DIR="$HOME/.claude/lib"
 
-mkdir -p "$SKILLS_DIR" "$AGENTS_DIR" "$COMMANDS_DIR"
+mkdir -p "$SKILLS_DIR" "$AGENTS_DIR" "$COMMANDS_DIR" "$LIB_DIR"
+
+# Shared shell helpers (lib/*.sh) — sourced by command bodies at runtime.
+# Symlinked file-by-file so a `git pull` picks up edits immediately.
+INSTALLED_LIBS=()
+if [ -d "$REPO_DIR/lib" ]; then
+  for lib_file in "$REPO_DIR/lib"/*.sh; do
+    [ -f "$lib_file" ] || continue
+    lib_name="$(basename "$lib_file")"
+    rm -f "$LIB_DIR/$lib_name"
+    ln -s "$lib_file" "$LIB_DIR/$lib_name"
+    INSTALLED_LIBS+=("$lib_name")
+  done
+fi
 
 CATEGORIES=("shared" "pm" "dev" "design")
 
@@ -147,6 +161,14 @@ if [ "${#INSTALLED_PROFILES[@]}" -gt 0 ]; then
   echo "Profiles (${#INSTALLED_PROFILES[@]}) — read at runtime by commands:"
   for p in "${INSTALLED_PROFILES[@]}"; do
     echo "  ~/.claude/commands/profiles/$p"
+  done
+  echo
+fi
+
+if [ "${#INSTALLED_LIBS[@]}" -gt 0 ]; then
+  echo "Libs (${#INSTALLED_LIBS[@]}) — sourced at runtime by commands:"
+  for l in "${INSTALLED_LIBS[@]}"; do
+    echo "  ~/.claude/lib/$l"
   done
   echo
 fi
