@@ -17,7 +17,7 @@ Collect raw metrics from the current Claude Code session, optionally compare AI 
 - (none): full flow — metrics + AI summary + post to Linear
 - `--no-linear`: skip posting to Linear
 - `--no-csv`: skip CSV output
-- `--include-dispatcher`: also attribute /ggx-dispatcher subagent runs that targeted this ticket within the last 7 days. Use when the dispatcher ran in a different Claude Code session (typical flow: dispatcher session in main repo → separate per-ticket session in the worktree). The dispatcher's subagent JSONL is parsed in full, so its direct token usage AND any nested figma/verify/dev-agent work is included. **CSV is unaffected** (it stays a per-session ledger); the additions appear in the report and Linear comment only.
+- `--include-dispatcher` / `--no-include-dispatcher`: attribute /ggx-dispatcher subagent runs that targeted this ticket within the last 7 days. **Default: on** — covers the typical flow where the dispatcher ran in the main-repo session and the per-ticket work happened in a separate worktree session. The dispatcher's subagent JSONL is parsed in full, so its direct token usage AND any nested figma/verify/dev-agent work is included. **CSV is unaffected** (it stays a per-session ledger); the additions appear in the report and Linear comment only. Pass `--no-include-dispatcher` to disable.
 - `--dispatcher-lookback-days N`: tune the lookback window (default 7).
 
 ## Steps

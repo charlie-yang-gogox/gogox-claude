@@ -1206,11 +1206,13 @@ def main():
     )
     parser.add_argument(
         "--include-dispatcher",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
             "Pull in metrics from /ggx-dispatcher subagent runs that targeted "
             "the current ticket within the last 7 days (when the dispatcher "
-            "session and the current session are separate Claude Code sessions)."
+            "session and the current session are separate Claude Code sessions). "
+            "Default: on. Use --no-include-dispatcher to disable."
         ),
     )
     parser.add_argument(
