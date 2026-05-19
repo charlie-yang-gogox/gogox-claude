@@ -85,10 +85,11 @@ fi
 1. Verify git is clean and on `trunk`. If not → STOP.
 2. Read the Linear ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`).
 3. Invoke `/add-worktree <ticket-id> --type <type>` — handles fetch, branch, EnterWorktree, port-settings, `{deps_install}`.
-4. <!-- SYNC: the Linear init below is duplicated in three places. When changing it, also update:
-       - /port:start Step 5a  (commands/dev/port/start.md)
-       - /ggx-dispatcher Step 4 (commands/dev/ggx-dispatcher.md)
-       Drift between these breaks dispatcher idempotency. -->
+4. <!-- SYNC: the Linear init below is duplicated in four places. When changing it, also update:
+       - /port:start Step 5a   (commands/dev/port/start.md)
+       - /ggx-dispatcher Step 4.1 (commands/dev/ggx-dispatcher.md)
+       - /ggx-work Step 2.5    (commands/dev/ggx-work.md — the HITL+auto orchestrator path)
+       Drift between these breaks dispatcher idempotency and the HITL orchestrator lifecycle. -->
    Linear MCP transitions: status → `In Progress`, remove `ready-to-dev` label, assign to self via `$USER_NAME`. Set estimate to 1 point if none.
 5. Write the full ticket content to `/tmp/<ticket-id>.md`.
 

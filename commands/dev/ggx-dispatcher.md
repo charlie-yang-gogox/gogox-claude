@@ -34,34 +34,52 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 Two distinct label namespaces drive this pipeline; mixing them up is the
 single most common reason for incorrect routing. They are **orthogonal**.
 
-| Namespace                  | Examples                                                       | Owned by                       | Read by                                       |
-|----------------------------|----------------------------------------------------------------|--------------------------------|-----------------------------------------------|
-| **Workflow labels**        | `ready-to-port`, `ready-to-dev`, `dispatcher-port-in-flight`, `dispatcher-dev-in-flight`, `need-spec-review` | dispatcher + `/port:ship` + `/dev:ship` | dispatcher (Q1–Q4 discovery, §4.1 lock, §6.2 fallback); `/ggx-work` Step 4.4a (need-spec-review only) |
-| **Classification labels**  | `bug`, `port`, `feature`                                       | humans (PM/eng)                | `/route` (and only `/route`)                  |
+| Namespace                  | Examples                                                       | Owned by                                                                                       | Read by                                                                                       |
+|----------------------------|----------------------------------------------------------------|------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
+| **Workflow labels**        | `ready-to-port`, `ready-to-dev`, `dispatcher-port-in-flight`, `dispatcher-dev-in-flight`, `need-spec-review` | dispatcher + `/port:ship` + `/dev:ship` + `/ggx-work` (scoped — see below)                     | dispatcher (Q1–Q4 discovery, §4.1 lock, §6.2 fallback); `/ggx-work` Step 2.5 + Step 4.4a; `/spec-review` batch fetch |
+| **Classification labels**  | `bug`, `port`, `feature`                                       | humans (PM/eng)                                                                                | `/route`; `/ggx-work` Step 2.5 (read-only, lane derivation)                                   |
+
+`/ggx-work`'s write scope inside the workflow namespace is deliberately
+narrow:
+
+- **Step 2.5** removes `ready-to-port` / `ready-to-dev` after lane is
+  derived — same as `/port:start` / `/dev:start` auto-mode item 4 and
+  the dispatcher §4.1 fresh-lane swap. Idempotent across all three
+  writers; whichever runs first wins.
+- **Step 4.4a HITL fallback** adds `need-spec-review` after a
+  successful `/port:ff` if absent. Compensates for `/port:ship`'s
+  HITL-mode skip (its step 13 documents the rationale). Never fires
+  when `/port:ship --auto` already added the label.
+- **`/ggx-work` NEVER writes `dispatcher-*-in-flight`.** Those labels
+  remain exclusively dispatcher's resume signal — see the Guardrails
+  section below.
 
 What this means concretely:
 
 - The dispatcher continues to find work, race-lock, and reconcile success
-  via workflow labels — that ownership did NOT migrate to `/ggx-work`.
-  Q1–Q4 still filter on `ready-to-*` / `dispatcher-*-in-flight`; §4.1
-  still swaps `ready-to-*` → `dispatcher-*-in-flight`; §6.2 still
-  inspects in-flight residue to decide success vs. failure.
+  via workflow labels. Q1–Q4 still filter on `ready-to-*` /
+  `dispatcher-*-in-flight`; §4.1 still swaps `ready-to-*` →
+  `dispatcher-*-in-flight`; §6.2 still inspects in-flight residue to
+  decide success vs. failure. `/ggx-work`'s expanded write authority
+  covers the orchestrator's own lifecycle moves (Step 2.5, Step 4.4a);
+  the dispatcher's contracts are unchanged.
 - The dispatcher does NOT read classification labels. It cannot route by
   pipeline type itself, and doesn't try — once a ticket is locked, the
   spawned `/ggx-work` subagent calls `/route`, which reads the
   classification label and decides which `/port:ff` / `/dev:ff` /
-  `/bug:ff` to run.
+  `/bug:ff` to run. `/ggx-work` Step 2.5 also reads the classification
+  label to derive lane for its lifecycle init, but does not write it.
 - `/route` deliberately does NOT read workflow labels (see `/route`
   guardrails). It cannot tell a freshly-locked ticket apart from a
   recovery one — and shouldn't have to. The classification label
   combined with worktree filesystem state (`.port/synth-report.md`,
   `.dev/*` markers) is sufficient because the underlying ff walkers
   resume idempotently from those markers.
-- `need-spec-review` is special: written by `/port:ship`, consumed by
-  both the human spec reviewer AND by `/ggx-work` Step 4.4a (which uses
-  its presence as a short-circuit terminator so the loop does not
-  re-call `/route` and double-post a HITL comment on top of
-  `/port:ship`'s own user-facing comment).
+- `need-spec-review` has two writers: `/port:ship --auto` step 13
+  (canonical dispatcher path) and `/ggx-work` Step 4.4a else-branch
+  (canonical HITL path). Both produce the same end state — label
+  present, ticket discoverable by `/spec-review`'s batch fetch and by
+  `/ggx-work` Step 4.4a's short-circuit on the next invocation.
 
 The dispatcher is the boundary process. Inside the dispatcher we speak
 "workflow"; inside a spawned `/ggx-work` subagent we speak
@@ -304,7 +322,8 @@ per §5.1; lane only drives the §4.1 lock-label transition and the
 <!-- SYNC: steps 2–5 below (status / assignee / estimate / comment) are duplicated in:
      - /dev:start Auto-mode item 4 (commands/dev/dev/start.md)
      - /port:start Step 5a       (commands/dev/port/start.md)
-     Drift between these breaks dispatcher idempotency.
+     - /ggx-work Step 2.5        (commands/dev/ggx-work.md — the HITL+auto orchestrator path)
+     Drift between these breaks dispatcher idempotency and the HITL orchestrator lifecycle.
 
      Step 1 (the label swap) is INTENTIONALLY dispatcher-only under Plan X. The *:start
      commands continue to do a plain `remove ready-to-*` and MUST NOT add any
@@ -650,10 +669,10 @@ STOP.
 
 | Label                              | Added by                  | Removed by                                                                              | Meaning                                  |
 |------------------------------------|---------------------------|-----------------------------------------------------------------------------------------|------------------------------------------|
-| `ready-to-port`                    | human (PM/eng)            | `/port:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-port lane)                       | "this ticket is ready for the port pipeline" |
-| `ready-to-dev`                     | human (PM/eng)            | `/dev:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-dev lane)                         | "this ticket is ready for the dev pipeline" |
+| `ready-to-port`                    | human (PM/eng)            | `/port:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-port lane) / `/ggx-work` Step 2.5 | "this ticket is ready for the port pipeline" |
+| `ready-to-dev`                     | human (PM/eng)            | `/dev:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-dev lane) / `/ggx-work` Step 2.5 | "this ticket is ready for the dev pipeline" |
 | `dispatcher-port-in-flight`        | `/ggx-dispatcher` §4.1 (fresh-port) | `/port:ship` step 13 (success) / `/ggx-dispatcher` §3.1 (PR exists) / `/ggx-dispatcher` §4.2 (rollback fresh-port only) | "dispatcher is mid-run on port; resume if seen next time" |
 | `dispatcher-dev-in-flight`         | `/ggx-dispatcher` §4.1 (fresh-dev)  | `/dev:ship` step 3 (success) / `/ggx-dispatcher` §3.1 (PR exists) / `/ggx-dispatcher` §4.2 (rollback fresh-dev only)   | "dispatcher is mid-run on dev; resume if seen next time"  |
-| `need-spec-review`                 | `/port:ship` step 13 (auto only) | human reviewer                                                                          | "ported spec ready for human spec review" |
+| `need-spec-review`                 | `/port:ship` step 13 (auto only) / `/ggx-work` Step 4.4a else-branch (HITL fallback) | human reviewer / `/spec-review` step 6                                                  | "ported spec ready for human spec review" |
 
 Invariant: a ticket should never have both `ready-to-*` AND the matching `dispatcher-*-in-flight` simultaneously (§2.2 conflict check b). If it does, the lock state is inconsistent — dispatcher skips with a comment asking the human to resolve.
