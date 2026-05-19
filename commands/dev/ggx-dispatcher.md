@@ -185,7 +185,7 @@ Selection model (Plan X, May 2026):
 
 - **Fresh dispatch** = ticket has `ready-to-port` / `ready-to-dev`. The label IS the "ready to dispatch" signal — **Q1/Q3 deliberately omit the `state` filter** because the port→spec-review→dev handoff transitions the label without resetting status to `To-do`: port leaves status as `In Progress`, the human reviewer relabels `need-spec-review` → `ready-to-dev` without touching status, so any `state: unstarted` filter on Q3 silently drops every post-port dev ticket. The status-level exclusion of completed / in-review tickets is enforced post-fetch (§2.0) instead. At lock time the dispatcher swaps the actionable label for the corresponding `dispatcher-*-in-flight` label (§4.1).
 - **Crash recovery** = ticket has `dispatcher-port-in-flight` / `dispatcher-dev-in-flight` left over from a prior run that didn't reach ship. Q2/Q4 catch these. `/port:ship` and `/dev:ship` remove the in-flight label only on full success, so its presence is a hard signal that "dispatcher claimed this and didn't finish."
-- The two-label split (port vs dev) lets the dispatcher pick the right §4.1 lock transition and the right §6.1a poller walker (`infer_port_stage` vs `infer_dev_stage`) without re-deriving pipeline type from worktree state. Spawn target itself is uniformly `/ggx-work` (§5.1) regardless of lane — pipeline routing happens inside the subagent via `/route`.
+- The two-label split (port vs dev) lets the dispatcher pick the right §4.1 lock transition and the right §6.4 walker (`infer_port_stage` vs `infer_dev_stage`) at end-of-run table rendering without re-deriving pipeline type from worktree state. Spawn target itself is uniformly `/ggx-work` (§5.1) regardless of lane — pipeline routing happens inside the subagent via `/route`.
 - Q2/Q4 use state name `In Progress` exactly — `In Review` / `Ready for QA` are post-work and must NOT be re-dispatched. (If a team renames `In Progress`, Q2/Q4 silently miss; verify with `mcp__claude_ai_Linear__list_issue_statuses` on onboarding.)
 
 ### 2.0 Post-fetch status filter (Q1/Q3 only)
@@ -315,7 +315,7 @@ Total: <N>. Re-run without --dry-run to execute.
 
 The command string is identical for every lane (`/ggx-work <ID> --auto`)
 per §5.1; lane only drives the §4.1 lock-label transition and the
-§6.1a poller's choice of `infer_port_stage` vs `infer_dev_stage`.
+§6.4 end-of-run table's choice of `infer_port_stage` vs `infer_dev_stage`.
 
 ### 4.1 Init protocol — apply per ticket, sequentially
 
@@ -372,7 +372,7 @@ The user sees the full failure trace in stdout per the audit-trail rule.
 
 ### 4.3 Print the dispatch table
 
-**Required step, not optional preview prose.** After every surviving ticket is locked and before any Step 5 spawn, the next thing emitted in stdout must be this table. **The table is text output, the N `Agent` spawn calls (§5.3), and the poller `Bash` call (§6.1a) all emit in the SAME single assistant message** — print the table, then immediately follow with the spawn tool calls in the same turn. Do NOT end the turn after the table to "let the user confirm". That artificial stop has been observed to force the user to type "are you done?" before any agent spawn actually happens — by the time they nudge, the perceived dispatcher has been idle for minutes. This applies on every sweep, including a same-lock re-sweep where the batch is small (1–2 tickets) and the §4.1 `locked ✓` lines might feel sufficient — they are not.
+**Required step, not optional preview prose.** After every surviving ticket is locked and before any Step 5 spawn, the next thing emitted in stdout must be this table. **The table is text output and the N `Agent` spawn calls (§5.3) all emit in the SAME single assistant message** — print the table, then immediately follow with the spawn tool calls in the same turn. Do NOT end the turn after the table to "let the user confirm". That artificial stop has been observed to force the user to type "are you done?" before any agent spawn actually happens — by the time they nudge, the perceived dispatcher has been idle for minutes. This applies on every sweep, including a same-lock re-sweep where the batch is small (1–2 tickets) and the §4.1 `locked ✓` lines might feel sufficient — they are not.
 
 ```
 Dispatching <N> tickets:
@@ -394,7 +394,7 @@ Column rules:
 - `command` = the exact string Step 5 will pass to its spawn — uniformly `/ggx-work <ID> --auto` per §5.1.
 - `link` = the issue `url` field returned by the Step 2 `list_issues` calls. Cache the url alongside the ticket id from Step 2 so this column does not require a re-fetch.
 
-While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention. §6.1a inlines this value into the poller's heredoc when spawning. **Held in session state only — do NOT write a roster.tsv file.** Build the roster here (not in §6.1a) because §6.1a spawns in the same assistant message as Step 5 and has no separate "compute" turn.
+While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>\t<url>`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention; `url` is the issue url cached from Step 2. **Held in session state only — do NOT write a roster.tsv file.** §6.4 uses this roster to render the end-of-run table (lane lookup, walker selection, Ticket-link column).
 
 ### 5.1 Uniform spawn command (all four lanes)
 
@@ -423,7 +423,7 @@ the ticket through the SKIPPED short-circuit. Dispatcher just passes
 
 ### 5.3 Spawn
 
-**You MUST emit the §4.3 dispatch table, all N `Agent` tool calls, and the §6.1a poller `Bash` call in a single assistant message.** Print the table text first, then the N parallel `Agent` calls, then the poller `Bash` call — back-to-back, no turn break, no intermediate "ready to spawn?" pause. Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. It may also be tempted to end the turn after the table so the user can review — do not. The table is the review; spawning follows immediately in the same turn. Narration belongs after the join in Step 6.
+**You MUST emit the §4.3 dispatch table and all N `Agent` tool calls in a single assistant message.** Print the table text first, then the N parallel `Agent` calls — back-to-back, no turn break, no intermediate "ready to spawn?" pause. Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. It may also be tempted to end the turn after the table so the user can review — do not. The table is the review; spawning follows immediately in the same turn. Narration belongs after the join in Step 6.
 
 Single message, N parallel `Agent` calls (one per ticket):
 
@@ -471,85 +471,50 @@ Single message, N parallel `Agent` calls (one per ticket):
 Print after spawn:
 
 ```
-Spawned <N> agents in parallel + 1 progress poller (re-renders every 30s).
-Session must remain open. Do not let the machine sleep.
+Spawned <N> agents in parallel. Completion lines will appear as each
+finishes. Session must remain open. Do not let the machine sleep.
 ```
 
-See §6.1a for the poller spec — it MUST be included in the same single assistant message as the N `Agent` spawn calls.
+No separate progress poller. Per-ticket completion is surfaced by §6.1
+when each agent's background notification arrives; end-of-run rendering
+is the §6.4 summary table.
 
 ---
 
 ## Step 6: Wait, fallback, finalize
 
-### 6.1 Progress poll loop
+### 6.1 Wait for completions
 
-The dispatcher session waits here for every spawned agent's background-completion notification — but it does **not** sit silently. A sibling `Bash` poller (also `run_in_background: true`) re-renders a stage-progress table every 30s so the user can monitor the batch in real time. The poller is a separate background process, not LLM-driven, so its cadence is independent of how often agent notifications arrive.
+The dispatcher session waits here for every spawned agent's
+background-completion notification. **No sibling poller process.** Each
+notification arrives event-driven from the harness; printing a 30s tick
+table on top of those events was redundant noise — the table re-rendered
+the same per-ticket state that the notification line already announces.
 
-#### 6.1a Spawn the poller (same message as Step 5)
+Maintain an in-memory `joined` counter. On each notification:
 
-In the same single assistant message that fans out the N `Agent` calls (§5.3), include one additional `Bash` tool call with `run_in_background: true` running the script below. Keeping spawn + poller in one message means the poller starts before the first agent's first stage transition.
+1. Increment `joined`.
+2. Emit one short status line so the user sees progress live:
+   ```
+   [<joined>/<N>] <ticket-id> finished (<terminal-condition>).
+   ```
+   `<terminal-condition>` is parsed from the agent's return message —
+   one of `done` / `port-paused` / `failed` (matching the three
+   `/ggx-work` terminal conditions enumerated in §5.3's spawn prompt).
+   Failed cases include a short reason if the agent provided one.
 
-```bash
-RUN_DIR="claude-reports/dispatcher/$RUN_TS-$$"
-mkdir -p "$RUN_DIR"
+When `joined == N`, proceed to §6.2.
 
-# Roster is inlined here by the dispatcher when emitting this Bash call —
-# one line per ticket, format <ticket-id>\t<lane>\t<absolute-worktree-path>.
-# Built in §4.3 alongside the dispatch table; in-memory only, no roster.tsv file.
-# Worktree path = realpath ../<TICKET-ID> (the /add-worktree convention).
-ROSTER=$(cat <<'TSV'
-<paste DISPATCH_ROSTER value here, literal tab-separated lines>
-TSV
-)
+`/dev:*` / `/port:*` stages write authoritative marker files
+(`.dev/verify-pass.md`, `.port/synth-report.md`, etc.) as they run.
+Those files remain the ground truth for "what stage did this ticket
+reach"; §6.4 reads them via `infer_*_stage` at end-of-run for the
+summary table. Reading marker files mid-run via a polling loop would
+produce stale-or-flickering values vs the notification, so the
+dispatcher delegates that read to end-of-run when state is settled.
 
-START_EPOCH=$(date -u +%s)
-
-while true; do
-  # Bail out if dispatcher has cleared the lockfile (= all agents joined, §6.5).
-  [ -f claude-reports/dispatcher/.lock ] || exit 0
-
-  now=$(date -u +%s)
-  elapsed=$(( now - START_EPOCH ))
-  mm=$(printf '%02d' $(( elapsed / 60 )))
-  ss=$(printf '%02d' $(( elapsed % 60 )))
-
-  echo
-  echo "Progress (t+${mm}:${ss}):"
-  echo "| ticket  | lane         | stage   | last marker                                  |"
-  echo "|---------|--------------|---------|----------------------------------------------|"
-
-  while IFS=$'\t' read -r tid lane wt; do
-    # Pick the right walker based on lane (port walker for *-port, dev walker for *-dev).
-    case "$lane" in
-      *-port) stage=$(cd "$wt" 2>/dev/null && infer_port_stage 2>/dev/null || echo "?") ;;
-      *-dev)  stage=$(cd "$wt" 2>/dev/null && infer_dev_stage  2>/dev/null || echo "?") ;;
-    esac
-
-    # last marker = most-recently-modified file under .dev/ or .port/, for the table's
-    # human-readable "what just happened" column. Pure cosmetic — the stage column is the
-    # ground-truth signal.
-    marker=$(find "$wt/.dev" "$wt/openspec/changes"/*/.port -type f 2>/dev/null \
-              | xargs ls -t 2>/dev/null | head -1 \
-              | sed "s|^$wt/||")
-
-    printf '| %-7s | %-12s | %-7s | %-44s |\n' "$tid" "$lane" "$stage" "${marker:-—}"
-  done <<< "$ROSTER"
-
-  sleep 30
-done
-```
-
-`infer_dev_stage` and `infer_port_stage` are the same walkers defined in `commands/dev/dev/ff.md` and `commands/dev/port/ff.md`. Either source them via a shared shell file or inline them into the poller — implementer's call.
-
-#### 6.1b Join
-
-The dispatcher LLM is notified per spawned agent as each completes. Maintain an in-memory `joined` counter; on each notification, increment AND emit one short status line so the user sees progress without scanning the poller table — format: `[<joined>/<N>] <ticket-id> finished (<terminal-condition>).` When `joined == N`, proceed to §6.2. The poller is terminated cleanly in §6.5 when the dispatcher removes the lockfile (the script's first check inside the `while` loop exits on missing lock).
-
-#### 6.1c Why polling, not heartbeats
-
-Spawned `/dev:*` / `/port:*` stages already write authoritative marker files (`.dev/figma-context.md`, `.dev/align-result.md`, `.dev/apply-result.md`, `.dev/verify-pass.md`, `.port/dev-notes.md`, `.port/pm-notes.md`, `.port/synth-report.md`, etc.). Reading those files is the dispatcher's only ground truth for "what stage are we in" — adding stage-transition heartbeats would couple every stage command to the dispatcher and drift on the next refactor. The 30s cadence is a compromise: stages take 1–10 min so transitions are caught within one tick; faster would burn terminal scrollback for no signal.
-
-Closing the dispatcher session early still kills MCP connections and leaves Linear in a half-finalized state — that constraint is unchanged.
+Closing the dispatcher session early still kills MCP connections and
+leaves Linear in a half-finalized state — that constraint is unchanged.
 
 ### 6.2 Per-ticket fallback
 
@@ -599,7 +564,29 @@ fi
 
 Copies (not symlinks — the worktree may be removed later) every spawned ff agent's reports written **during this dispatcher run** into one central place. Stale files from prior runs are filtered out by the `-newermt` predicate. `.dev/` is included so post-mortem can read the actual stage markers without going to the worktree.
 
-### 6.4 Run summary
+### 6.4 End-of-run summary table
+
+For each ticket in `DISPATCH_ROSTER` (§4.3), collect:
+
+| Signal           | Source                                                                 | Notes                                                                                          |
+|------------------|------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
+| `labels`         | `mcp__claude_ai_Linear__get_issue <ticket-id>` — re-fetched at §6.4 time | settled state, after `/port:ship` / `/dev:ship` / fallback (§6.2) have written                  |
+| `status.name`    | same call                                                              | `In Progress` / `In Review` etc.                                                                |
+| `url`            | from roster (cached at Step 2)                                         | no re-fetch                                                                                     |
+| `pipeline_outcome` | the agent's reported terminal condition (§6.1)                       | `done` / `port-paused` / `failed`                                                              |
+| `stage_reached` | `infer_port_stage` (port lane) or `infer_dev_stage` (dev lane), run inside the ticket worktree | walker selection follows the lane tagged in §2.1                                                |
+| `pr`             | `gh pr view <ticket-id> --json number,url,state` (per ticket) — best-effort | non-zero exit ⇒ no PR, render `—`                                                              |
+
+**Render order**: collect all rows in memory first (parallel MCP+gh calls
+allowed and encouraged), then emit the table in one block. Roster order
+(priority sort from §2.3) is preserved.
+
+Compute `Flags` for each row by combining the collected signals:
+
+- `need-spec-review` — label present (port pipeline shipped, waiting on human review)
+- `in-flight residue` — `dispatcher-port-in-flight` OR `dispatcher-dev-in-flight` still present (failure case — Q2/Q4 will re-pick next sweep)
+- `In Review` — status `In Review` (dev shipped, PR open, ready for reviewer)
+- empty cell — nothing actionable
 
 Write `claude-reports/dispatcher/<RUN_TS>-<PID>.md`:
 
@@ -615,21 +602,28 @@ Default br : <default_branch>
 
 ## Result counts
 Dispatched : <N>
-  ↳ port  : <count>
-  ↳ dev   : <count>
+  ↳ done        : <count>
+  ↳ port-paused : <count>
+  ↳ failed      : <count>
 Skipped    : <count>
   ↳ PR-exists       : <count>
   ↳ branch-exists   : <count>
   ↳ duplicate-label : <count>
-Failed     : <count>
 
 ## Per-ticket result
-| ticket | type | result | worktree |
-|--------|------|--------|----------|
-| ...    | ...  | ...    | ...      |
+| Ticket                    | Lane         | Status        | Stage reached | PR                | Flags             |
+|---------------------------|--------------|---------------|---------------|-------------------|-------------------|
+| [CAF-212](<url>)          | fresh-port   | 🟡 port-paused | port:ship     | —                 | need-spec-review  |
+| [CAF-198](<url>)          | fresh-dev    | 🟢 done        | dev:ship      | [#842](<pr-url>)  | In Review         |
+| [CAF-370](<url>)          | recovery-dev | 🔴 failed      | dev:verify    | —                 | in-flight residue |
 ```
 
-`<RUN_TS>` is `date -u +%Y%m%dT%H%M%SZ`. The `<PID>` suffix prevents collision when concurrent invocations slip past the lock (only possible if the lock was forcibly removed).
+Emoji legend: 🟢 `done` (PR opened, in review), 🟡 `port-paused`
+(spec-review HITL), 🔴 `failed` (in-flight residue stays for next sweep).
+
+`<RUN_TS>` is `date -u +%Y%m%dT%H%M%SZ`. The `<PID>` suffix prevents
+collision when concurrent invocations slip past the lock (only possible
+if the lock was forcibly removed).
 
 ### 6.5 Release lock + final stdout summary
 
@@ -637,17 +631,30 @@ Failed     : <count>
 rm -f claude-reports/dispatcher/.lock
 ```
 
-Print:
+Print the **same table** built in §6.4 plus a counts line and the
+report path:
 
 ```
-Dispatcher run complete.
-  Dispatched : <N>  (<N-port> port, <N-dev> dev)
-  Skipped    : <N>  (<reasons>)
-  Failed     : <N>
-  Report     : claude-reports/dispatcher/<RUN_TS>-<PID>.md
+Dispatcher run complete (t+<MM:SS>). <N> tickets:
+
+| Ticket                    | Lane         | Status        | Stage reached | PR                | Flags             |
+|---------------------------|--------------|---------------|---------------|-------------------|-------------------|
+| [CAF-212](<url>)          | fresh-port   | 🟡 port-paused | port:ship     | —                 | need-spec-review  |
+| [CAF-198](<url>)          | fresh-dev    | 🟢 done        | dev:ship      | [#842](<pr-url>)  | In Review         |
+| [CAF-370](<url>)          | recovery-dev | 🔴 failed      | dev:verify    | —                 | in-flight residue |
+
+Counts : <N-done> done, <N-paused> port-paused, <N-failed> failed.
+Report : claude-reports/dispatcher/<RUN_TS>-<PID>.md
 ```
 
 STOP.
+
+**Render contract**: stdout and the md file render the **same six
+columns in the same order**. Don't drop columns from stdout to fit
+terminal width — Claude Code terminals wrap markdown tables fine, and
+the value of the table is being identical across the two surfaces (you
+can paste either into a PR comment / Slack thread without re-reading
+the data).
 
 ---
 
