@@ -66,6 +66,8 @@ Run the full formatting pipeline appropriate for the active project, optionally 
    flutter analyze --fatal-warnings --fatal-infos
    ```
 
+   **`flutter analyze` must use `--fatal-warnings --fatal-infos`** — this matches CI (Code Magic: `fvm flutter analyze --fatal-warnings --fatal-infos`). Never omit `--fatal-infos`; info-level lints will fail the build.
+
    If analyze reports any errors or warnings, **stop and surface them to the user**. Do not commit.
 
 ### {platform} = android
