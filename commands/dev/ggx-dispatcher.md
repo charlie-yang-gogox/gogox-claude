@@ -454,6 +454,16 @@ Single message, N parallel `Agent` calls (one per ticket):
 
   When you stop, report which of (a)/(b)/(c) was hit and quote the final
   /ggx-work output line.
+
+  Cosmetic contract: /ggx-work emits a line of the form
+  `[ggx-work-result] outcome=<done|port-paused|failed> ticket=<ID>` as
+  the last informational line before exit at every terminal point. Pass
+  that line through verbatim in your return message — the dispatcher's
+  §6.1 progress display reads it as a best-effort signal. The
+  dispatcher's authoritative outcome classification (§6.2 / §6.4) is
+  derived from filesystem markers + Linear labels + PR state, NOT from
+  this line, so it is safe if the line is absent or your wording
+  differs.
   ```
 - `mode`: `"bypassPermissions"`
 - `run_in_background`: `true`
@@ -485,17 +495,34 @@ notification arrives event-driven from the harness; printing a 30s tick
 table on top of those events was redundant noise — the table re-rendered
 the same per-ticket state that the notification line already announces.
 
-Maintain an in-memory `joined` counter. On each notification:
+Maintain an in-memory `joined` counter. On each background-completion
+notification:
 
 1. Increment `joined`.
-2. Emit one short status line so the user sees progress live:
+2. **Best-effort cosmetic parse** of the outcome line from the agent's
+   return message (`$AGENT_OUTPUT`):
+   ```bash
+   outcome=$(printf '%s\n' "$AGENT_OUTPUT" \
+     | grep -oE '^\[ggx-work-result\] outcome=[a-z-]+' \
+     | tail -1 \
+     | awk -F= '{print $2}')
    ```
-   [<joined>/<N>] <ticket-id> finished (<terminal-condition>).
+   If matched (`outcome` ∈ `{done, port-paused, failed}`), emit:
    ```
-   `<terminal-condition>` is parsed from the agent's return message —
-   one of `done` / `port-paused` / `failed` (matching the three
-   `/ggx-work` terminal conditions enumerated in §5.3's spawn prompt).
-   Failed cases include a short reason if the agent provided one.
+   [<joined>/<N>] <ticket-id> finished (<outcome>).
+   ```
+   If absent or malformed, emit (no parenthetical):
+   ```
+   [<joined>/<N>] <ticket-id> finished.
+   ```
+
+   The agent's text NEVER drives §6.2 / §6.4 classification — this parse
+   feeds only this live UX line. **The §6.1 line is for live UX.** The
+   settled outcome used by §6.2 fallback writes and §6.4 summary
+   rendering is derived authoritatively in §6.2 from Linear labels +
+   walker stage + PR state — not from this cosmetic parse. A future
+   refactor that drops the `[ggx-work-result]` line from `/ggx-work`
+   degrades only this progress line, never classification.
 
 When `joined == N`, proceed to §6.2.
 
@@ -510,15 +537,84 @@ dispatcher delegates that read to end-of-run when state is settled.
 Closing the dispatcher session early still kills MCP connections and
 leaves Linear in a half-finalized state — that constraint is unchanged.
 
-### 6.2 Per-ticket fallback
+### 6.2 Per-ticket fallback — authoritative outcome derivation
 
-For each completed ticket, inspect its result (via the agent's return message) and Linear state:
+The agent's text from §6.1 is cosmetic. The authoritative classification
+of each ticket's outcome is derived here from three independent signals
+the dispatcher already has access to: settled Linear state, walker-read
+worktree markers, and PR state. No new file, no new helper — everything
+runs inline per ticket.
 
-| Type    | Expected end state                                                                                                  | Fallback if missing                                                          |
-|---------|---------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
-| port OK | `need-spec-review` label added by `/port:ship`; `dispatcher-port-in-flight` removed by `/port:ship`                 | `save_issue` → add `need-spec-review` AND remove `dispatcher-port-in-flight` |
-| dev OK  | status `In Review` set by `/dev:ship`; `dispatcher-dev-in-flight` removed by `/dev:ship`                            | `save_issue` → set status `In Review` AND remove `dispatcher-dev-in-flight`  |
-| failure | `dispatcher-*-in-flight` label still present (intentional — feeds Q2/Q4 on the next run); agent posted its own failure comment | If no failure comment exists, post one via `save_comment`. Do NOT remove the in-flight label — that's the resume signal. |
+For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
+
+1. **Re-fetch Linear** via `mcp__claude_ai_Linear__get_issue <ticket-id>`
+   → `labels[]`, `status.name`. This is a fresh read, settled after the
+   agent's `/port:ship` / `/dev:ship` writes have completed. ONE call per
+   ticket — the same call §6.4 used to make later; we just do it here
+   instead. No new MCP cost.
+2. **Run the walker** inside the ticket worktree (`../<ticket-id>`):
+   - lane ∈ {`fresh-port`, `recovery-port`} → `infer_port_stage` →
+     emits one of `start` / `explore` / `plan` / `synth` / `revise` /
+     `ship` / `done`.
+   - lane ∈ {`fresh-dev`, `recovery-dev`} → `infer_dev_stage` →
+     emits one of `start` / `figma` / `align` / `apply` / `verify` /
+     `review` / `ship` / `done`. (Bug-mode tickets go through
+     `infer_bug_stage_safe` from the same dispatch, which emits a subset
+     of the same vocabulary; treat them uniformly.)
+3. **Query PR state**:
+   ```bash
+   pr_state=$(gh pr view "$TICKET_ID" --json state -q .state 2>/dev/null)
+   ```
+   Possible values: `OPEN` / `MERGED` / `CLOSED` / empty (no PR).
+4. **Derive `outcome`** from the three signals — rules are lane-aware:
+
+   **Dev lane** (`fresh-dev` / `recovery-dev`):
+   - `outcome = done` ⟺ `walker == done` (the walker's own `done`
+     predicate already requires the openspec archive dir + a clean
+     `code-review.md` + `gh pr view ... state == OPEN`, so this is the
+     strongest single signal; no need to re-check those components).
+   - `outcome = failed` ⟺ `walker != done` AND
+     `dispatcher-dev-in-flight ∈ labels` (the agent claimed it, the
+     `/dev:ship` finalize never ran).
+   - `port-paused` is impossible on the dev lane — exclude it from the
+     decision table.
+
+   **Port lane** (`fresh-port` / `recovery-port`):
+   - `outcome = port-paused` ⟺ `need-spec-review ∈ labels` (canonical
+     port handoff — either `/port:ship --auto` step 13 added it, or
+     `/ggx-work` Step 4.4a's HITL fallback did).
+   - `outcome = done` ⟺ walker reached a terminal port stage (`done` —
+     i.e. PR OPEN) AND `need-spec-review ∉ labels`. Rare today
+     (port-only tickets that ship a PR without triggering spec-review),
+     but allowed.
+   - `outcome = failed` ⟺ `walker != done` AND
+     `dispatcher-port-in-flight ∈ labels` AND `need-spec-review ∉ labels`.
+
+   If none of the rules above match — meaning the three signals
+   disagree in an unexpected combination (e.g. dev lane with
+   `walker == done` but `dispatcher-dev-in-flight` still present, or a
+   port lane with no in-flight label, no `need-spec-review`, and walker
+   not at terminal) — classify as `failed` and log a single WARN line so
+   the user can investigate:
+   ```
+   WARN: outcome-derivation-ambiguous <ticket-id> lane=<lane> labels=<csv> walker=<stage> pr=<state>
+   ```
+   Continue processing other tickets; do not abort the batch.
+
+5. **Fallback writes** based on the derived `outcome`:
+
+   | derived `outcome`  | required Linear end state                                                            | fallback if missing                                                                                                                                                                                                                  |
+   |--------------------|--------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+   | dev `done`         | status `In Review` AND `dispatcher-dev-in-flight ∉ labels`                           | `save_issue` to set status `In Review` and remove `dispatcher-dev-in-flight`. **Re-fetch labels via `get_issue` immediately before the write** to avoid racing a slow `/dev:ship` finalize (same diff-then-write idempotency pattern as `/port:ship` step 13). |
+   | port `port-paused` | `need-spec-review ∈ labels` AND `dispatcher-port-in-flight ∉ labels`                  | `save_issue` to add `need-spec-review` and remove `dispatcher-port-in-flight`. Same re-fetch-before-write to avoid racing a slow `/port:ship`.                                                                                          |
+   | port `done`        | `dispatcher-port-in-flight ∉ labels`                                                  | `save_issue` to remove `dispatcher-port-in-flight`. Re-fetch labels first.                                                                                                                                                              |
+   | any `failed`       | `dispatcher-*-in-flight` STAYS (resume signal for Q2/Q4 on the next sweep)            | If no failure comment exists yet on the ticket, post one via `save_comment`. Do NOT remove the in-flight label — that's the resume signal.                                                                                              |
+
+6. Carry the derived `outcome` (plus the fresh `labels` / `status.name` /
+   `walker_stage` / `pr_state` signals) into the in-memory roster row
+   that §6.4 will consume. **No new file — bash variables / inline
+   payload only.** §6.4 reuses these signals without a second MCP / gh
+   round trip.
 
 ### 6.3 Aggregate reports
 
@@ -564,16 +660,20 @@ For each ticket in `DISPATCH_ROSTER` (§4.3), collect:
 
 | Signal           | Source                                                                 | Notes                                                                                          |
 |------------------|------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
-| `labels`         | `mcp__claude_ai_Linear__get_issue <ticket-id>` — re-fetched at §6.4 time | settled state, after `/port:ship` / `/dev:ship` / fallback (§6.2) have written                  |
-| `status.name`    | same call                                                              | `In Progress` / `In Review` etc.                                                                |
+| `labels`         | §6.2-derived (shared) — `get_issue` was made there                      | shared with §6.2 — no extra MCP round trip. If §6.2 didn't run (e.g. `--dry-run`), re-fetch here. |
+| `status.name`    | same call as `labels`                                                  | shared with §6.2 — `In Progress` / `In Review` etc.                                              |
 | `url`            | from roster (cached at Step 2)                                         | no re-fetch                                                                                     |
-| `pipeline_outcome` | the agent's reported terminal condition (§6.1)                       | `done` / `port-paused` / `failed`                                                              |
-| `stage_reached` | `infer_port_stage` (port lane) or `infer_dev_stage` (dev lane), run inside the ticket worktree | walker selection follows the lane tagged in §2.1                                                |
-| `pr`             | `gh pr view <ticket-id> --json number,url,state` (per ticket) — best-effort | non-zero exit ⇒ no PR, render `—`                                                              |
+| `outcome`        | §6.2-derived value (`done` / `port-paused` / `failed`) carried in-memory | authoritative — derived from `labels` + walker + PR per the §6.2 algorithm. If §6.2 didn't run (e.g. `--dry-run`), recompute inline from `labels` + walker + PR here. The agent's text is NOT consulted. |
+| `stage_reached` | §6.2-derived walker output (`infer_port_stage` / `infer_dev_stage` already ran there) | shared with §6.2 — no extra worktree shell-out. Walker selection follows the lane tagged in §2.1. |
+| `pr`             | §6.2-derived `pr_state` (shared) — augmented here with `number,url` via `gh pr view <ticket-id> --json number,url,state` if needed for the link column | shared with §6.2 for the state; non-zero exit ⇒ no PR, render `—`                              |
 
 **Render order**: collect all rows in memory first (parallel MCP+gh calls
 allowed and encouraged), then emit the table in one block. Roster order
 (priority sort from §2.3) is preserved.
+
+The Result counts block below (`done` / `port-paused` / `failed`) sums
+over the §6.2-derived `outcome` values per ticket — never over the
+agent's text from §6.1.
 
 Compute `Flags` for each row by combining the collected signals:
 

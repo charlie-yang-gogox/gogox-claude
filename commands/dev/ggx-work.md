@@ -207,6 +207,15 @@ Invoke `<route-cmd>` inline. Parse its output for:
 
 ### Step 4: Per-branch behavior
 
+> **Cosmetic exit-line contract** (read by `/ggx-dispatcher` §6.1).
+> Every terminal point below ends its stdout with a single line of the form
+> `[ggx-work-result] outcome=<done|port-paused|failed> ticket=<ticket-id>`
+> immediately before `exit`. This line is **cosmetic** — the dispatcher uses
+> it only for the live `[joined/N]` progress line in §6.1. Authoritative
+> classification in §6.2 and §6.4 reads filesystem markers + Linear labels
+> + PR state, not this line. Treat the line as best-effort: if a future
+> refactor drops it the dispatcher must not break.
+
 #### Step 4.1: Terminal
 
 Ticket is done. Print:
@@ -215,6 +224,7 @@ Ticket is done. Print:
 Ticket <ticket-id>: done.
 Iterations: <iter>
 Final phase: <phase>
+[ggx-work-result] outcome=done ticket=<ticket-id>
 ```
 
 Exit 0.
@@ -243,6 +253,7 @@ Next step : <recommended_command>
 
 Run that command yourself. When it completes, re-invoke /ggx-work <ticket-id>
 to continue.
+[ggx-work-result] outcome=port-paused ticket=<ticket-id>
 ```
 
 Exit 0.
@@ -261,6 +272,7 @@ Print one line to stdout for the dispatcher's audit trail:
 
 ```
 Ticket <ticket-id>: already at need-spec-review (HITL). No comment posted.
+[ggx-work-result] outcome=port-paused ticket=<ticket-id>
 ```
 
 Exit 0.
@@ -278,6 +290,7 @@ Print:
 Reason: <reason>
 Iter  : <iter>
 Last  : <recommended_command (if any)>
+[ggx-work-result] outcome=failed ticket=<ticket-id>
 ```
 
 Exit non-zero.
@@ -294,6 +307,13 @@ Iter   : <iter>
 Last   : `<recommended_command (if any)>`
 
 Manual investigation needed.
+```
+
+Print to stdout (in addition to the Linear comment above), so the dispatcher's
+§6.1 cosmetic parse picks up the outcome line from the agent's return message:
+
+```
+[ggx-work-result] outcome=failed ticket=<ticket-id>
 ```
 
 Exit non-zero.
@@ -357,6 +377,7 @@ if "need-spec-review" ∈ labels:
       /port:ship has notified Linear. Re-invoke /ggx-work <ticket-id>
       after the human runs /spec-review and flips the label to
       ready-to-dev.
+      [ggx-work-result] outcome=port-paused ticket=<ticket-id>
     exit 0   (terminal — do NOT continue the loop)
 else:
     # Canonical HITL path: /port:ship HITL intentionally skips the
@@ -383,6 +404,7 @@ else:
       Added `need-spec-review` label so /spec-review (batch or single
       mode) will pick this ticket up. Re-invoke /ggx-work <ticket-id>
       after running /spec-review.
+      [ggx-work-result] outcome=port-paused ticket=<ticket-id>
     exit 0   (terminal — do NOT continue the loop)
 ```
 
