@@ -18,6 +18,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 - `--auto` — full autonomous pipeline.
 - `--no-figma` — pre-declare that this ticket has no Figma source. Atomic-writes `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` so `/dev:figma` is skipped by the walker. **`/dev:start` is the SOLE writer of the SKIPPED first-line variant** (figma-subagent only writes `Fetched: <ISO>` or `Fetched: FAILED`).
 - `--bug` — bug-fix mode. Skips `/dev:detect` / `/dev:align` (no OpenSpec change to align), and `/dev:apply` takes its Step 0-bug branch: the agent re-fetches the ticket, investigates the codebase, writes the fix, and commits — autonomously. The human is NOT asked to find root cause or write code. In `default` mode there is one HITL gate confirming the agent's fix plan; in `--auto` even that is skipped. Writes `.dev/mode.md` so downstream stages take the bug branch.
+- `--no-ticket-init` — Skip the Linear ticket-init step (status → `In Progress`, drop `ready-to-dev` label, assignee → self, estimate=1, starting comment). Use when running the pipeline locally for inspection / debugging without flipping the ticket on Linear. Default: enabled (init runs in both default and `--auto` modes; the underlying `/_ticket-init` skill is idempotent).
 - Linear ticket (fetched).
 - Project profile (`{platform}`, `{deps_install}`, `{test_cmd}`).
 
@@ -27,7 +28,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 - `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` (when `--no-figma` OR ticket has no Figma URL after parsing).
 - `.dev/spec-review-directives.md` — first line `Status: PRESENT` (latest `<!-- spec-review:v1 -->` Linear comment captured verbatim) or `Status: NONE` (no such comment). Always written. Consumed by `/dev:apply` Step 0-bug.1 and Step 4D.1 to surface `[REVISED]` directives to whichever agent authors code.
 - `.dev/mode.md` with single line `bug` (only when `--bug` is set). Absent for the default feature path — readers treat absent as `feature`.
-- Linear ticket: assigned to self, status `In Progress`, `ready-to-dev` label removed (auto only).
+- Linear ticket: assigned to self, status `In Progress`, `ready-to-dev` label removed, estimate=1 if null, starting comment posted (both modes; skipped only with `--no-ticket-init`). Driven by `/_ticket-init` (idempotent).
 - `/tmp/<ticket-id>.md` — ticket dump (auto only).
 
 ## Step 0: Resolve project profile
@@ -37,7 +38,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 
 ## Step 1: Parse input
 
-- Extract `<ticket-id>` from `$ARGUMENTS`. Detect `--auto`. Detect `--no-figma`. Detect `--bug`.
+- Extract `<ticket-id>` from `$ARGUMENTS`. Detect `--auto`. Detect `--no-figma`. Detect `--bug`. Detect `--no-ticket-init`.
 - Missing ticket-id in `<auto-mode>` → STOP.
 - Missing ticket-id in default mode → use **AskUserQuestion**. Stop if still missing.
 
@@ -86,18 +87,22 @@ fi
 1. Verify git is clean and on `trunk`. If not → STOP.
 2. Read the Linear ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`).
 3. Invoke `/add-worktree <ticket-id> --type <type>` — handles fetch, branch, EnterWorktree, port-settings, `{deps_install}`.
-4. <!-- SYNC: the Linear init below is duplicated in four places. When changing it, also update:
-       - /port:start Step 5a   (commands/dev/port/start.md)
-       - /ggx-dispatcher Step 4.1 (commands/dev/ggx-dispatcher.md)
-       - /ggx-work Step 2.5    (commands/dev/ggx-work.md — the HITL+auto orchestrator path)
-       Drift between these breaks dispatcher idempotency and the HITL orchestrator lifecycle. -->
-   Linear MCP transitions: status → `In Progress`, remove `ready-to-dev` label, assign to self via `$USER_NAME`. Set estimate to 1 point if none.
-5. Write the full ticket content to `/tmp/<ticket-id>.md`.
+4. Write the full ticket content to `/tmp/<ticket-id>.md`.
 
 **Default mode**:
 
 1. Run `/check-clean`. Stop if not clean.
 2. Check current branch contains `<ticket-id>` (case-insensitive). If not, **AskUserQuestion** to confirm; stop on No.
+
+### Step 3c: Linear ticket-init (both modes)
+
+<!-- SYNC: ticket-init lives in commands/dev/_ticket-init.md. The 4 callers
+     (port:start Step 5a, dev:start Step 3c, ggx-dispatcher Step 4.1,
+     ggx-work Step 2.5) all invoke it; do not re-inline the block here. -->
+
+Unless `--no-ticket-init` was passed, invoke `/_ticket-init <ticket-id> dev` (idempotent; safe to re-call). This runs in both auto and default modes so the ticket transitions to `In Progress`, drops `ready-to-dev`, assigns to self, sets estimate=1 if null, and posts a starting comment. The skill short-circuits each write on a skip condition so dispatcher-spawned chains (`/ggx-dispatcher` §4.1 → `/ggx-work` Step 2.5 → `/dev:start` Step 3c) collapse to one effective init.
+
+When `--no-ticket-init` is set, log a single line `ticket-init: skipped (--no-ticket-init)` and continue.
 
 ## Step 4: Figma SKIPPED first line (when no source)
 

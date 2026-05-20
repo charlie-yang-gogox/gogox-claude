@@ -12,12 +12,13 @@ description: >
 
 Set up the worktree, OpenSpec change, and `.port/` working directory for a Linear ticket. After this stage the cwd is inside the new worktree and downstream stages (`/port:explore`, `/port:plan`, `/port:synth`, ...) can run.
 
-**Usage**: `/port:start --ticket:<ID> [--prd:"text"|--prd-file:<path>] [--auto] [--recreate]`
+**Usage**: `/port:start --ticket:<ID> [--prd:"text"|--prd-file:<path>] [--auto] [--recreate] [--no-ticket-init]`
 
 - `--ticket:<ID>` (**required**) — Linear ticket ID, e.g. `--ticket:CAF-212`. Reject with usage message when missing.
 - `--prd:"<text>"` / `--prd-file:<path>` — Optional PRD enrichment. Mutually exclusive. When omitted in HITL mode the user is asked; in `--auto` mode the ticket description's `<!-- port:simple:start -->` block is used if present.
 - `--auto` — Unattended mode. Skip every `AskUserQuestion`; resolve every gate per the auto-decision table.
 - `--recreate` — Always remove an existing worktree / change directory and re-scaffold.
+- `--no-ticket-init` — Skip the Linear ticket-init step (status → `In Progress`, drop `ready-to-port` label, assignee → self, estimate=1, starting comment). Use when running the pipeline locally for inspection / debugging without flipping the ticket on Linear. Default: enabled (init runs in both default and `--auto` modes; the underlying `/_ticket-init` skill is idempotent).
 
 ---
 
@@ -26,7 +27,7 @@ Set up the worktree, OpenSpec change, and `.port/` working directory for a Linea
 1. **Parse arguments.**
    - Read `--ticket:`. Missing → STOP with: `Usage: /port:start --ticket:<ID> [--prd:"..."|--prd-file:path] [--auto] [--recreate]`.
    - Validate ticket ID against `^[A-Z]+-[0-9]+$`. Invalid → STOP.
-   - Set `<auto-mode>` from `--auto`. Set `<recreate>` from `--recreate`.
+   - Set `<auto-mode>` from `--auto`. Set `<recreate>` from `--recreate`. Set `<no-ticket-init>` from `--no-ticket-init`.
 
 2. **Resolve project profile.**
    - Read `<repo-root>/.gogox-claude.yaml`: capture `platform`, `product`, `branch_prefix`, `ticket_system`. Missing → STOP with: `Cannot resolve gogox project profile. Run /init-project.`
@@ -59,23 +60,15 @@ Set up the worktree, OpenSpec change, and `.port/` working directory for a Linea
    - If the issue is not assigned to the current user, STOP with:
      > `Ticket <ticket-id> is assigned to <assignee>, not you. Aborting to avoid working on someone else's ticket.`
 
-5a. **Auto-mode Linear init (`--auto` only).**
+5a. **Linear ticket-init (both modes).**
 
-    <!-- SYNC: the Linear init below is duplicated in four places. When changing it, also update:
-         - /dev:start Auto-mode item 4 (commands/dev/dev/start.md, "Step 3b: Mode-specific pre-flight → Auto mode")
-         - /ggx-dispatcher Step 4.1   (commands/dev/ggx-dispatcher.md)
-         - /ggx-work Step 2.5         (commands/dev/ggx-work.md — the HITL+auto orchestrator path)
-         Drift between these breaks dispatcher idempotency and the HITL orchestrator lifecycle. -->
+    <!-- SYNC: ticket-init lives in commands/dev/_ticket-init.md. The 4 callers
+         (port:start Step 5a, dev:start Step 3c, ggx-dispatcher Step 4.1,
+         ggx-work Step 2.5) all invoke it; do not re-inline the block here. -->
 
-    When `<auto-mode>` is true, perform Linear ticket init **before** any worktree / scaffold work:
-    1. `mcp__claude_ai_Linear__save_issue`: remove `ready-to-port` from labels.
-    2. `mcp__claude_ai_Linear__save_issue`: status → `In Progress`.
-    3. `mcp__claude_ai_Linear__save_issue`: assignee = `$USER_NAME`.
-    4. `mcp__claude_ai_Linear__save_issue`: estimate = `1` if currently null.
+    Unless `<no-ticket-init>` is set, invoke `/_ticket-init <ticket-id> port` (idempotent; safe to re-call). This runs **before** any worktree / scaffold work so a downstream abort (assignee mismatch, worktree user-aborted, etc.) still leaves the ticket flipped to `In Progress` with the actionable label cleared. Both default and `--auto` modes invoke it; the skill's per-write skip conditions collapse dispatcher-spawned chains (`/ggx-dispatcher` §4.1 → `/ggx-work` Step 2.5 → `/port:start` Step 5a) to one effective init.
 
-    These mutations are idempotent — when `/ggx-dispatcher` already locked the ticket in its Step 4, this re-runs as a no-op.
-
-    HITL mode (no `--auto`) skips this step entirely. Users invoking `/port:start --ticket:CAF-X` interactively get scaffold-only behavior — no Linear writes happen here.
+    When `<no-ticket-init>` is set, log a single line `ticket-init: skipped (--no-ticket-init)` and continue.
 
 6. **Derive change name and figma URL.**
    - `<change-name>` = kebab-case(title) with any leading `[bracket]`/`[CAF-XXX]`/`<lang>` prefix stripped before slugifying. Lowercase, hyphen-separated, no leading/trailing hyphens.
