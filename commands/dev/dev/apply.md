@@ -85,6 +85,8 @@ The agent is responsible for the **full fix loop** — investigate, hypothesize,
 
 Re-fetch the ticket via `mcp__claude_ai_Linear__get_issue` so the agent has the latest description, comments, and any attached repro steps. Capture into local variables `ticket_title`, `ticket_description`, `ticket_comments`.
 
+**Spec-review overrides (authoritative — override conflicting ticket / OpenSpec guidance).** After the re-fetch, read `.dev/spec-review-directives.md` (written one-shot by `/dev:start` Step 4c). If its first line is `Status: PRESENT`, include the entire file contents in your working context under the explicit marker `## Spec-review overrides (authoritative — override conflicting design.md / tasks.md / ticket-description guidance)`. Each `### [REVISED]` block's `Directive:` line is a human override that supersedes any conflicting guidance found elsewhere — apply it verbatim. If `Status: NONE`, ignore the file. If the file is missing entirely, treat it as `Status: NONE` (legacy worktree created before this fix landed) — do NOT re-fetch comments to compensate; `/dev:start` is the sole writer.
+
 If the ticket description is empty or contains less than ~50 chars of substantive content, write `.dev/apply-result.md` with `Status: FAILED — bug ticket is too thin to act on autonomously; needs reproduction steps or symptoms` and STOP. The agent should not fabricate a bug from nothing.
 
 ### Step 0-bug.2: Investigate (LLM-driven)
@@ -222,6 +224,8 @@ else:
 
 ### Step 4A: `--auto` path — inline `/opsx:apply`
 
+**Spec-review overrides (authoritative — override conflicting design.md / tasks.md guidance).** Before invoking `/opsx:apply`, read `.dev/spec-review-directives.md` (written one-shot by `/dev:start` Step 4c). If its first line is `Status: PRESENT`, hold the entire file contents in your working context for the duration of `/opsx:apply`. Each `### [REVISED]` block's `Directive:` line is a human override that supersedes any conflicting guidance the `/opsx:apply` task list pulls from `design.md` / `tasks.md` / ticket description — apply it verbatim and reference it in any commit message touching the relevant task. If `Status: NONE`, no overrides apply. Missing file → treat as `Status: NONE` (legacy worktree).
+
 Run `/opsx:apply <change-name>` directly in the current session. No HITL — `--auto` is unattended by definition.
 
 ```bash
@@ -245,6 +249,8 @@ Proceed to Step 5 on success.
 
 #### Step 4D.1: Dispatch dev-agent
 
+**Spec-review overrides — resolve the path before dispatch.** Before spawning, check `.dev/spec-review-directives.md` (written one-shot by `/dev:start` Step 4c). If its first line is `Status: PRESENT`, pass the file path through the input block as `spec_review_directives: .dev/spec-review-directives.md`. If `Status: NONE` or the file is missing, pass `spec_review_directives: none`. The dev-agent (per `agents/dev/dev-agent.md`) is instructed to read this file and treat its `### [REVISED]` directives as authoritative overrides of conflicting `design.md` / `tasks.md` guidance.
+
 Spawn `dev-agent` (opus, worktree-isolated) with these inputs:
 
 ```
@@ -255,6 +261,7 @@ branch_name: $(git rev-parse --abbrev-ref HEAD)
 worktree_path: $WT
 figma_receipt: .dev/figma-context.md  (pass "none" if first line is `Fetched: SKIPPED`)
 figma_raw_dir: .dev/figma-raw/        (or "none")
+spec_review_directives: .dev/spec-review-directives.md  (pass "none" if first line is `Status: NONE` or the file is missing)
 openspec_change_name: $N
 openspec_state: $OS_STATE
 platform: $PLATFORM

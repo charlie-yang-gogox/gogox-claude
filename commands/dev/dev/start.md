@@ -25,6 +25,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 
 - Worktree at `../<ticket-id>` (auto only).
 - `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` (when `--no-figma` OR ticket has no Figma URL after parsing).
+- `.dev/spec-review-directives.md` — first line `Status: PRESENT` (latest `<!-- spec-review:v1 -->` Linear comment captured verbatim) or `Status: NONE` (no such comment). Always written. Consumed by `/dev:apply` Step 0-bug.1 and Step 4D.1 to surface `[REVISED]` directives to whichever agent authors code.
 - `.dev/mode.md` with single line `bug` (only when `--bug` is set). Absent for the default feature path — readers treat absent as `feature`.
 - Linear ticket: assigned to self, status `In Progress`, `ready-to-dev` label removed (auto only).
 - `/tmp/<ticket-id>.md` — ticket dump (auto only).
@@ -45,7 +46,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 A pipeline is in flight in this worktree if any of these are true:
 
 - `openspec/changes/` contains a non-archive change directory.
-- `.dev/` contains any marker file (`.dev/figma-context.md`, `.dev/align-result.md`, `.dev/verify-pass.md`).
+- `.dev/` contains any marker file (`.dev/figma-context.md`, `.dev/align-result.md`, `.dev/verify-pass.md`). Note: `.dev/spec-review-directives.md` is intentionally NOT in this list — it is written every run by Step 4c and would otherwise refuse re-entry on a re-run of `/dev:start`.
 
 If in flight, STOP with: `Pipeline already in flight in this worktree. Resume with /dev:ff, or /dev:ff --from <stage> to reset.`
 
@@ -138,6 +139,66 @@ fi
 ```
 
 `.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. Default (feature) mode does NOT write this file — readers treat absent as `feature`. This keeps existing dev-pipeline runs unchanged and makes bug mode opt-in.
+
+## Step 4c: Capture spec-review directives (if any)
+
+After `/spec-review` runs, the authoritative reviewer decisions live in a
+**Linear comment** whose body starts with the marker
+`<!-- spec-review:v1 ticket=$TICKET_ID -->` (see `commands/dev/spec-review.md`
+§A — "Output comment schema"). The `need-spec-review` label has already
+flipped to `ready-to-dev` by the time `/dev:ff` is dispatched, so label
+probes alone cannot detect that revisions exist. This step captures the
+latest such comment into `.dev/spec-review-directives.md` so every
+downstream stage (`/dev:apply`, dev-agent, bug-mode agent) can honor
+`[REVISED]` directives without re-fetching Linear comments.
+
+This step is one-shot — `/dev:apply` only reads the file; it never re-fetches.
+
+```bash
+mkdir -p .dev
+TICKET_COMMENTS=$(mcp__claude_ai_Linear__list_comments \
+  --issueId "$TICKET_ID" --orderBy createdAt 2>/dev/null || true)
+
+# Find the MOST RECENT comment whose body starts with the spec-review:v1
+# marker for this exact ticket. orderBy=createdAt returns newest first; we
+# take the first match. The marker is anchored at the start of the body
+# per the spec-review schema.
+SPEC_REVIEW_BODY=$(printf '%s' "$TICKET_COMMENTS" \
+  | jq -r --arg t "$TICKET_ID" '
+      [.comments[]?
+        | select(.body
+            | test("^<!-- spec-review:v1 ticket=" + $t + " -->"))]
+      | sort_by(.createdAt) | reverse | .[0].body // empty')
+
+if [ -n "$SPEC_REVIEW_BODY" ]; then
+  # Detect at least one [REVISED] directive; CONFIRMED-only comments are
+  # not load-bearing for downstream stages but we still record the body so
+  # the agent can see "spec review ran, no revisions" rather than guess.
+  REVISED_COUNT=$(printf '%s\n' "$SPEC_REVIEW_BODY" \
+    | grep -cE '^### \[REVISED\] ' || true)
+  {
+    printf 'Status: PRESENT\n'
+    printf 'Revised directives: %s\n' "${REVISED_COUNT:-0}"
+    printf 'Source: Linear comment matching marker `<!-- spec-review:v1 ticket=%s -->` (most recent)\n' "$TICKET_ID"
+    printf '\n## Raw comment body\n\n'
+    printf '```markdown\n%s\n```\n' "$SPEC_REVIEW_BODY"
+  } > .dev/spec-review-directives.md.tmp
+  mv .dev/spec-review-directives.md.tmp .dev/spec-review-directives.md
+else
+  {
+    printf 'Status: NONE\n'
+    printf 'No comment matching marker `<!-- spec-review:v1 ticket=%s -->` was found at /dev:start time.\n' "$TICKET_ID"
+  } > .dev/spec-review-directives.md.tmp
+  mv .dev/spec-review-directives.md.tmp .dev/spec-review-directives.md
+fi
+```
+
+Failure handling: if `list_comments` errors (network, permission), write
+`Status: NONE` with a one-line note `list_comments call failed: <error>`
+and continue. A missing spec-review file is not fatal — feature tickets
+that never went through `/spec-review` (no port stage) and bug tickets
+both legitimately have no such comment. Downstream stages branch on
+`Status: PRESENT` (single grep) and skip the file otherwise.
 
 ## Step 5: Announce and stop
 

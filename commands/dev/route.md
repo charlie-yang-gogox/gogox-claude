@@ -215,6 +215,28 @@ need_spec_review=$(contains <labels> "need-spec-review" ? present : absent)
 
 (Already in memory from Step 2; no extra MCP call.)
 
+**Probe 3 (advisory only): `spec-review:v1` comment present**
+
+This probe does NOT change the recommendation — it exists purely for
+discoverability. When `phase == ready-for-dev`, a `<!-- spec-review:v1 -->`
+comment is the upstream contract from `/spec-review`; we want the user to
+know it will be picked up by `/dev:start` Step 4c and surfaced to
+`/dev:apply` so `[REVISED]` directives are honored.
+
+```bash
+# Only worth probing in the ready-for-dev row; cheap to call but skip when
+# the recommendation is anything other than /dev:ff.
+spec_review_comment=absent
+if [ "$phase" = "ready-for-dev" ]; then
+  spec_review_comment=$(mcp__claude_ai_Linear__list_comments \
+      --issueId "<ticket-id>" --orderBy createdAt 2>/dev/null \
+    | jq -r --arg t "<ticket-id>" '
+        [.comments[]? | select(.body
+            | test("^<!-- spec-review:v1 ticket=" + $t + " -->"))]
+        | length > 0' 2>/dev/null || echo false)
+fi
+```
+
 **Decide** per the matrix above. Populate:
 
 - `phase` from the matrix
@@ -252,6 +274,22 @@ Next after this finishes:
   (Re-run /route <ticket-id> after this command completes to confirm.)
 ```
 
+If Step 4.port's Probe 3 reported `spec_review_comment == true`, append a
+one-line WARN immediately after the `Recommendation:` block (before
+`Reasoning:`):
+
+```
+WARN: A `<!-- spec-review:v1 -->` comment exists on this ticket.
+      /dev:start Step 4c will capture it to .dev/spec-review-directives.md;
+      /dev:apply will surface any [REVISED] directives to the authoring
+      agent as authoritative overrides. No action required here — this is
+      a discoverability note, not a behavior change.
+```
+
+This WARN is a discoverability win only — `/route` itself still recommends
+`/dev:ff` for `ready-for-dev`. Do NOT redirect to `/spec-review`; the
+spec-review human gate has already run by the time this row matches.
+
 STOP. Do not execute the recommended command.
 
 ---
@@ -259,7 +297,9 @@ STOP. Do not execute the recommended command.
 ## Guardrails
 
 - **Read-only.** No `save_issue`, no `save_comment`, no file writes, no
-  git mutations. Linear MCP calls are limited to `get_issue`.
+  git mutations. Linear MCP calls are limited to `get_issue` and
+  `list_comments` (the latter only when phase resolves to `ready-for-dev`,
+  purely to surface the spec-review WARN line in Step 5 — read-only).
 - **No dispatcher coupling.** `/route` does not read `ready-to-port`,
   `ready-to-dev`, or `dispatcher-*-in-flight` labels. The classification
   label + `need-spec-review` + worktree filesystem are the only signals.
