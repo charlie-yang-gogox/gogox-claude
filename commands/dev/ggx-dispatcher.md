@@ -3,9 +3,10 @@ name: ggx-dispatcher
 description: >
   Manual batch worker for actionable Linear tickets. Sweeps the cwd repo's
   team for `ready-to-port` and `ready-to-dev` tickets, race-locks them, and
-  fans out parallel `/port:ff --auto` / `/dev:ff --auto` agents. Single-repo,
-  cwd-driven; user-invoked from a Claude session opened in the target repo
-  on its default branch.
+  fans out parallel `/ggx-work <ID> --auto` agents (which in turn route to
+  `/port:ff` / `/dev:ff` / `/bug:ff` via `/route`). Single-repo, cwd-driven;
+  user-invoked from a Claude session opened in the target repo on its
+  default branch.
 Prerequisite: >
   - Linear MCP authenticated; gh CLI authenticated.
   - cwd is the main worktree of a registered Linear repo, on default branch,
@@ -16,7 +17,7 @@ Prerequisite: >
 
 # /ggx-dispatcher — manual batch worker
 
-Find every actionable ticket in the cwd repo's Linear team and dispatch each through `/port:ff --auto` or `/dev:ff --auto` in parallel. Each spawned agent runs in `run_in_background: true`; the dispatcher waits for all to complete before posting fallbacks and emitting a summary.
+Find every actionable ticket in the cwd repo's Linear team and dispatch each through `/ggx-work <ID> --auto` in parallel. The `/ggx-work` subagent then calls `/route --non-interactive` to pick the right `/port:ff` / `/dev:ff` / `/bug:ff` based on the ticket's classification label and worktree state. Each spawned agent runs in `run_in_background: true`; the dispatcher waits for all to complete before posting fallbacks and emitting a summary.
 
 **Usage**: `/ggx-dispatcher [--dry-run] [--test] [--max-parallel:<N>] [--team:<KEY>]`
 
@@ -27,6 +28,64 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 
 
 ---
+
+## Label ownership boundary
+
+Two distinct label namespaces drive this pipeline; mixing them up is the
+single most common reason for incorrect routing. They are **orthogonal**.
+
+| Namespace                  | Examples                                                       | Owned by                                                                                       | Read by                                                                                       |
+|----------------------------|----------------------------------------------------------------|------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
+| **Workflow labels**        | `ready-to-port`, `ready-to-dev`, `dispatcher-port-in-flight`, `dispatcher-dev-in-flight`, `need-spec-review` | dispatcher + `/port:ship` + `/dev:ship` + `/ggx-work` (scoped — see below)                     | dispatcher (Q1–Q4 discovery, §4.1 lock, §6.2 fallback); `/ggx-work` Step 2.5 + Step 4.4a; `/spec-review` batch fetch |
+| **Classification labels**  | `bug`, `port`, `feature`                                       | humans (PM/eng)                                                                                | `/route`; `/ggx-work` Step 2.5 (read-only, lane derivation)                                   |
+
+`/ggx-work`'s write scope inside the workflow namespace is deliberately
+narrow:
+
+- **Step 2.5** removes `ready-to-port` / `ready-to-dev` after lane is
+  derived — same as `/port:start` / `/dev:start` auto-mode item 4 and
+  the dispatcher §4.1 fresh-lane swap. Idempotent across all three
+  writers; whichever runs first wins.
+- **Step 4.4a HITL fallback** adds `need-spec-review` after a
+  successful `/port:ff` if absent. Compensates for `/port:ship`'s
+  HITL-mode skip (its step 13 documents the rationale). Never fires
+  when `/port:ship --auto` already added the label.
+- **`/ggx-work` NEVER writes `dispatcher-*-in-flight`.** Those labels
+  remain exclusively dispatcher's resume signal — see the Guardrails
+  section below.
+
+What this means concretely:
+
+- The dispatcher continues to find work, race-lock, and reconcile success
+  via workflow labels. Q1–Q4 still filter on `ready-to-*` /
+  `dispatcher-*-in-flight`; §4.1 still swaps `ready-to-*` →
+  `dispatcher-*-in-flight`; §6.2 still inspects in-flight residue to
+  decide success vs. failure. `/ggx-work`'s expanded write authority
+  covers the orchestrator's own lifecycle moves (Step 2.5, Step 4.4a);
+  the dispatcher's contracts are unchanged.
+- The dispatcher does NOT read classification labels. It cannot route by
+  pipeline type itself, and doesn't try — once a ticket is locked, the
+  spawned `/ggx-work` subagent calls `/route`, which reads the
+  classification label and decides which `/port:ff` / `/dev:ff` /
+  `/bug:ff` to run. `/ggx-work` Step 2.5 also reads the classification
+  label to derive lane for its lifecycle init, but does not write it.
+- `/route` deliberately does NOT read workflow labels (see `/route`
+  guardrails). It cannot tell a freshly-locked ticket apart from a
+  recovery one — and shouldn't have to. The classification label
+  combined with worktree filesystem state (`.port/synth-report.md`,
+  `.dev/*` markers) is sufficient because the underlying ff walkers
+  resume idempotently from those markers.
+- `need-spec-review` has two writers: `/port:ship --auto` step 13
+  (canonical dispatcher path) and `/ggx-work` Step 4.4a else-branch
+  (canonical HITL path). Both produce the same end state — label
+  present, ticket discoverable by `/spec-review`'s batch fetch and by
+  `/ggx-work` Step 4.4a's short-circuit on the next invocation.
+
+The dispatcher is the boundary process. Inside the dispatcher we speak
+"workflow"; inside a spawned `/ggx-work` subagent we speak
+"classification"; the only shared signal is the in-flight label, which
+`/ggx-work` never writes and `/port:ship` / `/dev:ship` are the
+authoritative removers of.
 
 ## Execution rules
 
@@ -126,7 +185,7 @@ Selection model (Plan X, May 2026):
 
 - **Fresh dispatch** = ticket has `ready-to-port` / `ready-to-dev`. The label IS the "ready to dispatch" signal — **Q1/Q3 deliberately omit the `state` filter** because the port→spec-review→dev handoff transitions the label without resetting status to `To-do`: port leaves status as `In Progress`, the human reviewer relabels `need-spec-review` → `ready-to-dev` without touching status, so any `state: unstarted` filter on Q3 silently drops every post-port dev ticket. The status-level exclusion of completed / in-review tickets is enforced post-fetch (§2.0) instead. At lock time the dispatcher swaps the actionable label for the corresponding `dispatcher-*-in-flight` label (§4.1).
 - **Crash recovery** = ticket has `dispatcher-port-in-flight` / `dispatcher-dev-in-flight` left over from a prior run that didn't reach ship. Q2/Q4 catch these. `/port:ship` and `/dev:ship` remove the in-flight label only on full success, so its presence is a hard signal that "dispatcher claimed this and didn't finish."
-- The two-label split (port vs dev) means the dispatcher can route to `/port:ff` vs `/dev:ff` from the Linear signal alone, without re-deriving the pipeline type from the worktree.
+- The two-label split (port vs dev) lets the dispatcher pick the right §4.1 lock transition and the right §6.4 walker (`infer_port_stage` vs `infer_dev_stage`) at end-of-run table rendering without re-deriving pipeline type from worktree state. Spawn target itself is uniformly `/ggx-work` (§5.1) regardless of lane — pipeline routing happens inside the subagent via `/route`.
 - Q2/Q4 use state name `In Progress` exactly — `In Review` / `Ready for QA` are post-work and must NOT be re-dispatched. (If a team renames `In Progress`, Q2/Q4 silently miss; verify with `mcp__claude_ai_Linear__list_issue_statuses` on onboarding.)
 
 ### 2.0 Post-fetch status filter (Q1/Q3 only)
@@ -246,22 +305,25 @@ If `--dry-run` is set: print the dispatch table (§4.3 format, with `status` col
 ```
 Planned dispatch (--dry-run, no mutations):
 
-| ticket  | lane       | status  | command                              | link                                  |
-|---------|------------|---------|--------------------------------------|---------------------------------------|
-| CAF-212 | fresh-port | planned | /port:ff --ticket:CAF-212 --auto     | https://linear.app/.../CAF-212        |
-| CAF-198 | fresh-dev  | planned | /dev:ff CAF-198 --auto --no-figma    | https://linear.app/.../CAF-198        |
+| ticket  | lane       | status  | command                | link                                  |
+|---------|------------|---------|------------------------|---------------------------------------|
+| CAF-212 | fresh-port | planned | /ggx-work CAF-212 --auto | https://linear.app/.../CAF-212      |
+| CAF-198 | fresh-dev  | planned | /ggx-work CAF-198 --auto | https://linear.app/.../CAF-198      |
 
 Total: <N>. Re-run without --dry-run to execute.
 ```
 
-The command string is built per ticket via the same §5.1 / §5.2 rules used for live dispatch; the `--no-figma` auto-detection runs here too so the dry-run preview matches what would actually be spawned.
+The command string is identical for every lane (`/ggx-work <ID> --auto`)
+per §5.1; lane only drives the §4.1 lock-label transition and the
+§6.4 end-of-run table's choice of `infer_port_stage` vs `infer_dev_stage`.
 
 ### 4.1 Init protocol — apply per ticket, sequentially
 
 <!-- SYNC: steps 2–5 below (status / assignee / estimate / comment) are duplicated in:
      - /dev:start Auto-mode item 4 (commands/dev/dev/start.md)
      - /port:start Step 5a       (commands/dev/port/start.md)
-     Drift between these breaks dispatcher idempotency.
+     - /ggx-work Step 2.5        (commands/dev/ggx-work.md — the HITL+auto orchestrator path)
+     Drift between these breaks dispatcher idempotency and the HITL orchestrator lifecycle.
 
      Step 1 (the label swap) is INTENTIONALLY dispatcher-only under Plan X. The *:start
      commands continue to do a plain `remove ready-to-*` and MUST NOT add any
@@ -310,16 +372,16 @@ The user sees the full failure trace in stdout per the audit-trail rule.
 
 ### 4.3 Print the dispatch table
 
-**Required step, not optional preview prose.** After every surviving ticket is locked and before any Step 5 spawn, the next thing emitted in stdout must be this table. **The table is text output, the N `Agent` spawn calls (§5.3), and the poller `Bash` call (§6.1a) all emit in the SAME single assistant message** — print the table, then immediately follow with the spawn tool calls in the same turn. Do NOT end the turn after the table to "let the user confirm". That artificial stop has been observed to force the user to type "are you done?" before any agent spawn actually happens — by the time they nudge, the perceived dispatcher has been idle for minutes. This applies on every sweep, including a same-lock re-sweep where the batch is small (1–2 tickets) and the §4.1 `locked ✓` lines might feel sufficient — they are not.
+**Required step, not optional preview prose.** After every surviving ticket is locked and before any Step 5 spawn, the next thing emitted in stdout must be this table. **The table is text output and the N `Agent` spawn calls (§5.3) all emit in the SAME single assistant message** — print the table, then immediately follow with the spawn tool calls in the same turn. Do NOT end the turn after the table to "let the user confirm". That artificial stop has been observed to force the user to type "are you done?" before any agent spawn actually happens — by the time they nudge, the perceived dispatcher has been idle for minutes. This applies on every sweep, including a same-lock re-sweep where the batch is small (1–2 tickets) and the §4.1 `locked ✓` lines might feel sufficient — they are not.
 
 ```
 Dispatching <N> tickets:
 
-| ticket  | lane         | status   | command                              | link                                  |
-|---------|--------------|----------|--------------------------------------|---------------------------------------|
-| CAF-212 | fresh-port   | locked ✓ | /port:ff --ticket:CAF-212 --auto     | https://linear.app/.../CAF-212        |
-| CAF-198 | fresh-dev    | locked ✓ | /dev:ff CAF-198 --auto --no-figma    | https://linear.app/.../CAF-198        |
-| CAF-370 | recovery-dev | locked ✓ | /dev:ff CAF-370 --auto               | https://linear.app/.../CAF-370        |
+| ticket  | lane         | status   | command                  | link                                  |
+|---------|--------------|----------|--------------------------|---------------------------------------|
+| CAF-212 | fresh-port   | locked ✓ | /ggx-work CAF-212 --auto | https://linear.app/.../CAF-212        |
+| CAF-198 | fresh-dev    | locked ✓ | /ggx-work CAF-198 --auto | https://linear.app/.../CAF-198        |
+| CAF-370 | recovery-dev | locked ✓ | /ggx-work CAF-370 --auto | https://linear.app/.../CAF-370        |
 ```
 
 The §4.0 dry-run path emits the same table with `status: planned` instead of `locked ✓`. Same shape, one render path.
@@ -329,152 +391,130 @@ Column rules:
 - `ticket` = Linear ticket id (column ordering follows the §2.3 priority sort).
 - `lane` = the §2.1 value (`fresh-port` / `fresh-dev` / `recovery-port` / `recovery-dev`).
 - `status` = `locked ✓` for every row here; failed-lock tickets never reach this step (§4.2 aborts the whole batch).
-- `command` = the exact string Step 5 will pass to its spawn — already computed via §5.1 / §5.2.
+- `command` = the exact string Step 5 will pass to its spawn — uniformly `/ggx-work <ID> --auto` per §5.1.
 - `link` = the issue `url` field returned by the Step 2 `list_issues` calls. Cache the url alongside the ticket id from Step 2 so this column does not require a re-fetch.
 
-While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention. §6.1a inlines this value into the poller's heredoc when spawning. **Held in session state only — do NOT write a roster.tsv file.** Build the roster here (not in §6.1a) because §6.1a spawns in the same assistant message as Step 5 and has no separate "compute" turn.
+While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>\t<url>`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention; `url` is the issue url cached from Step 2. **Held in session state only — do NOT write a roster.tsv file.** §6.4 uses this roster to render the end-of-run table (lane lookup, walker selection, Ticket-link column).
 
-For each locked ticket, build the dispatch command from its selection lane (§2.1):
-
-### 5.1 Port lanes (`fresh-port`, `recovery-port`)
+### 5.1 Uniform spawn command (all four lanes)
 
 ```
-/port:ff --ticket:<ID> --auto
+/ggx-work <ID> --auto
 ```
 
-`/port:ff` is idempotent across stages, so recovery-port dispatches the same command as fresh-port. The pipeline auto-skips stages whose markers (`.port/dev-notes.md`, `.port/pm-notes.md`, etc.) already exist.
+Port and dev lanes share one spawn target. The `/ggx-work` subagent calls
+`/route --non-interactive` to decide which ff to run; `/route` reads the
+ticket's classification label (`bug` / `port` / `feature`) plus the
+worktree filesystem (port-ship marker, `.dev/*` markers) and recommends
+`/port:ff`, `/dev:ff`, or `/bug:ff`. Recovery lanes (`recovery-port` /
+`recovery-dev`) dispatch the same command because the ff walkers
+(`infer_port_stage` / `infer_dev_stage`) resume idempotently from their
+own marker files — the in-flight label is the dispatcher's signal that
+the worktree exists, not a routing hint that needs to be carried into
+the spawned subagent.
 
-### 5.2 Dev lanes (`fresh-dev`, `recovery-dev`) — `--no-figma` auto-detection
-
-Inspect the ticket description (already fetched in Step 2):
-
-```
-if echo "$TICKET_DESCRIPTION" | grep -qiE 'figma\.com/(design|board|slides|make)/'; then
-  CMD="/dev:ff $ID --auto"
-else
-  CMD="/dev:ff $ID --auto --no-figma"
-fi
-```
-
-Avoids `/dev:ff` stalling on missing Figma in unattended batches.
+**Figma URL detection is no longer dispatcher's job.** Previously the
+dispatcher pre-scanned the ticket description for `figma\.com/...` and
+attached `--no-figma` to the dev spawn. That detection has moved into
+`/dev:start` Step 4 and now scans description **and** comments, so a
+designer dropping a Figma link as a follow-up comment no longer routes
+the ticket through the SKIPPED short-circuit. Dispatcher just passes
+`/ggx-work <ID> --auto`; the rest is determined downstream.
 
 ### 5.3 Spawn
 
-**You MUST emit the §4.3 dispatch table, all N `Agent` tool calls, and the §6.1a poller `Bash` call in a single assistant message.** Print the table text first, then the N parallel `Agent` calls, then the poller `Bash` call — back-to-back, no turn break, no intermediate "ready to spawn?" pause. Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. It may also be tempted to end the turn after the table so the user can review — do not. The table is the review; spawning follows immediately in the same turn. Narration belongs after the join in Step 6.
+**You MUST emit the §4.3 dispatch table and all N `Agent` tool calls in a single assistant message.** Print the table text first, then the N parallel `Agent` calls — back-to-back, no turn break, no intermediate "ready to spawn?" pause. Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. It may also be tempted to end the turn after the table so the user can review — do not. The table is the review; spawning follows immediately in the same turn. Narration belongs after the join in Step 6.
 
 Single message, N parallel `Agent` calls (one per ticket):
 
-- `description`: `Dispatch <ticket-id> via <port|dev>:ff`
+- `description`: `Dispatch <ticket-id> via /ggx-work`
 - `subagent_type`: `general-purpose`
-- `model`: `"opus"` — required for dev tickets because `/dev:apply --auto` runs `/opsx:apply` inline inside this subagent (--auto no longer spawns `dev-agent`, to eliminate nested opus spawn that fails from subagent context). The implementation work needs opus quality reasoning. Port tickets technically don't need opus, but keeping one consistent spawn shape avoids drift.
-- `prompt`: the dispatch command string built above, plus the explicit loop-driving guidance below. **A short "run X and report outcome" prompt is insufficient** — `/dev:ff` and `/port:ff` are LLM-interpreted dispatch loops (their dispatch steps are pseudocode walked by you, not real shell), and a vague prompt has been observed to make the agent stop after the first visibly-successful stage (e.g. `Apply complete. Next: /dev:verify.`) instead of continuing the loop. The text below MUST be included verbatim after the command:
+- `model`: `"opus"` — required because dev tickets routed through
+  `/ggx-work` will eventually run `/dev:apply --auto` inline inside this
+  subagent (--auto no longer spawns `dev-agent`, to eliminate nested
+  opus spawn that fails from subagent context). The implementation work
+  needs opus quality reasoning. Port tickets technically don't need
+  opus, but keeping one consistent spawn shape avoids drift.
+- `prompt`: the dispatch command plus a short loop-driving framing.
+  `/ggx-work` itself owns the per-iteration loop discipline (call
+  `/route` → execute → repeat); the framing below exists only so the
+  subagent does not stop after `/ggx-work` reports a non-terminal stage
+  message from a single ff invocation. Include verbatim after the
+  command:
 
   ```
-  Execute the slash command above. Drive its pipeline to terminal state. The
-  pipeline is NOT complete until one of these holds:
-    (a) /dev:ff / /port:ff itself reports `done` (full chain finished, PR open or
-        ship comment posted),
-    (b) a stage fails to advance (infer_dev_stage returns the same value twice),
-    (c) a HITL gate fires (default mode only — not applicable here since --auto is set),
-    (d) a stage writes a Status: BLOCKED / FAILED / ABORTED marker file.
+  Execute: /ggx-work <TICKET_ID> --auto
 
-  Stage-level "complete" messages (e.g. "Apply complete. Next: /dev:verify.",
-  "Verify CLEAR. Next: /dev:review.") are IN-LOOP signals — they mean the loop
-  must continue to the next stage. They are NOT terminal.
+  /ggx-work is a single-ticket orchestrator that drives this ticket
+  through every pipeline it needs (port → spec-review pause → dev, or
+  just dev, or bug) by repeatedly calling /route and executing the
+  recommended ff. Drive it to a terminal condition; do NOT stop on
+  intermediate stage messages.
 
-  After each stage returns, re-run `infer_dev_stage` (as defined in
-  commands/dev/dev/ff.md) and dispatch the next /dev:<stage> (or /port:<stage>).
-  Repeat until one of (a)-(d) above is reached.
+  Terminal conditions (any ONE of these ends the run):
+    (a) /ggx-work reports `Ticket <id>: done.` (full chain finished, PR open)
+    (b) /ggx-work reports `Ticket <id>: port complete, paused for human
+        spec review.` (Step 4.4a short-circuit — port shipped, human gate)
+    (c) /ggx-work exits non-zero with an abort message (Step 4.3 — pipeline
+        failure, unknown classification, or route call failure)
 
-  When you stop, report which terminal condition was hit, which stage was
-  current, and the relevant marker file path (if any).
+  When you stop, report which of (a)/(b)/(c) was hit and quote the final
+  /ggx-work output line.
   ```
 - `mode`: `"bypassPermissions"`
 - `run_in_background`: `true`
-- `isolation`: **omit** — do NOT use `worktree` isolation. `/port:ff` and `/dev:ff` create their own worktrees internally; nesting them under dispatcher-level isolation produces conflicting checkouts.
+- `isolation`: **omit** — do NOT use `worktree` isolation. The ff
+  pipelines invoked by `/ggx-work` create their own worktrees
+  internally; nesting them under dispatcher-level isolation produces
+  conflicting checkouts.
 
 Print after spawn:
 
 ```
-Spawned <N> agents in parallel + 1 progress poller (re-renders every 30s).
-Session must remain open. Do not let the machine sleep.
+Spawned <N> agents in parallel. Completion lines will appear as each
+finishes. Session must remain open. Do not let the machine sleep.
 ```
 
-See §6.1a for the poller spec — it MUST be included in the same single assistant message as the N `Agent` spawn calls.
+No separate progress poller. Per-ticket completion is surfaced by §6.1
+when each agent's background notification arrives; end-of-run rendering
+is the §6.4 summary table.
 
 ---
 
 ## Step 6: Wait, fallback, finalize
 
-### 6.1 Progress poll loop
+### 6.1 Wait for completions
 
-The dispatcher session waits here for every spawned agent's background-completion notification — but it does **not** sit silently. A sibling `Bash` poller (also `run_in_background: true`) re-renders a stage-progress table every 30s so the user can monitor the batch in real time. The poller is a separate background process, not LLM-driven, so its cadence is independent of how often agent notifications arrive.
+The dispatcher session waits here for every spawned agent's
+background-completion notification. **No sibling poller process.** Each
+notification arrives event-driven from the harness; printing a 30s tick
+table on top of those events was redundant noise — the table re-rendered
+the same per-ticket state that the notification line already announces.
 
-#### 6.1a Spawn the poller (same message as Step 5)
+Maintain an in-memory `joined` counter. On each notification:
 
-In the same single assistant message that fans out the N `Agent` calls (§5.3), include one additional `Bash` tool call with `run_in_background: true` running the script below. Keeping spawn + poller in one message means the poller starts before the first agent's first stage transition.
+1. Increment `joined`.
+2. Emit one short status line so the user sees progress live:
+   ```
+   [<joined>/<N>] <ticket-id> finished (<terminal-condition>).
+   ```
+   `<terminal-condition>` is parsed from the agent's return message —
+   one of `done` / `port-paused` / `failed` (matching the three
+   `/ggx-work` terminal conditions enumerated in §5.3's spawn prompt).
+   Failed cases include a short reason if the agent provided one.
 
-```bash
-RUN_DIR="claude-reports/dispatcher/$RUN_TS-$$"
-mkdir -p "$RUN_DIR"
+When `joined == N`, proceed to §6.2.
 
-# Roster is inlined here by the dispatcher when emitting this Bash call —
-# one line per ticket, format <ticket-id>\t<lane>\t<absolute-worktree-path>.
-# Built in §4.3 alongside the dispatch table; in-memory only, no roster.tsv file.
-# Worktree path = realpath ../<TICKET-ID> (the /add-worktree convention).
-ROSTER=$(cat <<'TSV'
-<paste DISPATCH_ROSTER value here, literal tab-separated lines>
-TSV
-)
+`/dev:*` / `/port:*` stages write authoritative marker files
+(`.dev/verify-pass.md`, `.port/synth-report.md`, etc.) as they run.
+Those files remain the ground truth for "what stage did this ticket
+reach"; §6.4 reads them via `infer_*_stage` at end-of-run for the
+summary table. Reading marker files mid-run via a polling loop would
+produce stale-or-flickering values vs the notification, so the
+dispatcher delegates that read to end-of-run when state is settled.
 
-START_EPOCH=$(date -u +%s)
-
-while true; do
-  # Bail out if dispatcher has cleared the lockfile (= all agents joined, §6.5).
-  [ -f claude-reports/dispatcher/.lock ] || exit 0
-
-  now=$(date -u +%s)
-  elapsed=$(( now - START_EPOCH ))
-  mm=$(printf '%02d' $(( elapsed / 60 )))
-  ss=$(printf '%02d' $(( elapsed % 60 )))
-
-  echo
-  echo "Progress (t+${mm}:${ss}):"
-  echo "| ticket  | lane         | stage   | last marker                                  |"
-  echo "|---------|--------------|---------|----------------------------------------------|"
-
-  while IFS=$'\t' read -r tid lane wt; do
-    # Pick the right walker based on lane (port walker for *-port, dev walker for *-dev).
-    case "$lane" in
-      *-port) stage=$(cd "$wt" 2>/dev/null && infer_port_stage 2>/dev/null || echo "?") ;;
-      *-dev)  stage=$(cd "$wt" 2>/dev/null && infer_dev_stage  2>/dev/null || echo "?") ;;
-    esac
-
-    # last marker = most-recently-modified file under .dev/ or .port/, for the table's
-    # human-readable "what just happened" column. Pure cosmetic — the stage column is the
-    # ground-truth signal.
-    marker=$(find "$wt/.dev" "$wt/openspec/changes"/*/.port -type f 2>/dev/null \
-              | xargs ls -t 2>/dev/null | head -1 \
-              | sed "s|^$wt/||")
-
-    printf '| %-7s | %-12s | %-7s | %-44s |\n' "$tid" "$lane" "$stage" "${marker:-—}"
-  done <<< "$ROSTER"
-
-  sleep 30
-done
-```
-
-`infer_dev_stage` and `infer_port_stage` are the same walkers defined in `commands/dev/dev/ff.md` and `commands/dev/port/ff.md`. Either source them via a shared shell file or inline them into the poller — implementer's call.
-
-#### 6.1b Join
-
-The dispatcher LLM is notified per spawned agent as each completes. Maintain an in-memory `joined` counter; on each notification, increment AND emit one short status line so the user sees progress without scanning the poller table — format: `[<joined>/<N>] <ticket-id> finished (<terminal-condition>).` When `joined == N`, proceed to §6.2. The poller is terminated cleanly in §6.5 when the dispatcher removes the lockfile (the script's first check inside the `while` loop exits on missing lock).
-
-#### 6.1c Why polling, not heartbeats
-
-Spawned `/dev:*` / `/port:*` stages already write authoritative marker files (`.dev/figma-context.md`, `.dev/align-result.md`, `.dev/apply-result.md`, `.dev/verify-pass.md`, `.port/dev-notes.md`, `.port/pm-notes.md`, `.port/synth-report.md`, etc.). Reading those files is the dispatcher's only ground truth for "what stage are we in" — adding stage-transition heartbeats would couple every stage command to the dispatcher and drift on the next refactor. The 30s cadence is a compromise: stages take 1–10 min so transitions are caught within one tick; faster would burn terminal scrollback for no signal.
-
-Closing the dispatcher session early still kills MCP connections and leaves Linear in a half-finalized state — that constraint is unchanged.
+Closing the dispatcher session early still kills MCP connections and
+leaves Linear in a half-finalized state — that constraint is unchanged.
 
 ### 6.2 Per-ticket fallback
 
@@ -524,7 +564,29 @@ fi
 
 Copies (not symlinks — the worktree may be removed later) every spawned ff agent's reports written **during this dispatcher run** into one central place. Stale files from prior runs are filtered out by the `-newermt` predicate. `.dev/` is included so post-mortem can read the actual stage markers without going to the worktree.
 
-### 6.4 Run summary
+### 6.4 End-of-run summary table
+
+For each ticket in `DISPATCH_ROSTER` (§4.3), collect:
+
+| Signal           | Source                                                                 | Notes                                                                                          |
+|------------------|------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
+| `labels`         | `mcp__claude_ai_Linear__get_issue <ticket-id>` — re-fetched at §6.4 time | settled state, after `/port:ship` / `/dev:ship` / fallback (§6.2) have written                  |
+| `status.name`    | same call                                                              | `In Progress` / `In Review` etc.                                                                |
+| `url`            | from roster (cached at Step 2)                                         | no re-fetch                                                                                     |
+| `pipeline_outcome` | the agent's reported terminal condition (§6.1)                       | `done` / `port-paused` / `failed`                                                              |
+| `stage_reached` | `infer_port_stage` (port lane) or `infer_dev_stage` (dev lane), run inside the ticket worktree | walker selection follows the lane tagged in §2.1                                                |
+| `pr`             | `gh pr view <ticket-id> --json number,url,state` (per ticket) — best-effort | non-zero exit ⇒ no PR, render `—`                                                              |
+
+**Render order**: collect all rows in memory first (parallel MCP+gh calls
+allowed and encouraged), then emit the table in one block. Roster order
+(priority sort from §2.3) is preserved.
+
+Compute `Flags` for each row by combining the collected signals:
+
+- `need-spec-review` — label present (port pipeline shipped, waiting on human review)
+- `in-flight residue` — `dispatcher-port-in-flight` OR `dispatcher-dev-in-flight` still present (failure case — Q2/Q4 will re-pick next sweep)
+- `In Review` — status `In Review` (dev shipped, PR open, ready for reviewer)
+- empty cell — nothing actionable
 
 Write `claude-reports/dispatcher/<RUN_TS>-<PID>.md`:
 
@@ -540,21 +602,28 @@ Default br : <default_branch>
 
 ## Result counts
 Dispatched : <N>
-  ↳ port  : <count>
-  ↳ dev   : <count>
+  ↳ done        : <count>
+  ↳ port-paused : <count>
+  ↳ failed      : <count>
 Skipped    : <count>
   ↳ PR-exists       : <count>
   ↳ branch-exists   : <count>
   ↳ duplicate-label : <count>
-Failed     : <count>
 
 ## Per-ticket result
-| ticket | type | result | worktree |
-|--------|------|--------|----------|
-| ...    | ...  | ...    | ...      |
+| Ticket                    | Lane         | Status        | Stage reached | PR                | Flags             |
+|---------------------------|--------------|---------------|---------------|-------------------|-------------------|
+| [CAF-212](<url>)          | fresh-port   | 🟡 port-paused | port:ship     | —                 | need-spec-review  |
+| [CAF-198](<url>)          | fresh-dev    | 🟢 done        | dev:ship      | [#842](<pr-url>)  | In Review         |
+| [CAF-370](<url>)          | recovery-dev | 🔴 failed      | dev:verify    | —                 | in-flight residue |
 ```
 
-`<RUN_TS>` is `date -u +%Y%m%dT%H%M%SZ`. The `<PID>` suffix prevents collision when concurrent invocations slip past the lock (only possible if the lock was forcibly removed).
+Emoji legend: 🟢 `done` (PR opened, in review), 🟡 `port-paused`
+(spec-review HITL), 🔴 `failed` (in-flight residue stays for next sweep).
+
+`<RUN_TS>` is `date -u +%Y%m%dT%H%M%SZ`. The `<PID>` suffix prevents
+collision when concurrent invocations slip past the lock (only possible
+if the lock was forcibly removed).
 
 ### 6.5 Release lock + final stdout summary
 
@@ -562,17 +631,30 @@ Failed     : <count>
 rm -f claude-reports/dispatcher/.lock
 ```
 
-Print:
+Print the **same table** built in §6.4 plus a counts line and the
+report path:
 
 ```
-Dispatcher run complete.
-  Dispatched : <N>  (<N-port> port, <N-dev> dev)
-  Skipped    : <N>  (<reasons>)
-  Failed     : <N>
-  Report     : claude-reports/dispatcher/<RUN_TS>-<PID>.md
+Dispatcher run complete (t+<MM:SS>). <N> tickets:
+
+| Ticket                    | Lane         | Status        | Stage reached | PR                | Flags             |
+|---------------------------|--------------|---------------|---------------|-------------------|-------------------|
+| [CAF-212](<url>)          | fresh-port   | 🟡 port-paused | port:ship     | —                 | need-spec-review  |
+| [CAF-198](<url>)          | fresh-dev    | 🟢 done        | dev:ship      | [#842](<pr-url>)  | In Review         |
+| [CAF-370](<url>)          | recovery-dev | 🔴 failed      | dev:verify    | —                 | in-flight residue |
+
+Counts : <N-done> done, <N-paused> port-paused, <N-failed> failed.
+Report : claude-reports/dispatcher/<RUN_TS>-<PID>.md
 ```
 
 STOP.
+
+**Render contract**: stdout and the md file render the **same six
+columns in the same order**. Don't drop columns from stdout to fit
+terminal width — Claude Code terminals wrap markdown tables fine, and
+the value of the table is being identical across the two surfaces (you
+can paste either into a PR comment / Slack thread without re-reading
+the data).
 
 ---
 
@@ -594,10 +676,10 @@ STOP.
 
 | Label                              | Added by                  | Removed by                                                                              | Meaning                                  |
 |------------------------------------|---------------------------|-----------------------------------------------------------------------------------------|------------------------------------------|
-| `ready-to-port`                    | human (PM/eng)            | `/port:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-port lane)                       | "this ticket is ready for the port pipeline" |
-| `ready-to-dev`                     | human (PM/eng)            | `/dev:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-dev lane)                         | "this ticket is ready for the dev pipeline" |
+| `ready-to-port`                    | human (PM/eng)            | `/port:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-port lane) / `/ggx-work` Step 2.5 | "this ticket is ready for the port pipeline" |
+| `ready-to-dev`                     | human (PM/eng)            | `/dev:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-dev lane) / `/ggx-work` Step 2.5 | "this ticket is ready for the dev pipeline" |
 | `dispatcher-port-in-flight`        | `/ggx-dispatcher` §4.1 (fresh-port) | `/port:ship` step 13 (success) / `/ggx-dispatcher` §3.1 (PR exists) / `/ggx-dispatcher` §4.2 (rollback fresh-port only) | "dispatcher is mid-run on port; resume if seen next time" |
 | `dispatcher-dev-in-flight`         | `/ggx-dispatcher` §4.1 (fresh-dev)  | `/dev:ship` step 3 (success) / `/ggx-dispatcher` §3.1 (PR exists) / `/ggx-dispatcher` §4.2 (rollback fresh-dev only)   | "dispatcher is mid-run on dev; resume if seen next time"  |
-| `need-spec-review`                 | `/port:ship` step 13 (auto only) | human reviewer                                                                          | "ported spec ready for human spec review" |
+| `need-spec-review`                 | `/port:ship` step 13 (auto only) / `/ggx-work` Step 4.4a else-branch (HITL fallback) | human reviewer / `/spec-review` step 6                                                  | "ported spec ready for human spec review" |
 
 Invariant: a ticket should never have both `ready-to-*` AND the matching `dispatcher-*-in-flight` simultaneously (§2.2 conflict check b). If it does, the lock state is inconsistent — dispatcher skips with a comment asking the human to resolve.

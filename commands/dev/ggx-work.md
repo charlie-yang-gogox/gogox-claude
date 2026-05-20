@@ -3,13 +3,13 @@ name: ggx-work
 description: >
   Single-ticket orchestrator. Drives one Linear ticket through every
   pipeline it needs (port → spec-review → dev, or just dev, or bug)
-  by repeatedly calling `/route` for decisions and executing the
-  recommended command. Stops cleanly at HITL gates (spec-review,
-  missing classification label) so a human can take over, then can
-  be re-invoked to resume. Designed to replace direct `/port:ff` /
-  `/dev:ff` invocation in `/ggx-dispatcher` so the cross-pipeline
-  routing logic lives in ONE place (`/route`) instead of being
-  re-implemented in every caller.
+  by repeatedly calling `/route --non-interactive` (in --auto mode)
+  for decisions and executing the recommended command. Stops cleanly
+  at HITL gates (spec-review via Step 4.4a short-circuit; missing
+  classification label via Step 4.3) so a human can take over, then
+  can be re-invoked to resume. Used by `/ggx-dispatcher` as the
+  uniform spawn target so the cross-pipeline routing logic lives in
+  ONE place (`/route`) instead of being re-implemented in every caller.
 Prerequisite: >
   - Linear MCP authenticated.
   - `<ticket-id>` references a real Linear ticket with a single
@@ -74,7 +74,81 @@ Notes:
 1. Verify Linear MCP reachability via a lightweight `mcp__claude_ai_Linear__get_issue`
    call for `<ticket-id>`. Failure (network, not found, permission) → STOP with
    the verbatim error.
-2. Hold the ticket's `url` so we can include it in any Linear comment posted later.
+2. Hold the ticket's `url`, `labels`, `status.name`, `assignee`, `estimate` from
+   the response so subsequent steps don't have to refetch. The `url` is included
+   in any Linear comment posted later; the rest drive Step 2.5's idempotency
+   guard.
+
+### Step 2.5: Linear lifecycle init (idempotent, both modes)
+
+Owns the ticket-lifecycle moves that `/ggx-dispatcher` §4.1 performs for the
+auto path. Runs in HITL too — the manual orchestrator path otherwise leaves the
+ticket frozen at its pre-pipeline state (status stays `To-do`, `ready-to-*`
+lingers), which silently breaks downstream batch tooling (`/spec-review` no-args
+won't find the ticket; reporting that filters on `In Progress` will miss it).
+
+Every write is idempotent so the dispatcher-spawned auto path (where §4.1 has
+already done these moves before spawning) sees this step as a no-op.
+
+1. **Derive `<lane>` from the classification label** held by Step 2:
+   - exactly one of `{bug, port, feature}` ∈ `<labels>` → that one
+   - zero or multiple → **skip the entire Step 2.5**. Step 3's `/route` call
+     will surface the missing-classification error via its own UNKNOWN_LANE path;
+     duplicating the check here would just produce a second error message.
+
+   Case-insensitive match (Linear sometimes returns `Port` with capital P).
+
+2. **Idempotency guard.** If ALL of the following hold:
+   - `<status.name> == "In Progress"`
+   - `ready-to-port` ∉ `<labels>` AND `ready-to-dev` ∉ `<labels>`
+   - `<assignee>` matches the current Linear user (the `me` reference used by
+     `list_issues`)
+
+   → skip the rest of Step 2.5 silently. Dispatcher §4.1 (or a prior `/ggx-work`
+   invocation on the same ticket) already did this work.
+
+3. Otherwise execute the writes via `mcp__claude_ai_Linear__save_issue`. They
+   MAY be batched into a single `save_issue` call if the payload supports
+   compound updates; otherwise issue them sequentially. Each write is
+   individually idempotent so partial-failure recovery is "just re-run":
+
+   - **Status** → `In Progress` (no-op if already).
+   - **Labels** → remove `ready-to-port` AND `ready-to-dev` from the current
+     set, preserve everything else. **Do NOT** add any
+     `dispatcher-*-in-flight` label — those are exclusively `/ggx-dispatcher`'s
+     resume signal per the Plan X guardrail
+     (`ggx-dispatcher.md` Guardrails: "Adding the label outside the dispatcher
+     would silently make manual runs dispatcher-recoverable, breaking the
+     user's expectation of 'if I stopped, it stays stopped.'").
+   - **Assignee** → `$USER_NAME` (the current Linear user). No-op if already.
+   - **Estimate** → `1` ONLY when the current value is null. Never overwrite a
+     non-null estimate; humans set these deliberately.
+
+4. **Starting comment** via `mcp__claude_ai_Linear__save_comment`:
+
+   ```
+   Starting <lane> for this ticket via /ggx-work (<auto|hitl>).
+   ```
+
+   No HTML marker — this is a one-shot human-readable signal, not an
+   idempotency anchor. Re-running `/ggx-work` after a crash will post a second
+   "Starting" comment; that's acceptable noise (cheaper than the
+   list_comments + grep needed to dedupe). Skip the comment in the
+   `Idempotency guard` short-circuit path above so dispatcher-spawned runs
+   don't double-comment on top of dispatcher's own `Dispatcher: starting <port|dev>`
+   comment.
+
+5. **Audit line** to stdout:
+
+   ```
+   Lifecycle init: <ticket-id> → status=In Progress, assignee=<me>, removed `ready-to-<lane>`, lane=<lane>.
+   ```
+
+6. **MCP failure handling.** Any `save_issue` / `save_comment` failure prints a
+   soft warning to stdout (`Lifecycle init: <op> failed (<error>) — continuing.`)
+   and continues. The init is convenience for batch tooling; the pipeline below
+   still works without it. Subsequent `/ggx-work` invocations are idempotent and
+   will retry the unfinished writes.
 
 ### Step 3: Decision loop
 
@@ -92,14 +166,38 @@ if <iter> > <iter-cap>:
 
 #### Step 3.2: Call `/route`
 
-Invoke `/route <ticket-id>` inline. Parse its output for:
+Build the invocation:
+
+```
+<route-cmd> = "/route <ticket-id>"
+if <auto-mode>:
+    <route-cmd> += " --non-interactive"
+```
+
+`--non-interactive` is sticky to `--auto`: every spawned subagent path
+runs in a context where `AskUserQuestion` cannot be answered (no human
+attached), so `/route` must surface gates as structured errors instead
+of prompts. Interactive mode does not pass the flag — `/route`'s own
+AskUserQuestion path is the user-facing recovery there.
+
+Invoke `<route-cmd>` inline. Parse its output for:
 
 - `recommended_command` — the one-line command from the `Recommendation:` block
 - `phase` — from the `Phase:` line
 - `lane` — from the `Lane:` line (for logging)
 
-If `/route` itself failed (exit non-zero, malformed output) → STOP per the
-`<auto-mode>` rules in Step 4.3 with reason `route-call-failed`.
+`/route` failure dispatch:
+
+- Exit non-zero with `Status: UNKNOWN_LANE` on stdout → STOP per the
+  `<auto-mode>` rules in Step 4.3 with
+  `reason = unknown-lane: missing classification label`. Auto mode posts
+  the standard ggx-work-error Linear comment so a human can attach the
+  right classification label and re-invoke.
+- Exit non-zero with `Status: MISSING_TICKET_ID` → should not happen
+  (`/ggx-work` always passes an explicit ticket id), but if it does →
+  STOP via Step 4.3 with `reason = route-internal: missing-ticket-id`.
+- Any other failure (exit non-zero with no recognized `Status:` line, or
+  malformed output) → STOP via Step 4.3 with `reason = route-call-failed`.
 
 #### Step 3.3: Classify `recommended_command` → branch
 
@@ -131,7 +229,16 @@ Exit 0.
 #### Step 4.2: HITL (recommended_command is `/spec-review …`)
 
 A human action is required. Both modes exit 0 (no error — this is a
-designed pause point), differing only in messaging:
+designed pause point), differing only in messaging.
+
+This branch is normally **unreachable** when the loop just finished
+running `/port:ff`, because Step 4.4's post-pipeline short-circuit
+catches the `need-spec-review` label and terminates before `/route`
+is called a second time. Step 4.2 still exists for the residual case
+where `/ggx-work` is invoked directly against a ticket that already
+sits at `need-spec-review` (e.g. someone re-runs `/ggx-work` after
+human spec-review was forgotten); in that case there is no upstream
+`/port:ship` comment to lean on, so the messaging below still fires.
 
 **Interactive mode (`<auto-mode> == False`)**:
 
@@ -149,22 +256,19 @@ Exit 0.
 
 **Auto mode (`<auto-mode> == True`)**:
 
-Post a single Linear comment via `mcp__claude_ai_Linear__save_comment`:
+Silent exit. Do NOT post a Linear comment. The Step 4.4 short-circuit
+already covers the common case (port pipeline just shipped and dropped
+the `need-spec-review` label, with `/port:ship` having posted its own
+human-facing comment). Auto-mode re-entries that bypass Step 4.4
+(direct `/ggx-work <id> --auto` against a ticket already at
+`need-spec-review`) should be invisible — the Linear state already says
+what the human needs to know; double-posting from `/ggx-work` is noise.
+
+Print one line to stdout for the dispatcher's audit trail:
 
 ```
-<!-- ggx-work-hitl -->
-`/ggx-work --auto` paused at HITL gate.
-
-Phase   : <phase>
-Next    : `<recommended_command>`
-
-This ticket needs a human to run `/spec-review <ticket-id>` (or equivalent)
-before the dev pipeline can proceed.
+Ticket <ticket-id>: already at need-spec-review (HITL). No comment posted.
 ```
-
-Idempotency: before posting, list existing comments and skip if any body
-starts with `<!-- ggx-work-hitl -->` for this ticket and the recommended
-command matches — prevents duplicate comments on re-runs.
 
 Exit 0.
 
@@ -225,7 +329,13 @@ When the spawned pipeline terminates:
 
 - **Success** (the FF wrapper reported `done` and exited cleanly, OR
   reported a designed pause like `Status: BLOCKED` for `need-spec-review`
-  handoff that `/port:ship` writes) → continue loop (go to Step 3.1).
+  handoff that `/port:ship` writes):
+    1. If the spawned pipeline was `/port:ff`, run the **port → spec-review
+       short-circuit** (Step 4.4a) before looping. This catches the
+       canonical port-handoff state — `/port:ship` has added the
+       `need-spec-review` label and posted its own user-facing comment —
+       and exits the loop cleanly without a second `/route` call.
+    2. Otherwise, continue loop (go to Step 3.1).
 
 - **Failure** (FF wrapper exited non-zero, raised an error, hit its own
   abort path, or a stage marker file shows `Status: FAILED` / `ABORTED`) →
@@ -235,6 +345,71 @@ When the spawned pipeline terminates:
 
   **Do NOT re-spawn the failed pipeline.** Do NOT post-fix. The user
   investigates, fixes the root cause, and re-invokes `/ggx-work`.
+
+##### Step 4.4a: port → spec-review short-circuit
+
+Triggered only when Step 4.4 just finished a successful `/port:ff`
+invocation. Purpose: terminate the loop without re-invoking `/route` or
+posting a duplicate HITL comment.
+
+```
+re-fetch ticket labels via mcp__claude_ai_Linear__get_issue <ticket-id>
+if "need-spec-review" ∈ labels:
+    # Canonical auto path: /port:ship --auto step 13 added the label and
+    # already posted its own user-facing comment.
+    print:
+      Ticket <ticket-id>: port complete, paused for human spec review.
+      /port:ship has notified Linear. Re-invoke /ggx-work <ticket-id>
+      after the human runs /spec-review and flips the label to
+      ready-to-dev.
+    exit 0   (terminal — do NOT continue the loop)
+else:
+    # Canonical HITL path: /port:ship HITL intentionally skips the
+    # need-spec-review add per its own "auto-only" guardrail
+    # (commands/dev/port/ship.md step 13: "HITL: skip the
+    # need-spec-review add (reviewer applies it manually)"). When
+    # /ggx-work is run interactively as the lifecycle owner, that
+    # leaves the handoff in a broken state — /spec-review's batch path
+    # filters on this label and so won't find the ticket. Falling
+    # through to /route would also be wrong: with the port-ship marker
+    # committed and need-spec-review absent, /route would recommend
+    # /dev:ff and silently skip the human review gate.
+    #
+    # Fix: add the label here ourselves, then exit the loop with the
+    # same pause message the if-branch uses. The dispatcher path
+    # never lands here (it goes through the if-branch above), so this
+    # write is exclusive to the HITL orchestrator path.
+    save_issue(<ticket-id>, labels = labels ∪ {"need-spec-review"})
+        — retry up to 3× with backoff 1s, 4s, 16s on failure
+        — final failure → soft warning to stdout, do NOT exit non-zero
+          (the spec is shipped; user can flip the label manually)
+    print:
+      Ticket <ticket-id>: port complete, paused for human spec review.
+      Added `need-spec-review` label so /spec-review (batch or single
+      mode) will pick this ticket up. Re-invoke /ggx-work <ticket-id>
+      after running /spec-review.
+    exit 0   (terminal — do NOT continue the loop)
+```
+
+**Why a fresh `get_issue` call rather than trusting cached labels**:
+`/ggx-work` last saw the ticket at Step 2 pre-flight, before `/port:ship`
+ran. The `need-spec-review` label is added inside `/port:ship`'s ship
+step (auto only — see Edit-A2 rationale in the `else:` block for the
+HITL fallback this short-circuit pairs with), so the cached copy is
+stale by design. One MCP call here is cheap; the alternative — letting
+the loop continue, re-calling `/route`, and posting a Step 4.2 comment
+— is the noise this short-circuit exists to eliminate.
+
+**Why this lives in Step 4.4, not as a Step 3.3 routing case**:
+`/route` is read-only and lane-agnostic; making it post-process
+`/port:ff`'s side effects would couple it to a specific pipeline. The
+short-circuit belongs to `/ggx-work`'s pipeline-result interpretation,
+which Step 4.4 already owns.
+
+**Why this does NOT fire for `/dev:ff` or `/bug:ff`**: dev and bug
+pipelines terminate at PR-open. Their "done" is unambiguous — the next
+`/route` call returns `(none)` and the loop terminates via Step 4.1.
+Only port has a mid-pipeline handoff that requires a human gate.
 
 ---
 
@@ -327,8 +502,14 @@ where it left off via `infer_dev_stage`.
 - **`--auto` is sticky downward.** When `--auto` is set, every spawned
   `/port:ff` / `/dev:ff` / `/bug:ff` gets its own `--auto` flag. Mixed
   modes (parent auto, child interactive) are not supported.
-- **Linear writes only in `--auto`.** Interactive mode never posts Linear
-  comments — keeps the ticket history clean for manual usage.
+- **Linear writes are scoped by purpose, not by mode.** Both interactive
+  and `--auto` perform Step 2.5 lifecycle init (status / assignee /
+  estimate / labels / starting comment) and the Step 4.4a HITL fallback
+  label add — these are necessary for the orchestrator's job and are
+  idempotent. Step 4.3 generic-error Linear comments still fire in
+  `--auto` only (interactive prints to stdout for the human user).
+  Never write `dispatcher-*-in-flight`; that label is exclusively
+  dispatcher's resume signal.
 - **HITL exits with code 0.** Pausing at `/spec-review` is a designed
   pause point, not an error. Only `/route` failures and pipeline failures
   exit non-zero.
@@ -337,25 +518,45 @@ where it left off via `infer_dev_stage`.
 
 ## Relationship to `/ggx-dispatcher`
 
-Today `/ggx-dispatcher` spawns `/port:ff --auto` or `/dev:ff --auto`
-per ticket, having pre-computed the lane via its `fresh-port` /
-`fresh-dev` selection (see `ggx-dispatcher.md` §2.1, §5.1, §5.2).
+`/ggx-dispatcher` now spawns `/ggx-work <id> --auto` for every locked
+ticket regardless of lane (see `ggx-dispatcher.md` §5.1). Inside each
+spawned subagent, `/ggx-work` calls `/route --non-interactive` to pick
+`/port:ff` / `/dev:ff` / `/bug:ff` from the classification label plus
+worktree filesystem state.
 
-Once `/ggx-work --auto` is in place, dispatcher can migrate to:
+Label ownership is split (see `ggx-dispatcher.md`'s "Label ownership
+boundary" section for the canonical statement). `/ggx-work` has limited
+write authority — it is NOT label-agnostic:
 
-```diff
-- spawn /port:ff --ticket:<id> --auto
-- spawn /dev:ff <id> --auto [--no-figma]
-+ spawn /ggx-work <id> --auto
-```
+- **Workflow labels** (`ready-to-port`, `ready-to-dev`,
+  `dispatcher-*-in-flight`, `need-spec-review`) are owned by the
+  dispatcher + `/port:ship` + `/dev:ship` + `/ggx-work`. `/ggx-work`'s
+  writes are scoped:
+  - **Step 2.5 lifecycle init** — removes `ready-to-port` /
+    `ready-to-dev` after derivable lane is confirmed. Idempotent with
+    `/ggx-dispatcher` §4.1 and `/port:start` / `/dev:start` auto-mode
+    item 4 (whichever ran first wins; later runs short-circuit on the
+    guard). Never writes `dispatcher-*-in-flight` — that remains
+    dispatcher-exclusive per Plan X.
+  - **Step 4.4a HITL fallback** — adds `need-spec-review` after a
+    successful `/port:ff` if absent. Compensates for `/port:ship`'s
+    HITL skip so the spec-review handoff is discoverable by
+    `/spec-review`'s batch path. Never fires when `/port:ship --auto`
+    already added the label (the if-branch wins).
+- **Classification labels** (`bug`, `port`, `feature`) are owned by
+  humans and read only by `/route` (and now read by `/ggx-work` Step
+  2.5 to derive lane — read-only). `/ggx-work` never writes them.
 
-Benefits:
-- Lane selection collapses into `/route` (single source of truth)
-- Dispatcher loses lane-specific spawn branches
-- Recovery (Q2/Q4 `dispatcher-*-in-flight` lanes) no longer needs to
-  encode "which pipeline was in flight" — `/route` re-derives from
-  worktree state on re-entry
+What `/ggx-work` contributes on top of plain ff spawn:
 
-The migration is out of scope for this command's initial landing; the
-contract above (`/ggx-work --auto` ≡ dispatcher's per-pipeline spawn)
-exists to make the dispatcher migration a mechanical change later.
+- Owns the Linear lifecycle in HITL mode via Step 2.5 — status,
+  assignee, estimate, starting comment, actionable-label cleanup.
+  Auto-path users see this as idempotent no-ops because
+  `/ggx-dispatcher` §4.1 has already done the equivalent writes.
+- Handles the port → spec-review handoff cleanly via Step 4.4a in both
+  modes (no duplicate Linear comment, label correctly present on the
+  ticket so downstream batch tooling finds it).
+- Translates `/route`'s `Status: UNKNOWN_LANE` structured failure into
+  a Linear comment via Step 4.3 (auto mode).
+- Same spawn shape for every lane, so dispatcher §5 has no
+  lane-specific branching.

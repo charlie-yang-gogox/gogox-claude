@@ -25,6 +25,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 
 - Worktree at `../<ticket-id>` (auto only).
 - `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` (when `--no-figma` OR ticket has no Figma URL after parsing).
+- `.dev/spec-review-directives.md` — first line `Status: PRESENT` (latest `<!-- spec-review:v1 -->` Linear comment captured verbatim) or `Status: NONE` (no such comment). Always written. Consumed by `/dev:apply` Step 0-bug.1 and Step 4D.1 to surface `[REVISED]` directives to whichever agent authors code.
 - `.dev/mode.md` with single line `bug` (only when `--bug` is set). Absent for the default feature path — readers treat absent as `feature`.
 - Linear ticket: assigned to self, status `In Progress`, `ready-to-dev` label removed (auto only).
 - `/tmp/<ticket-id>.md` — ticket dump (auto only).
@@ -45,7 +46,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 A pipeline is in flight in this worktree if any of these are true:
 
 - `openspec/changes/` contains a non-archive change directory.
-- `.dev/` contains any marker file (`.dev/figma-context.md`, `.dev/align-result.md`, `.dev/verify-pass.md`).
+- `.dev/` contains any marker file (`.dev/figma-context.md`, `.dev/align-result.md`, `.dev/verify-pass.md`). Note: `.dev/spec-review-directives.md` is intentionally NOT in this list — it is written every run by Step 4c and would otherwise refuse re-entry on a re-run of `/dev:start`.
 
 If in flight, STOP with: `Pipeline already in flight in this worktree. Resume with /dev:ff, or /dev:ff --from <stage> to reset.`
 
@@ -85,10 +86,11 @@ fi
 1. Verify git is clean and on `trunk`. If not → STOP.
 2. Read the Linear ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`).
 3. Invoke `/add-worktree <ticket-id> --type <type>` — handles fetch, branch, EnterWorktree, port-settings, `{deps_install}`.
-4. <!-- SYNC: the Linear init below is duplicated in three places. When changing it, also update:
-       - /port:start Step 5a  (commands/dev/port/start.md)
-       - /ggx-dispatcher Step 4 (commands/dev/ggx-dispatcher.md)
-       Drift between these breaks dispatcher idempotency. -->
+4. <!-- SYNC: the Linear init below is duplicated in four places. When changing it, also update:
+       - /port:start Step 5a   (commands/dev/port/start.md)
+       - /ggx-dispatcher Step 4.1 (commands/dev/ggx-dispatcher.md)
+       - /ggx-work Step 2.5    (commands/dev/ggx-work.md — the HITL+auto orchestrator path)
+       Drift between these breaks dispatcher idempotency and the HITL orchestrator lifecycle. -->
    Linear MCP transitions: status → `In Progress`, remove `ready-to-dev` label, assign to self via `$USER_NAME`. Set estimate to 1 point if none.
 5. Write the full ticket content to `/tmp/<ticket-id>.md`.
 
@@ -102,17 +104,27 @@ fi
 ```bash
 mkdir -p .dev
 TICKET_BODY=$(mcp__claude_ai_Linear__get_issue ... | jq -r '.description // ""')
-HAS_FIGMA_URL=$(echo "$TICKET_BODY" | grep -cE 'figma\.com/(design|file|board|slides|make)/')
+
+# Concatenate every comment body into one stream so the same regex catches
+# Figma URLs whether they were placed in the description or added later via
+# a comment. This is the move that retired the dispatcher's pre-detection
+# of `--no-figma`: /dev:start is now authoritative.
+TICKET_COMMENTS=$(mcp__claude_ai_Linear__list_comments ... | jq -r '.comments[].body // ""' | tr '\n' ' ')
+
+HAS_FIGMA_URL=$(printf '%s\n%s\n' "$TICKET_BODY" "$TICKET_COMMENTS" \
+  | grep -cE 'figma\.com/(design|file|board|slides|make)/')
 NO_FIGMA_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--no-figma' && echo 1 || echo 0)
 
 if [ "$NO_FIGMA_FLAG" = "1" ] || [ "$HAS_FIGMA_URL" -eq 0 ]; then
-  REASON=$([ "$NO_FIGMA_FLAG" = "1" ] && echo "--no-figma flag at /dev:start" || echo "no Figma URL in ticket description")
+  REASON=$([ "$NO_FIGMA_FLAG" = "1" ] && echo "--no-figma flag at /dev:start" || echo "no Figma URL in ticket description or comments")
   printf 'Fetched: SKIPPED — %s\n' "$REASON" > .dev/figma-context.md.tmp
   mv .dev/figma-context.md.tmp .dev/figma-context.md   # atomic
 fi
 ```
 
 `/dev:start` is the SOLE writer of the `Fetched: SKIPPED` first-line variant. figma-subagent only writes `Fetched: <ISO>` (success) or `Fetched: FAILED` (MCP fail). If the SKIPPED first line is missing on a no-Figma ticket, `infer_dev_stage` advances to `figma`; figma-subagent then receives an empty URL list and refuses with FAILED. Recovery: re-run `/dev:start`.
+
+**Comment scan is intentional.** Designers and reviewers frequently drop Figma links into a follow-up comment rather than editing the ticket description. Looking only at the description silently routed those tickets into the SKIPPED short-circuit, which then forced callers like `/ggx-dispatcher` to maintain a parallel `--no-figma` pre-detection. Scanning both surfaces here means `/dev:start` is the single authority on "does this ticket have Figma source?"; the explicit `--no-figma` flag is preserved as the manual override.
 
 ## Step 4b: Bug-mode marker (when --bug)
 
@@ -127,6 +139,66 @@ fi
 ```
 
 `.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. Default (feature) mode does NOT write this file — readers treat absent as `feature`. This keeps existing dev-pipeline runs unchanged and makes bug mode opt-in.
+
+## Step 4c: Capture spec-review directives (if any)
+
+After `/spec-review` runs, the authoritative reviewer decisions live in a
+**Linear comment** whose body starts with the marker
+`<!-- spec-review:v1 ticket=$TICKET_ID -->` (see `commands/dev/spec-review.md`
+§A — "Output comment schema"). The `need-spec-review` label has already
+flipped to `ready-to-dev` by the time `/dev:ff` is dispatched, so label
+probes alone cannot detect that revisions exist. This step captures the
+latest such comment into `.dev/spec-review-directives.md` so every
+downstream stage (`/dev:apply`, dev-agent, bug-mode agent) can honor
+`[REVISED]` directives without re-fetching Linear comments.
+
+This step is one-shot — `/dev:apply` only reads the file; it never re-fetches.
+
+```bash
+mkdir -p .dev
+TICKET_COMMENTS=$(mcp__claude_ai_Linear__list_comments \
+  --issueId "$TICKET_ID" --orderBy createdAt 2>/dev/null || true)
+
+# Find the MOST RECENT comment whose body starts with the spec-review:v1
+# marker for this exact ticket. orderBy=createdAt returns newest first; we
+# take the first match. The marker is anchored at the start of the body
+# per the spec-review schema.
+SPEC_REVIEW_BODY=$(printf '%s' "$TICKET_COMMENTS" \
+  | jq -r --arg t "$TICKET_ID" '
+      [.comments[]?
+        | select(.body
+            | test("^<!-- spec-review:v1 ticket=" + $t + " -->"))]
+      | sort_by(.createdAt) | reverse | .[0].body // empty')
+
+if [ -n "$SPEC_REVIEW_BODY" ]; then
+  # Detect at least one [REVISED] directive; CONFIRMED-only comments are
+  # not load-bearing for downstream stages but we still record the body so
+  # the agent can see "spec review ran, no revisions" rather than guess.
+  REVISED_COUNT=$(printf '%s\n' "$SPEC_REVIEW_BODY" \
+    | grep -cE '^### \[REVISED\] ' || true)
+  {
+    printf 'Status: PRESENT\n'
+    printf 'Revised directives: %s\n' "${REVISED_COUNT:-0}"
+    printf 'Source: Linear comment matching marker `<!-- spec-review:v1 ticket=%s -->` (most recent)\n' "$TICKET_ID"
+    printf '\n## Raw comment body\n\n'
+    printf '```markdown\n%s\n```\n' "$SPEC_REVIEW_BODY"
+  } > .dev/spec-review-directives.md.tmp
+  mv .dev/spec-review-directives.md.tmp .dev/spec-review-directives.md
+else
+  {
+    printf 'Status: NONE\n'
+    printf 'No comment matching marker `<!-- spec-review:v1 ticket=%s -->` was found at /dev:start time.\n' "$TICKET_ID"
+  } > .dev/spec-review-directives.md.tmp
+  mv .dev/spec-review-directives.md.tmp .dev/spec-review-directives.md
+fi
+```
+
+Failure handling: if `list_comments` errors (network, permission), write
+`Status: NONE` with a one-line note `list_comments call failed: <error>`
+and continue. A missing spec-review file is not fatal — feature tickets
+that never went through `/spec-review` (no port stage) and bug tickets
+both legitimately have no such comment. Downstream stages branch on
+`Status: PRESENT` (single grep) and skip the file otherwise.
 
 ## Step 5: Announce and stop
 

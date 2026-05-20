@@ -4,12 +4,13 @@ description: >
   Atomic decision command. Reads a Linear ticket's classification label
   (`bug` / `port` / `feature`) plus minimal worktree state and recommends
   the ONE pipeline entry-point command to run next (`/port:ff`, `/dev:ff`,
-  or `/spec-review`). Advisory only — prints the recommendation for the
-  user to copy-paste. Does NOT execute the command, does NOT mutate Linear
-  labels, does NOT detect resume points inside a pipeline (the FF wrappers
-  do that themselves via `infer_*_stage`). Designed to be composable: a
-  future `/ggx-work` orchestrator will call `/route` for its decisions and
-  then execute the recommended command on the user's behalf.
+  `/bug:ff`, or `/spec-review`). Advisory only by default — prints the
+  recommendation for the user to copy-paste. Does NOT execute the command,
+  does NOT mutate Linear labels, does NOT detect resume points inside a
+  pipeline (the FF wrappers do that themselves via `infer_*_stage`). The
+  `/ggx-work` orchestrator (and `/ggx-dispatcher` via spawned `/ggx-work`)
+  call `/route --non-interactive` to drive multi-stage flows; in that mode
+  prompts are converted to structured `Status:` errors with non-zero exit.
 Prerequisite: >
   - Linear MCP authenticated.
   - For port-classified tickets: a worktree at `../<ticket-id>` is helpful
@@ -38,11 +39,16 @@ Prerequisite: >
 > decision step is implemented; users invoke the recommended command
 > manually.
 
-**Usage**: `/route [ticket-id]`
+**Usage**: `/route [ticket-id] [--non-interactive]`
 
 - `<ticket-id>` — Linear ticket ID (e.g. `CAF-370`). Optional.
 - If absent, infer from the current worktree directory name (`basename "$PWD"`
-  uppercased). If inference fails → **AskUserQuestion** for the ticket id.
+  uppercased). If inference fails → **AskUserQuestion** for the ticket id
+  (or exit non-zero in `--non-interactive`, see Step 1).
+- `--non-interactive` — disable every `AskUserQuestion` path; any branch
+  that would prompt the user instead emits a structured `Status:` line and
+  exits non-zero. Designed for `/ggx-work --auto` and other unattended
+  callers that cannot satisfy a prompt.
 
 ---
 
@@ -50,17 +56,27 @@ Prerequisite: >
 
 ### Step 1: Resolve ticket id
 
-1. Read `$ARGUMENTS`. If non-empty → `<ticket-id> = $ARGUMENTS` (trim, uppercase).
-2. Else infer from cwd:
+1. Parse `$ARGUMENTS` for the `--non-interactive` flag → `<non-interactive>`
+   (True/False). Strip it before reading the remaining arguments.
+2. Read remaining `$ARGUMENTS`. If non-empty → `<ticket-id> = $ARGUMENTS`
+   (trim, uppercase).
+3. Else infer from cwd:
    ```bash
    inferred=$(basename "$PWD" | tr '[:lower:]' '[:upper:]')
    if [[ "$inferred" =~ ^[A-Z]+-[0-9]+$ ]]; then
      ticket_id="$inferred"
    fi
    ```
-3. If still empty → `AskUserQuestion`:
-   > "No ticket id provided and the current directory is not a ticket worktree.
-   > What Linear ticket should I route?" — free-text answer; abort if empty.
+4. If still empty:
+   - `<non-interactive> == True` → STOP with structured error:
+     ```
+     Status: MISSING_TICKET_ID
+     Reason: no ticket id in arguments and cwd is not a ticket worktree
+     ```
+     Exit non-zero.
+   - `<non-interactive> == False` → `AskUserQuestion`:
+     > "No ticket id provided and the current directory is not a ticket worktree.
+     > What Linear ticket should I route?" — free-text answer; abort if empty.
 
 ### Step 2: Fetch ticket
 
@@ -83,7 +99,16 @@ Match `<labels>` against `{bug, port, feature}`:
 
 If `<lane> == unknown`:
 
-- **AskUserQuestion** with question:
+- `<non-interactive> == True` → STOP with structured error:
+  ```
+  Status: UNKNOWN_LANE
+  Ticket: <ticket-id>
+  Reason: ticket has no single classification label
+  Labels found in {bug,port,feature}: <comma-joined or 'none'>
+  ```
+  Exit non-zero. `/ggx-work` (the canonical non-interactive caller) is
+  expected to translate this into a Linear comment + abort.
+- `<non-interactive> == False` → **AskUserQuestion**:
   > "Ticket `<ticket-id>` has no single classification label (found:
   > `<comma-joined labels∩{bug,port,feature} or 'none'>`). Which pipeline
   > should it use?"
@@ -190,6 +215,28 @@ need_spec_review=$(contains <labels> "need-spec-review" ? present : absent)
 
 (Already in memory from Step 2; no extra MCP call.)
 
+**Probe 3 (advisory only): `spec-review:v1` comment present**
+
+This probe does NOT change the recommendation — it exists purely for
+discoverability. When `phase == ready-for-dev`, a `<!-- spec-review:v1 -->`
+comment is the upstream contract from `/spec-review`; we want the user to
+know it will be picked up by `/dev:start` Step 4c and surfaced to
+`/dev:apply` so `[REVISED]` directives are honored.
+
+```bash
+# Only worth probing in the ready-for-dev row; cheap to call but skip when
+# the recommendation is anything other than /dev:ff.
+spec_review_comment=absent
+if [ "$phase" = "ready-for-dev" ]; then
+  spec_review_comment=$(mcp__claude_ai_Linear__list_comments \
+      --issueId "<ticket-id>" --orderBy createdAt 2>/dev/null \
+    | jq -r --arg t "<ticket-id>" '
+        [.comments[]? | select(.body
+            | test("^<!-- spec-review:v1 ticket=" + $t + " -->"))]
+        | length > 0' 2>/dev/null || echo false)
+fi
+```
+
 **Decide** per the matrix above. Populate:
 
 - `phase` from the matrix
@@ -227,6 +274,22 @@ Next after this finishes:
   (Re-run /route <ticket-id> after this command completes to confirm.)
 ```
 
+If Step 4.port's Probe 3 reported `spec_review_comment == true`, append a
+one-line WARN immediately after the `Recommendation:` block (before
+`Reasoning:`):
+
+```
+WARN: A `<!-- spec-review:v1 -->` comment exists on this ticket.
+      /dev:start Step 4c will capture it to .dev/spec-review-directives.md;
+      /dev:apply will surface any [REVISED] directives to the authoring
+      agent as authoritative overrides. No action required here — this is
+      a discoverability note, not a behavior change.
+```
+
+This WARN is a discoverability win only — `/route` itself still recommends
+`/dev:ff` for `ready-for-dev`. Do NOT redirect to `/spec-review`; the
+spec-review human gate has already run by the time this row matches.
+
 STOP. Do not execute the recommended command.
 
 ---
@@ -234,7 +297,9 @@ STOP. Do not execute the recommended command.
 ## Guardrails
 
 - **Read-only.** No `save_issue`, no `save_comment`, no file writes, no
-  git mutations. Linear MCP calls are limited to `get_issue`.
+  git mutations. Linear MCP calls are limited to `get_issue` and
+  `list_comments` (the latter only when phase resolves to `ready-for-dev`,
+  purely to surface the spec-review WARN line in Step 5 — read-only).
 - **No dispatcher coupling.** `/route` does not read `ready-to-port`,
   `ready-to-dev`, or `dispatcher-*-in-flight` labels. The classification
   label + `need-spec-review` + worktree filesystem are the only signals.
@@ -243,6 +308,8 @@ STOP. Do not execute the recommended command.
   `infer_port_stage` figures out where to resume.
 - **AskUserQuestion is the ONLY HITL path.** Triggered when (a) ticket id
   cannot be inferred, or (b) classification labels are missing/ambiguous.
-  No other prompts.
+  No other prompts. With `--non-interactive`, both paths convert to
+  structured `Status:` errors + non-zero exit; the caller (typically
+  `/ggx-work --auto`) is responsible for surfacing the gate.
 - **Idempotent.** Re-running `/route` on the same ticket with no state
   changes returns the same recommendation.

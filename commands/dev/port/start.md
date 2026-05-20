@@ -61,10 +61,11 @@ Set up the worktree, OpenSpec change, and `.port/` working directory for a Linea
 
 5a. **Auto-mode Linear init (`--auto` only).**
 
-    <!-- SYNC: the Linear init below is duplicated in three places. When changing it, also update:
+    <!-- SYNC: the Linear init below is duplicated in four places. When changing it, also update:
          - /dev:start Auto-mode item 4 (commands/dev/dev/start.md, "Step 3b: Mode-specific pre-flight → Auto mode")
-         - /ggx-dispatcher Step 4    (commands/dev/ggx-dispatcher.md)
-         Drift between these breaks dispatcher idempotency. -->
+         - /ggx-dispatcher Step 4.1   (commands/dev/ggx-dispatcher.md)
+         - /ggx-work Step 2.5         (commands/dev/ggx-work.md — the HITL+auto orchestrator path)
+         Drift between these breaks dispatcher idempotency and the HITL orchestrator lifecycle. -->
 
     When `<auto-mode>` is true, perform Linear ticket init **before** any worktree / scaffold work:
     1. `mcp__claude_ai_Linear__save_issue`: remove `ready-to-port` from labels.
