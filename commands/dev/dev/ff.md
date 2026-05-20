@@ -16,6 +16,7 @@ Single-command run-the-whole-pipeline. The orchestrator no longer reads `state.j
 - `/dev:ff <ticket-id> --auto` — start a fresh auto-mode pipeline. Equivalent to: `/dev:start <ticket-id> --auto` followed by chaining all stages until `done`.
 - `/dev:ff <ticket-id>` — start a fresh default-mode pipeline. Stops at the first HITL gate (`/dev:apply`'s review gate by default).
 - `/dev:ff <ticket-id> --bug` — bug-fix pipeline. Skips `/dev:figma` / `/dev:detect` / `/dev:align` / `/dev:apply`; pauses after `/dev:start` for the human to write the fix; resumes when invoked again after a commit lands. Prefer the alias `/bug:ff` from `/route` / `/ggx-work` flows. Combinable with `--auto` for the dispatcher path.
+- `/dev:ff <ticket-id> --no-ticket-init` — skip the Linear ticket-init step. Use when running the pipeline locally for inspection / debugging without flipping the ticket on Linear. Default: enabled. Passed through verbatim to `/dev:start`.
 - `/dev:ff` — resume. Runs `infer_dev_stage` and dispatches `/dev:<that-stage>`. Loops until `done`, failure, or HITL gate.
 - `/dev:ff --from <stage>` — delete the marker files of `<stage>` and everything downstream, then resume. Next `infer_dev_stage` re-derives starting at `<stage>`.
 
@@ -26,6 +27,7 @@ TICKET_FROM_ARGS="<parsed from $ARGUMENTS, may be empty>"
 AUTO_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo 1 || echo 0)
 NO_FIGMA_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--no-figma' && echo 1 || echo 0)
 BUG_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--bug' && echo 1 || echo 0)
+NO_TICKET_INIT_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--no-ticket-init' && echo 1 || echo 0)
 FROM_STAGE="<parsed --from <stage>, may be empty>"
 
 # Detect whether a pipeline is already in flight in this worktree.
@@ -34,7 +36,7 @@ PIPELINE_IN_FLIGHT="no"
 [ -d "$(pwd)/.dev" ] && [ -n "$(ls .dev 2>/dev/null)" ] && PIPELINE_IN_FLIGHT="yes"
 ```
 
-- If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "no"`: invoke `/dev:start <ticket-id> [--auto] [--no-figma] [--bug]`, then continue with `infer_dev_stage`.
+- If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "no"`: invoke `/dev:start <ticket-id> [--auto] [--no-figma] [--bug] [--no-ticket-init]`, then continue with `infer_dev_stage`. Pass `--no-ticket-init` through verbatim when `NO_TICKET_INIT_FLAG == 1`.
 - If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "yes"`: refuse (use `/dev:start`'s re-entry rules — do not silently overwrite).
 - If `$TICKET_FROM_ARGS` is empty AND `PIPELINE_IN_FLIGHT == "yes"`: resume via walker.
 - If `$TICKET_FROM_ARGS` is empty AND `PIPELINE_IN_FLIGHT == "no"`: STOP with usage.
@@ -274,7 +276,7 @@ while CURRENT != "done":
     exit 1
 
   case CURRENT of:
-    "start"       → /dev:start <ticket-id> [--auto] [--no-figma] [--bug if BUG_FLAG]
+    "start"       → /dev:start <ticket-id> [--auto] [--no-figma] [--bug if BUG_FLAG] [--no-ticket-init if NO_TICKET_INIT_FLAG]
     "figma"       → /dev:figma   [--auto if AUTO_FLAG]
     "detect"      → /dev:detect  [--auto if AUTO_FLAG]
     "align"       → /dev:align   [--auto if AUTO_FLAG]

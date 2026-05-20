@@ -18,6 +18,7 @@ Run the entire port flow end-to-end from a single invocation. Mirrors what `/ops
 - `/port:ff --ticket:<ID>` — HITL run (Locate gate, pre-review clarification, review gate still pause for input).
 - `/port:ff --ticket:<ID> --auto` — Unattended run for the dispatcher; aborts on locate-low or agent double-failure.
 - `/port:ff --ticket:<ID> --simple` — Shortcut that invokes only `/port:explore --simple --ticket:<ID>`. No worktree, no spec; produces a Linear analysis comment for ticket enrichment.
+- `/port:ff --ticket:<ID> --no-ticket-init` — Skip the Linear ticket-init step (status / labels / assignee / estimate / starting comment). Use when running the pipeline locally for inspection / debugging without flipping the ticket on Linear. Default: enabled. Passed through verbatim to `/port:start`.
 
 **Required**: `--ticket:<ID>`. The wrapper has no cwd context to infer from.
 
@@ -31,7 +32,7 @@ Parse `$ARGUMENTS`:
 
 - Extract `--ticket:<ID>` (required). Missing → STOP with:
   > `/port:ff` requires `--ticket:<ID>` (e.g. `/port:ff --ticket:CAF-212`).
-- Detect flags: `--auto`, `--simple`. They are mutually exclusive — `--simple` ignores `--auto` (no autonomy needed for a one-stage run).
+- Detect flags: `--auto`, `--simple`, `--no-ticket-init`. `--auto` and `--simple` are mutually exclusive — `--simple` ignores `--auto` (no autonomy needed for a one-stage run). `--no-ticket-init` is passed through verbatim to `/port:start`.
 - All other flags are passed through to the underlying stages.
 
 ### Step 2: Simple-mode shortcut
@@ -101,10 +102,10 @@ The dispatch loop (Steps 4–9 below) **starts at `$CURRENT`**, not at `start`. 
 Invoke:
 
 ```
-/port:start --ticket:<ID> [<auto-flag>]
+/port:start --ticket:<ID> [<auto-flag>] [--no-ticket-init]
 ```
 
-Pass through `--prd:` / `--prd-file:` / `--recreate` if the user provided them.
+Pass through `--prd:` / `--prd-file:` / `--recreate` / `--no-ticket-init` if the user provided them.
 
 If `/port:start` exits non-zero or aborts (e.g. assignee mismatch, worktree user-aborted): bubble up the error and STOP. Do not proceed.
 

@@ -20,7 +20,7 @@ Prerequisite: >
     pipelines' own `:start` stages.
 ---
 
-# `/ggx-work <ticket-id> [--auto]`
+# `/ggx-work <ticket-id> [--auto] [--no-ticket-init]`
 
 > `/ggx-work` is a **single-ticket orchestrator**. It loops:
 >
@@ -47,6 +47,12 @@ Prerequisite: >
 - `/ggx-work <ticket-id> --auto` — **unattended mode**. HITL gates post a
   Linear comment and exit cleanly. No prompts. Suitable for `/ggx-dispatcher`
   spawn paths.
+- `/ggx-work <ticket-id> --no-ticket-init` — skip Step 2.5's Linear lifecycle
+  init AND pass `--no-ticket-init` through to every spawned `/port:ff` /
+  `/dev:ff` / `/bug:ff` so the downstream `:start` stage also short-circuits.
+  Use when running the orchestrator locally for inspection / debugging
+  without flipping the ticket on Linear. Combinable with `--auto`. Does NOT
+  affect `/ggx-dispatcher` (the dispatcher always inits regardless).
 
 Notes:
 
@@ -55,6 +61,9 @@ Notes:
   span outlives any single worktree.
 - `--auto` propagates: each spawned `/port:ff` / `/dev:ff` is invoked with
   its own `--auto` flag.
+- `--no-ticket-init` propagates the same way — passed verbatim into every
+  spawned FF wrapper so the chain (`/ggx-work` → `/<port|dev>:ff` →
+  `/<port|dev>:start`) honors the opt-out uniformly.
 
 ---
 
@@ -64,7 +73,10 @@ Notes:
 
 1. Extract `<ticket-id>` from `$ARGUMENTS`. Trim, uppercase.
 2. Detect `--auto` flag → `<auto-mode> = True/False`.
-3. Missing `<ticket-id>`:
+3. Detect `--no-ticket-init` flag → `<no-ticket-init> = True/False`. When True,
+   Step 2.5 short-circuits and `--no-ticket-init` is propagated verbatim into
+   every spawned `/port:ff` / `/dev:ff` / `/bug:ff` invocation in Step 3.
+4. Missing `<ticket-id>`:
    - `<auto-mode> == True` → STOP with `/ggx-work requires <ticket-id> in --auto mode.`
    - `<auto-mode> == False` → `AskUserQuestion`:
      > "What Linear ticket should `/ggx-work` orchestrate?" — abort if empty.
@@ -81,14 +93,21 @@ Notes:
 
 ### Step 2.5: Linear lifecycle init (idempotent, both modes)
 
+<!-- SYNC: ticket-init lives in commands/dev/_ticket-init.md. The 4 callers
+     (port:start Step 5a, dev:start Step 3c, ggx-dispatcher Step 4.1,
+     ggx-work Step 2.5) all invoke it; do not re-inline the block here. -->
+
 Owns the ticket-lifecycle moves that `/ggx-dispatcher` §4.1 performs for the
 auto path. Runs in HITL too — the manual orchestrator path otherwise leaves the
 ticket frozen at its pre-pipeline state (status stays `To-do`, `ready-to-*`
 lingers), which silently breaks downstream batch tooling (`/spec-review` no-args
 won't find the ticket; reporting that filters on `In Progress` will miss it).
 
-Every write is idempotent so the dispatcher-spawned auto path (where §4.1 has
-already done these moves before spawning) sees this step as a no-op.
+**Opt-out**: if `<no-ticket-init> == True` (from Step 1), log a single line
+`ticket-init: skipped (--no-ticket-init)` and skip the rest of Step 2.5 entirely.
+The flag is still propagated to spawned FF wrappers in Step 3 so the downstream
+`:start` stage's own ticket-init invocation also short-circuits — keeping the
+whole chain consistent for the manual / debugging workflow.
 
 1. **Derive `<lane>` from the classification label** held by Step 2:
    - exactly one of `{bug, port, feature}` ∈ `<labels>` → that one
@@ -98,57 +117,31 @@ already done these moves before spawning) sees this step as a no-op.
 
    Case-insensitive match (Linear sometimes returns `Port` with capital P).
 
-2. **Idempotency guard.** If ALL of the following hold:
-   - `<status.name> == "In Progress"`
-   - `ready-to-port` ∉ `<labels>` AND `ready-to-dev` ∉ `<labels>`
-   - `<assignee>` matches the current Linear user (the `me` reference used by
-     `list_issues`)
+2. **Map `<lane>` to the `/_ticket-init` lane argument**:
+   - `port` → `port`
+   - `bug` / `feature` → `dev` (both flow through the `/dev:ff` pipeline)
 
-   → skip the rest of Step 2.5 silently. Dispatcher §4.1 (or a prior `/ggx-work`
-   invocation on the same ticket) already did this work.
+3. Invoke `/_ticket-init <ticket-id> <lane-arg>` (idempotent; safe to re-call). The skill drives status → `In Progress`, drops `ready-to-<lane-arg>`, sets assignee to self, sets estimate=1 if null, and posts a `<!-- ticket-init:v1 lane=<lane-arg> -->` starting comment if absent. Every write is short-circuited by a per-field skip condition, so dispatcher-spawned runs (where §4.1 already invoked the same skill) and re-entries (after a crash) collapse to no-ops naturally — no separate idempotency guard needed here.
 
-3. Otherwise execute the writes via `mcp__claude_ai_Linear__save_issue`. They
-   MAY be batched into a single `save_issue` call if the payload supports
-   compound updates; otherwise issue them sequentially. Each write is
-   individually idempotent so partial-failure recovery is "just re-run":
+   `/_ticket-init` NEVER writes `dispatcher-*-in-flight` (exclusively the
+   dispatcher's resume signal per the Plan X guardrail
+   `ggx-dispatcher.md` Guardrails: "Adding the label outside the dispatcher
+   would silently make manual runs dispatcher-recoverable, breaking the
+   user's expectation of 'if I stopped, it stays stopped.'"). Step 2.5 does
+   not pass any flag that would change that.
 
-   - **Status** → `In Progress` (no-op if already).
-   - **Labels** → remove `ready-to-port` AND `ready-to-dev` from the current
-     set, preserve everything else. **Do NOT** add any
-     `dispatcher-*-in-flight` label — those are exclusively `/ggx-dispatcher`'s
-     resume signal per the Plan X guardrail
-     (`ggx-dispatcher.md` Guardrails: "Adding the label outside the dispatcher
-     would silently make manual runs dispatcher-recoverable, breaking the
-     user's expectation of 'if I stopped, it stays stopped.'").
-   - **Assignee** → `$USER_NAME` (the current Linear user). No-op if already.
-   - **Estimate** → `1` ONLY when the current value is null. Never overwrite a
-     non-null estimate; humans set these deliberately.
-
-4. **Starting comment** via `mcp__claude_ai_Linear__save_comment`:
+4. **Audit line** to stdout (in addition to `/_ticket-init`'s own audit line):
 
    ```
-   Starting <lane> for this ticket via /ggx-work (<auto|hitl>).
+   Lifecycle init: <ticket-id> via /_ticket-init lane=<lane-arg> (classification=<lane>).
    ```
 
-   No HTML marker — this is a one-shot human-readable signal, not an
-   idempotency anchor. Re-running `/ggx-work` after a crash will post a second
-   "Starting" comment; that's acceptable noise (cheaper than the
-   list_comments + grep needed to dedupe). Skip the comment in the
-   `Idempotency guard` short-circuit path above so dispatcher-spawned runs
-   don't double-comment on top of dispatcher's own `Dispatcher: starting <port|dev>`
-   comment.
-
-5. **Audit line** to stdout:
-
-   ```
-   Lifecycle init: <ticket-id> → status=In Progress, assignee=<me>, removed `ready-to-<lane>`, lane=<lane>.
-   ```
-
-6. **MCP failure handling.** Any `save_issue` / `save_comment` failure prints a
-   soft warning to stdout (`Lifecycle init: <op> failed (<error>) — continuing.`)
-   and continues. The init is convenience for batch tooling; the pipeline below
-   still works without it. Subsequent `/ggx-work` invocations are idempotent and
-   will retry the unfinished writes.
+5. **MCP failure handling.** Delegated to `/_ticket-init` — per-write failures
+   are logged as WARNs by the skill and the pipeline continues. The only
+   hard-stop inside `/_ticket-init` is a `get_issue` failure (cannot evaluate
+   skip conditions), which bubbles up to here as a non-zero exit; in that case
+   `/ggx-work` continues (the pipeline below still works without lifecycle
+   init; subsequent invocations retry).
 
 ### Step 3: Decision loop
 
@@ -313,6 +306,8 @@ Build the command to execute:
 <spawn-cmd> = <recommended_command>
 if <auto-mode>:
     <spawn-cmd> += " --auto"
+if <no-ticket-init>:
+    <spawn-cmd> += " --no-ticket-init"
 ```
 
 Execute `<spawn-cmd>` inline (LLM continues the current session, walking

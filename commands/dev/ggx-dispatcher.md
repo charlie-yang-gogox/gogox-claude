@@ -319,31 +319,25 @@ per §5.1; lane only drives the §4.1 lock-label transition and the
 
 ### 4.1 Init protocol — apply per ticket, sequentially
 
-<!-- SYNC: steps 2–5 below (status / assignee / estimate / comment) are duplicated in:
-     - /dev:start Auto-mode item 4 (commands/dev/dev/start.md)
-     - /port:start Step 5a       (commands/dev/port/start.md)
-     - /ggx-work Step 2.5        (commands/dev/ggx-work.md — the HITL+auto orchestrator path)
-     Drift between these breaks dispatcher idempotency and the HITL orchestrator lifecycle.
+<!-- SYNC: ticket-init lives in commands/dev/_ticket-init.md. The 4 callers
+     (port:start Step 5a, dev:start Step 3c, ggx-dispatcher Step 4.1,
+     ggx-work Step 2.5) all invoke it; do not re-inline the block here.
 
-     Step 1 (the label swap) is INTENTIONALLY dispatcher-only under Plan X. The *:start
-     commands continue to do a plain `remove ready-to-*` and MUST NOT add any
-     `dispatcher-*-in-flight` label — adding it there would silently flip manual
-     runs into dispatcher-recoverable state, which is not what the user asked for.
-     Net effect on the dispatcher path: dispatcher swaps to in-flight; subsequent
-     *:start invocations inside the subagent try to remove ready-to-* (no-op,
-     already gone) and leave the in-flight label alone (correct). -->
+     Step 1 (the dispatcher-specific label swap to `dispatcher-*-in-flight`)
+     remains inline — it is INTENTIONALLY dispatcher-only under Plan X.
+     /_ticket-init handles only the lane-agnostic moves (status / assignee /
+     estimate / starting comment / drop ready-to-*). It MUST NOT add any
+     `dispatcher-*-in-flight` label — adding that outside the dispatcher
+     would silently flip manual runs into dispatcher-recoverable state. -->
 
-Each ticket's lock depends on its selection lane (§2.1). `<inflight>` resolves to `dispatcher-port-in-flight` for port lanes, `dispatcher-dev-in-flight` for dev lanes.
+Each ticket's lock depends on its selection lane (§2.1). `<inflight>` resolves to `dispatcher-port-in-flight` for port lanes, `dispatcher-dev-in-flight` for dev lanes. `<lane-short>` resolves to `port` (for `fresh-port` / `recovery-port`) or `dev` (for `fresh-dev` / `recovery-dev`).
 
 For each ticket, in order:
 
 1. **Label swap** via `mcp__claude_ai_Linear__save_issue`:
    - Lanes `fresh-port` / `fresh-dev`: remove `ready-to-port` / `ready-to-dev`, **add `<inflight>`**. Atomic compound op in a single `save_issue` call.
    - Lanes `recovery-port` / `recovery-dev`: in-flight label already present — call is a no-op idempotently (still send the same payload so the contract is uniform).
-2. `mcp__claude_ai_Linear__save_issue`: status → `In Progress`.
-3. `mcp__claude_ai_Linear__save_issue`: assignee = `$USER_NAME`.
-4. `mcp__claude_ai_Linear__save_issue`: estimate = `1` if currently null.
-5. `mcp__claude_ai_Linear__save_comment`: `Dispatcher: starting <port|dev> for this ticket.` (fresh lanes) or `Dispatcher: resuming <port|dev> for this ticket.` (recovery lanes).
+2. Invoke `/_ticket-init <ticket-id> <lane-short>` (idempotent; safe to re-call). Drives status → `In Progress`, drops `ready-to-<lane-short>` (no-op for recovery lanes — already removed at original lock time), assignee → self, estimate=1 if null, and posts a `<!-- ticket-init:v1 lane=<lane-short> -->` starting comment if absent. For recovery lanes the comment-marker check short-circuits the comment write so resumed dispatchers do not double-comment.
 
 After each ticket, print to stdout:
 
@@ -676,8 +670,8 @@ the data).
 
 | Label                              | Added by                  | Removed by                                                                              | Meaning                                  |
 |------------------------------------|---------------------------|-----------------------------------------------------------------------------------------|------------------------------------------|
-| `ready-to-port`                    | human (PM/eng)            | `/port:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-port lane) / `/ggx-work` Step 2.5 | "this ticket is ready for the port pipeline" |
-| `ready-to-dev`                     | human (PM/eng)            | `/dev:start` auto / `/ggx-dispatcher` §4.1 lock (fresh-dev lane) / `/ggx-work` Step 2.5 | "this ticket is ready for the dev pipeline" |
+| `ready-to-port`                    | human (PM/eng)            | `/_ticket-init` (via `/port:start`, `/ggx-work` Step 2.5, `/ggx-dispatcher` §4.1) / `/ggx-dispatcher` §4.1 lock (fresh-port lane, swaps to `<inflight>`) | "this ticket is ready for the port pipeline" |
+| `ready-to-dev`                     | human (PM/eng)            | `/_ticket-init` (via `/dev:start`, `/ggx-work` Step 2.5, `/ggx-dispatcher` §4.1) / `/ggx-dispatcher` §4.1 lock (fresh-dev lane, swaps to `<inflight>`) | "this ticket is ready for the dev pipeline" |
 | `dispatcher-port-in-flight`        | `/ggx-dispatcher` §4.1 (fresh-port) | `/port:ship` step 13 (success) / `/ggx-dispatcher` §3.1 (PR exists) / `/ggx-dispatcher` §4.2 (rollback fresh-port only) | "dispatcher is mid-run on port; resume if seen next time" |
 | `dispatcher-dev-in-flight`         | `/ggx-dispatcher` §4.1 (fresh-dev)  | `/dev:ship` step 3 (success) / `/ggx-dispatcher` §3.1 (PR exists) / `/ggx-dispatcher` §4.2 (rollback fresh-dev only)   | "dispatcher is mid-run on dev; resume if seen next time"  |
 | `need-spec-review`                 | `/port:ship` step 13 (auto only) / `/ggx-work` Step 4.4a else-branch (HITL fallback) | human reviewer / `/spec-review` step 6                                                  | "ported spec ready for human spec review" |
