@@ -88,7 +88,7 @@ Parse the JSON output. For each **missing** optional dependency, show:
 | Dependency | Required | What it does | Install | If skipped |
 |-----------|----------|-------------|---------|------------|
 | python3 | Yes (for parse.py) | Parses transcript .jsonl files to extract session metrics | `brew install python3` (macOS) / `apt install python3` (Linux) | Behavioral analysis (TOP 5, session patterns, slash command stats) unavailable |
-| parse.py | Yes | Companion script in daily-summary skill | Part of daily-summary skill — install daily-summary first | Same as python3 missing |
+| parse.py | Yes | Transcript-scan helper at ~/.claude/skills/_lib/parse.py | Shipped with gogox-claude install.sh — re-run `./install.sh` if missing | Same as python3 missing |
 | gh CLI | Optional | Fetches PR data (PRs Merged/Opened) from GitHub | `brew install gh && gh auth login` | PR metrics will not be included |
 
 If python3 is missing, give an extra warning that most behavioral insights
@@ -199,7 +199,7 @@ Then continue to Step 1 (do not stop — proceed to generate the report).
 **Minimum data check** (runs for both new and existing configs):
 
 ```bash
-python3 ~/.claude/skills/daily-summary/parse.py --month "$YYYY_MM" --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([r for r in d.get('rows',[]) if r.get('total_cost',0)>0]))"
+python3 ~/.claude/skills/_lib/parse.py --month "$YYYY_MM" --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([r for r in d.get('rows',[]) if r.get('total_cost',0)>0]))"
 ```
 If active days < 5, warn: "Only {N} active days found for this month. Report may lack meaningful behavioral insights. Continue? (The report will still be generated but TOP 5 analysis may be thin.)"
 
@@ -258,7 +258,7 @@ numbers from .jsonl (may differ from daily dashboard)`.
 Always run parse.py for behavioral metrics and row-level context:
 
 ```bash
-python3 ~/.claude/skills/daily-summary/parse.py --month "$YYYY_MM" --json
+python3 ~/.claude/skills/_lib/parse.py --month "$YYYY_MM" --json
 ```
 
 Use from this output:

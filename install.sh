@@ -31,6 +31,16 @@ if [ -d "$REPO_DIR/lib" ]; then
   done
 fi
 
+# Shared skill helpers (skills/_lib/*) — non-shell helpers (Python, etc.)
+# called by skill bodies via absolute path ~/.claude/skills/_lib/<file>.
+# Symlinked as a directory so additions/edits land instantly on `git pull`.
+INSTALLED_SKILL_LIB=false
+if [ -d "$REPO_DIR/skills/_lib" ]; then
+  rm -rf "$SKILLS_DIR/_lib"
+  ln -s "$REPO_DIR/skills/_lib" "$SKILLS_DIR/_lib"
+  INSTALLED_SKILL_LIB=true
+fi
+
 CATEGORIES=("shared" "pm" "dev" "design")
 
 INSTALLED_SKILLS=()
@@ -170,6 +180,12 @@ if [ "${#INSTALLED_LIBS[@]}" -gt 0 ]; then
   for l in "${INSTALLED_LIBS[@]}"; do
     echo "  ~/.claude/lib/$l"
   done
+  echo
+fi
+
+if [ "$INSTALLED_SKILL_LIB" = true ]; then
+  echo "Skill helpers — called at runtime by skills:"
+  echo "  ~/.claude/skills/_lib/"
   echo
 fi
 
