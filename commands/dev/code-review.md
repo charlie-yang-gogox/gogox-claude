@@ -13,6 +13,7 @@ Single-PR mode:
 - `/code-review 228` — review PR #228 remotely without checkout
 - `/code-review https://github.com/gogovan/.../pull/228` — same, extracted from URL
 - `/code-review feat/CAF-100` — review by branch name (looks up the PR)
+- `/code-review --auto` — review the current branch inline (no `Agent` spawn). Required when this command runs inside a `/ggx-dispatcher`-spawned `general-purpose` subagent, where nested-Agent spawns are not available. `/dev:review` passes `--auto` automatically. Can be combined with a PR number / branch name.
 
 Batch mode (auto-scans all open PRs of the cwd repo, mirrors the `ca/da-flutter-code-review` claude.ai routines):
 
@@ -37,10 +38,25 @@ If the first argument starts with `--batch`, go to **Batch mode**. Otherwise pro
       If the result is empty or null, stop and tell the user no PR was found for that branch.
    4. If no argument is provided, this is a local review of the current branch.
 
-2. Use the Agent tool to spawn the `git-branch-code-reviewer` agent.
-   - If a PR number was resolved, pass it in the prompt: `"Review PR #<number> remotely. Do NOT use local git branch — fetch all information via gh CLI."`
-   - If no PR number (local mode), use the existing prompt without a PR number.
-   Wait for it to complete and return its review output.
+2. **Run the review (mode-conditional).**
+
+   The review contract — Local mode (no PR number) vs Remote mode (PR number resolved) per `agents/dev/git-branch-code-reviewer.md` — runs differently depending on whether `--auto` was passed:
+
+   | Mode | Execution path | Why |
+   | -- | -- | -- |
+   | default (no `--auto`) | spawn `git-branch-code-reviewer` via the `Agent` tool. If a PR number was resolved, pass `"Review PR #<number> remotely. Do NOT use local git branch — fetch all information via gh CLI."` in the prompt. If no PR number (local mode), use the existing prompt without a PR number. Wait for the agent's review output. | Main session has `Agent` available; isolating into an opus subagent keeps review-prompt context out of the orchestrator. |
+   | `--auto` | run the review **inline** in the current session — no `Agent` spawn | `--auto` is set by `/dev:review` (auto-only stage) when the entire `/dev:ff` pipeline is running inside a `/ggx-dispatcher`-spawned `general-purpose` subagent. Nested-Agent spawns from a subagent are unreliable / unavailable — inlining is the only safe path. Same constraint as `/port:explore --auto`, `/port:synth --auto`, and `/dev:apply --auto`. |
+
+   **`--auto` mode — inline execution.** Do NOT call the `Agent` tool. The current session executes the git-branch-code-reviewer contract directly:
+   1. Read `agents/dev/git-branch-code-reviewer.md` (`<gogox-claude-repo>/agents/dev/git-branch-code-reviewer.md`) once. Treat its `## Modes` / `### Step 0` → `### Step 6` / Output format as binding.
+   2. Resolve `{platform}` per Step 0 of the agent definition (`.gogox-claude.yaml` → `platform`; fall back to `~/.claude/commands/profiles/registry/`).
+   3. Pick Local vs Remote mode by whether a PR number was resolved at step 1.
+      - **Local mode**: `git diff trunk...HEAD`, then `git diff --name-only trunk...HEAD` and `git log --oneline trunk..HEAD` for changed files + commit list. Read source files for context via the `Read` tool.
+      - **Remote mode**: `gh pr view <pr_number> --json headRefName,title,body,url`, then `git fetch origin <branch_name>` once, then `gh pr diff <pr_number>` (+ `--name-only`) and `gh pr view <pr_number> --json commits --jq '.commits[].messageHeadline'`. Read files via `git show origin/<branch_name>:<file_path>`.
+   4. Extract the Linear ticket identifier (`[A-Z]+-\d+` from the branch name, uppercased). Fetch ticket title + description + comments via `mcp__claude_ai_Linear__get_issue` / `mcp__claude_ai_Linear__list_comments`.
+   5. Review per `### Step 5: Review` of the agent definition (correctness vs ticket, OpenSpec coverage, tests, code issues, security, conventions, error handling — pick test vocabulary by `{platform}`).
+   6. Emit the structured output verbatim per `### Step 6: Output` — `## Summary`, `## Overall Rating`, `## Critical Issues 🔴`, `## Improvements 🟡`, `## Minor Notes 🟢`, `## Positive Highlights ✅`. This is the same structure that step 3 below expects.
+   7. Do NOT post a PR comment from inside the inline review — step 5 below owns the comment-posting decision (which is skipped in `--auto` anyway since there is no user to confirm).
 
 3. Output the review result directly to the user.
 
@@ -58,6 +74,7 @@ If the first argument starts with `--batch`, go to **Batch mode**. Otherwise pro
      gh pr comment <pr_number> --body "# Internal code review\n\n<review content>"
      ```
    - If no, skip.
+   - **`--auto` mode**: skip this step entirely. `/dev:review` consumes the review output from step 2 directly (via `claude-reports/<ticket-id>/code-review.md`); no PR-comment side-effect should happen here.
 
 ## Batch mode
 

@@ -2,10 +2,13 @@
 name: port:synth
 description: >
   Wave-3 of the port pipeline. Builds `.port/context.md` from the three
-  notes files, spawns synth-agent (opus pinned) to fill OpenSpec artifact
-  templates in dependency order, runs `openspec validate`, and invokes
-  `/spec-lint` to produce `.port/synth-report.md`. Findings are NOT
-  auto-fixed here — `/port:revise` owns that loop.
+  notes files, fills OpenSpec artifact templates in dependency order, runs
+  `openspec validate`, and invokes `/spec-lint` to produce
+  `.port/synth-report.md`. Mode-conditional synth execution: default spawns
+  synth-agent (opus pinned) via the Agent tool; --auto runs the synth loop
+  inline in the current session (no nested-Agent spawn — required because
+  /ggx-dispatcher invokes this via a general-purpose subagent). Findings
+  are NOT auto-fixed here — `/port:revise` owns that loop.
 ---
 
 # /port:synth — Artifact Synthesis + Lint
@@ -15,7 +18,7 @@ Synthesize OpenSpec artifacts (`proposal.md`, `design.md`, `tasks.md`, `specs/*/
 **Usage**: `/port:synth [--change <name>] [--auto]`
 
 - `--change <name>` — Override auto-detection of the active change. Otherwise resolved from the single directory under `openspec/changes/`.
-- `--auto` — Unattended mode. Skip every `AskUserQuestion`; pass `mode: "bypassPermissions"` to the spawned `synth-agent`.
+- `--auto` — Unattended mode. Skip every `AskUserQuestion`. Synth execution becomes inline (no `Agent` spawn) — see step 6 for the mode table.
 
 ---
 
@@ -101,26 +104,51 @@ Synthesize OpenSpec artifacts (`proposal.md`, `design.md`, `tasks.md`, `specs/*/
    - Parse the `applyRequires` array (leaves first → root). Hold `<dependency-order>` as a JSON array of artifact IDs.
    - Empty / missing array → STOP with: `openspec status returned no applyRequires; the change scaffold is incomplete — re-run /port:start with --recreate`.
 
-6. **Spawn `synth-agent`.**
-   - Use the `Agent` tool with `subagent_type: "synth-agent"`.
-   - In `--auto` mode include `mode: "bypassPermissions"` on the call. The agent's frontmatter pins `model: opus` (D21) — do NOT pass a model override.
-   - Prompt body (verbatim shape — fill placeholders):
-     ```
-     You are the synth-agent. Inputs:
+6. **Run synth (mode-conditional).**
 
-     <change-name>: <change-name>
-     <worktree-path>: <worktree-path>
-     <context-md-path>: <port-dir>/context.md
-     <dependency-order>: <dependency-order JSON array>
+   The synth contract — read `.port/context.md` once, iterate `<dependency-order>`, fetch each artifact's instruction packet via `openspec instructions <artifact-id> --change <change-name> --json`, fill the template, and atomic-write to its `outputPath` — runs differently depending on mode:
 
-     Run your Step 0 → Step 3 loop per your agent definition. Atomic-write
-     each artifact to its outputPath via .tmp + mv. Do not validate, do
-     not lint, do not edit .port/ inputs. Return the file list when done.
-     ```
-   - Wait for return. Capture the agent's final message as `<synth-summary>`.
-   - Agent failure / refusal:
-     - HITL → `AskUserQuestion`: `retry / abort`.
-     - `--auto` → retry once, second failure → STOP with: `synth-agent failed twice; aborting /port:synth` and proceed to step 9 with `outcome:"failed-synth"` so timings is still appended.
+   | Mode | Execution path | Why |
+   | -- | -- | -- |
+   | `default` | spawn `synth-agent` via the `Agent` tool — `subagent_type: "synth-agent"` (model is pinned to `opus` in the agent frontmatter per D21; do NOT pass a model override) | Main session has `Agent` available; isolating into an opus subagent keeps the hallucination-sensitive synthesis context away from the orchestrator's working memory. |
+   | `--auto` | run the synth loop **inline** in the current session — no `Agent` spawn | `--auto` may run inside a `general-purpose` subagent dispatched by `/ggx-dispatcher`. Nested-Agent spawns from a subagent are unreliable / unavailable — inlining is the only safe path. Same constraint as `/port:explore --auto` and `/dev:apply --auto`. |
+
+   **`default` mode — spawn the agent.** Include `mode: "bypassPermissions"` in `--auto`-propagated callers; otherwise omit. Pass this prompt body (verbatim shape — fill placeholders):
+
+   ```
+   You are the synth-agent. Inputs:
+
+   <change-name>: <change-name>
+   <worktree-path>: <worktree-path>
+   <context-md-path>: <port-dir>/context.md
+   <dependency-order>: <dependency-order JSON array>
+
+   Run your Step 0 → Step 3 loop per your agent definition. Atomic-write
+   each artifact to its outputPath via .tmp + mv. Do not validate, do
+   not lint, do not edit .port/ inputs. Return the file list when done.
+   ```
+
+   Wait for return. Capture the agent's final message as `<synth-summary>`.
+
+   **`--auto` mode — inline execution.** Do NOT call the `Agent` tool. The current session executes the synth-agent contract directly:
+   1. Read `agents/dev/synth-agent.md` (`<gogox-claude-repo>/agents/dev/synth-agent.md`) once. Treat its Step 0 → Step 3 loop and `## Guardrails` as binding. **Path-escape guard is non-negotiable**: any `outputPath` from `openspec instructions` that does NOT start with `<change-dir>/` is a hard STOP — abort the loop and return `synth-agent: refusing outputPath outside change dir: <outputPath>` as `<synth-summary>`.
+   2. `cd <worktree-path>` for every `openspec` invocation.
+   3. Read `<port-dir>/context.md` once. Skim for labeled IDs (`**FR-N**`, `**AC-N**`, `**R-N**`, `**A-N**`) — these are the only identifiers you may cite in artifacts. Never invent an ID.
+   4. For each `<artifact-id>` in `<dependency-order>` (apply-required order, leaves first):
+      ```bash
+      openspec instructions <artifact-id> --change "<change-name>" --json
+      ```
+      Parse the JSON. Bind `<template>`, `<context>`, `<rules>`, `<instruction>`, `<outputPath>`, `<dependencies>`.
+   5. Path-escape guard per step 6.1. Read every dependency in `<dependencies>` — treat as ground truth.
+   6. Synthesize the body following `<template>`. `<instruction>` is the primary guidance; `<context>` / `<rules>` are silent constraints (apply, never echo into output). Bundle from step 6.3 is the source of truth for facts. Use the labeled-ID convention verbatim (`(FR-3)`, never paraphrased). Forbidden markers — `## Open Questions`, `TBD`, `TODO`, `FIXME`, `待確認` — are forbidden in any artifact.
+   7. Atomic-write via the D16 pattern: `Write` tool lands content at `<outputPath>.tmp`; then `mv <outputPath>.tmp <outputPath>`. Print `✓ <artifact-id>` and proceed to the next ID.
+   8. After the loop, compose `<synth-summary>` as a final message listing the file paths created — same shape the agent would have returned (one `✓ <artifact-id>` line per artifact, then a `Files written:` block).
+   9. Do NOT run `openspec validate`. Do NOT run `/spec-lint`. Do NOT edit `.port/*-notes.md` or `.port/context.md`. Those belong to step 7 / step 8 of this orchestrator, not the synth phase.
+
+   **Failure handling (both modes).**
+   - HITL → `AskUserQuestion`: `retry / abort`.
+   - `--auto` → retry once, second failure → STOP with: `synth failed twice; aborting /port:synth` and proceed to step 10 with `outcome:"failed-synth"` so timings is still appended.
+   - In `--auto` inline mode, "failure" means an artifact write was skipped, a path-escape guard tripped, an `openspec instructions` call returned an error, or the loop exited before consuming the full `<dependency-order>`.
 
 7. **Validate.**
    ```bash
@@ -197,9 +225,10 @@ The synth-agent is also bound to atomic writes for every artifact it produces (i
 
 ## Guardrails
 
-- **Pre-conditions are non-negotiable.** All three notes files must exist. Missing any → STOP, do NOT spawn synth-agent. The error message must point the user at `/port:plan` (which itself points at `/port:explore` if needed).
-- **synth-agent owns artifact generation; orchestrator owns context.md, validate, lint.** Never inline the artifact loop here. Never let synth-agent run validate or lint.
-- **synth-agent model is `opus` (D21).** Do NOT pass a model override on the Agent call. Trust the agent frontmatter.
+- **Pre-conditions are non-negotiable.** All three notes files must exist. Missing any → STOP, do NOT run synth (neither spawn nor inline). The error message must point the user at `/port:plan` (which itself points at `/port:explore` if needed).
+- **Synth owns artifact generation; orchestrator owns context.md, validate, lint.** In `default` mode this means the spawned synth-agent fills artifacts and the orchestrator (this stage) handles validate + lint. In `--auto` mode the orchestrator runs synth inline AND handles validate + lint — but the inline synth loop (step 6 `--auto` path) is STILL forbidden from invoking validate or lint inside the loop itself; those run in step 7 / step 8 as separate stages.
+- **synth-agent model is `opus` (D21) in default mode.** Do NOT pass a model override on the Agent call. Trust the agent frontmatter. In `--auto` mode the orchestrator's own model handles synth — the dispatcher path inherits whatever model the parent session runs (currently opus-class). Do not attempt to swap models inline.
+- **In `--auto` mode the synth loop runs inline in the current session — do NOT call the `Agent` tool.** Nested-Agent spawns from a `/ggx-dispatcher`-spawned `general-purpose` subagent fail (`Task`/`Agent` not available); inline execution is the only working path. Same constraint as `/port:explore --auto` and `/dev:apply --auto`.
 - **Validate errors do NOT abort.** They are surfaced in the report and the summary. `/port:revise` is the fix point — keeping the synth → revise boundary clean is the whole reason synth and revise are separate commands.
 - **`/spec-lint` is invoked, never reimplemented inline.** All nine checks live in `commands/dev/spec-lint.md`. This command consumes its `.port/synth-report.md` output.
 - **Append validation, do not replace the lint report.** Step 9 reads the existing `.port/synth-report.md` (lint output) and appends a `## openspec validate` section. Atomic-write the merged result back.
