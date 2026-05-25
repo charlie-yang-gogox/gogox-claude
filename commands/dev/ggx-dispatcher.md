@@ -423,12 +423,23 @@ Single message, N parallel `Agent` calls (one per ticket):
 
 - `description`: `Dispatch <ticket-id> via /ggx-work`
 - `subagent_type`: `general-purpose`
-- `model`: `"opus"` — required because dev tickets routed through
-  `/ggx-work` will eventually run `/dev:apply --auto` inline inside this
-  subagent (--auto no longer spawns `dev-agent`, to eliminate nested
-  opus spawn that fails from subagent context). The implementation work
-  needs opus quality reasoning. Port tickets technically don't need
-  opus, but keeping one consistent spawn shape avoids drift.
+- `model`: `"opus"` — required because every pipeline that runs through
+  this dispatcher eventually does heavy reasoning inline in this
+  `general-purpose` subagent:
+    - Dev lane: `/dev:apply --auto` runs `/opsx:apply` inline (see
+      `commands/dev/dev/apply.md:15-17`).
+    - Port lane: `/port:explore --auto` runs the dev-consult contract
+      inline, and `/port:synth --auto` runs the synth loop inline (see
+      `commands/dev/port/explore.md` step 6 and `commands/dev/port/synth.md`
+      step 6 mode tables).
+  All three paths exist because nested-Agent spawns from a subagent
+  fail (`Task`/`Agent` not available), so the heavy work must run in
+  the dispatcher-spawned subagent itself — which therefore needs opus
+  quality reasoning. The `/port:plan` stage still spawns `pm-agent` /
+  `designer-agent` (both sonnet) — nested sonnet spawns from a
+  subagent are known to work in practice (see
+  `commands/dev/dev/apply.md` rationale), so `/port:plan` is NOT
+  inlined.
 - `prompt`: the dispatch command plus a short loop-driving framing.
   `/ggx-work` itself owns the per-iteration loop discipline (call
   `/route` → execute → repeat); the framing below exists only so the

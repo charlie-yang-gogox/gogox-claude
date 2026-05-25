@@ -1,11 +1,14 @@
 ---
 name: port:explore
 description: >
-  Wave-1 of the port pipeline. Spawns dev-consult-agent (opus) inside the
-  ticket worktree to produce `.port/dev-notes.md` (Locate + Source Analysis
-  + Porting Recommendations + Risks + Assumptions). Hardens the Locate gate
-  with deterministic file/symbol existence checks against the origin
-  codebase. `--simple` mode runs a lean variant with no worktree, no
+  Wave-1 of the port pipeline. Produces `.port/dev-notes.md` (Locate + Source
+  Analysis + Porting Recommendations + Risks + Assumptions) and hardens the
+  Locate gate with deterministic file/symbol existence checks against the
+  origin codebase. Mode-conditional execution: default spawns
+  dev-consult-agent (opus, worktree-isolated) via the Agent tool; --auto runs
+  the dev-consult logic inline in the current session (no nested-Agent
+  spawn — required because /ggx-dispatcher invokes this via a general-purpose
+  subagent). `--simple` mode runs a lean variant with no worktree, no
   OpenSpec scaffold, and an interactive Q&A loop that posts the final
   analysis as a Linear comment.
 ---
@@ -59,42 +62,66 @@ Parse `$ARGUMENTS`. If `--simple` is present, jump to **Simple mode** below. Oth
      - HITL → `AskUserQuestion`: `reuse / regenerate`. On `reuse`, skip to step 9.
      - `--auto` → auto-regenerate. Log: `Auto: regenerating stale dev-notes.md`.
 
-6. **Spawn `dev-consult-agent`.**
-   - Use the Agent tool. Settings: `subagent_type: dev-consult-agent`, `model: opus`, `isolation: worktree`.
-   - In `--auto` mode include `mode: "bypassPermissions"` on the Agent call.
-   - Prompt body (verbatim shape — fill placeholders):
-     ```
-     CONSULT MODE: write only to <output-path>. Do not write any other OpenSpec file.
+6. **Run dev-consult (mode-conditional).**
 
-     ## Ticket
-     <ticket-context>
+   The dev-consult contract — Locate the feature in the origin codebase, write `<port-dir>/dev-notes.md` per the `agents/dev/dev-consult-agent.md` definition (Locate / Source Analysis / Current Project Fit / Reuse Opportunities / Porting Recommendations / Migration Notes / Risks & Unknowns / Assumptions, with the bold labeled-ID convention `**R-N**` / `**P-N**`) — runs differently depending on mode:
 
-     ## PRD (user-provided, if any)
-     <prd-text or "(none — infer from ticket title alone)">
+   | Mode | Execution path | Why |
+   | -- | -- | -- |
+   | `default` | spawn `dev-consult-agent` via the `Agent` tool — `subagent_type: dev-consult-agent`, `model: opus`, `isolation: worktree` | Main session has `Agent` available; isolating into a worktree-scoped opus subagent keeps the heavy context out of the orchestrator. |
+   | `--auto` | run the dev-consult logic **inline** in the current session — no `Agent` spawn | `--auto` may run inside a `general-purpose` subagent dispatched by `/ggx-dispatcher`. Nested-Agent spawns from a subagent are unreliable / unavailable — inlining is the only safe path. Same constraint as `/dev:apply` (see `commands/dev/dev/apply.md:15-17`). |
 
-     ## Original project path
-     <origin_project_path>
+   **`default` mode — spawn the agent.** Include `mode: "bypassPermissions"` on the call only if any caller passed it through; otherwise omit. Pass this prompt body (verbatim shape — fill placeholders):
 
-     ## Current project worktree
-     <worktree-path>
+   ```
+   CONSULT MODE: write only to <output-path>. Do not write any other OpenSpec file.
 
-     ## Output path
-     <port-dir>/dev-notes.md
+   ## Ticket
+   <ticket-context>
 
-     Produce notes per your agent definition. First section MUST be `## Locate`
-     with confidence (high/medium/low) and candidate matches.
+   ## PRD (user-provided, if any)
+   <prd-text or "(none — infer from ticket title alone)">
 
-     Numbered items in `## Risks & Unknowns` and `## Porting Recommendations`
-     MUST use bold labeled IDs — `**R-1**`, `**R-2**`, `**P-1**`, `**P-2**`.
-     Artifacts cite these IDs later for traceability; dropping the bold-and-ID
-     format will trigger /spec-lint failures.
-     ```
-   - Agent failure / empty output:
-     - HITL → `AskUserQuestion`: `retry / abort` (skip is not offered).
-     - `--auto` → retry once, second failure → STOP with auto-mode abort message + Linear comment.
+   ## Original project path
+   <origin_project_path>
 
-7. **Atomic-write the agent output.**
-   - The agent writes directly to `<port-dir>/dev-notes.md`, but the agent prompt mandates the same `mktemp` + `mv` pattern (`Write` tool already does atomic replace). Verify the file exists after the agent returns; absent → treat as agent failure (step 6 retry).
+   ## Current project worktree
+   <worktree-path>
+
+   ## Output path
+   <port-dir>/dev-notes.md
+
+   Produce notes per your agent definition. First section MUST be `## Locate`
+   with confidence (high/medium/low) and candidate matches.
+
+   Numbered items in `## Risks & Unknowns` and `## Porting Recommendations`
+   MUST use bold labeled IDs — `**R-1**`, `**R-2**`, `**P-1**`, `**P-2**`.
+   Artifacts cite these IDs later for traceability; dropping the bold-and-ID
+   format will trigger /spec-lint failures.
+   ```
+
+   **`--auto` mode — inline execution.** Do NOT call the `Agent` tool. The current session executes the dev-consult contract directly:
+   1. Read `agents/dev/dev-consult-agent.md` once (`<repo-root>/agents/dev/dev-consult-agent.md` from this gogox-claude repo). Treat its `## Output format — MANDATORY section order`, `### Labeled-ID convention`, and `## Guardrails` sections as binding.
+   2. Resolve the active repo profile per Step 0 of the agent definition (`.gogox-claude.yaml` → `platform` + `product`; fall back to `~/.claude/commands/profiles/registry/`).
+   3. Inspect the origin codebase at `<origin_project_path>` and the current worktree at `<worktree-path>` using `Grep` / `Glob` / `Read` / `Bash`. Locate the feature from the ticket title + description; analyse it at the behavioural level.
+   4. Compose the full notes content. First section MUST be `## Locate` with `Confidence: high|medium|low`. Numbered items in `## Risks & Unknowns` and `## Porting Recommendations` MUST use bold labeled IDs (`**R-1**`, `**P-1**`, ...) — these are cited downstream by `/spec-lint` and missing IDs will trigger lint failures.
+   5. Atomic-write to `<port-dir>/dev-notes.md` via the D16 pattern:
+      ```bash
+      tmp=$(mktemp)
+      # write composed notes content to $tmp via the Write tool
+      mv "$tmp" "<port-dir>/dev-notes.md"
+      ```
+   6. Do NOT write to any other file — no OpenSpec artifacts, no Linear comment, no edits under `lib/` / source / test paths. The guardrails in `agents/dev/dev-consult-agent.md` apply verbatim to this inline path.
+
+   **Failure handling (both modes).**
+   - HITL: `AskUserQuestion`: `retry / abort` (skip is not offered).
+   - `--auto`: retry once. Second failure → STOP with the auto-mode abort message + Linear comment per the §4.3 contract in `/ggx-work`.
+   - In `--auto` inline mode, "failure" means the file was not written, the `## Locate` section is missing, or step 8's Locate-gate hardening flags an unrecoverable miss before the retry.
+
+7. **Verify the output file.**
+   - `default` mode: the agent owns the write; the agent prompt mandates the `mktemp` + `mv` pattern (`Write` tool already does atomic replace).
+   - `--auto` mode: the orchestrator owns the write per step 6.5 above.
+   - In both cases, verify `<port-dir>/dev-notes.md` exists after step 6 returns. Absent → treat as step 6 failure (retry per the failure-handling block).
 
 8. **Locate gate hardening (D6).**
    - Parse the `## Locate` section: `<confidence>`, `<primary-match>` path, optional `<alternatives>` paths, `<main-symbols>` (any code identifier mentioned in `Why:` or in the Source Analysis section).
@@ -226,6 +253,7 @@ The local-yaml write-back uses the same pattern — never write to the yaml in p
 - `--force` skips the staleness check (D18) but never skips the Locate gate.
 - All Linear MCP calls use `mcp__claude_ai_Linear__*`. Never `mcp__linear-server__*`.
 - All `.port/` writes from this stage are atomic via `mktemp` + `mv`.
-- The `dev-consult-agent` prompt MUST include the labeled-ID convention (R-N, P-N) — `/spec-lint` Check 8 fires when notes have zero labeled IDs.
+- The labeled-ID convention (R-N, P-N) MUST appear in `dev-notes.md` regardless of execution path — agent spawn (default mode) or inline orchestrator (`--auto` mode). `/spec-lint` Check 8 fires when notes have zero labeled IDs.
+- In `--auto` mode the dev-consult logic runs inline in the current session — do NOT call the `Agent` tool. Nested-Agent spawns from a `/ggx-dispatcher`-spawned `general-purpose` subagent fail (`Task`/`Agent` not available); inline execution is the only working path. Same constraint as `/dev:apply --auto` (see `commands/dev/dev/apply.md:15-17`).
 - Simple mode posts a comment, never edits the description (full mode owns description writes).
 - Timings JSONL is appended in full mode only; simple mode is best-effort and ephemeral.
