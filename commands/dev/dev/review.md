@@ -40,7 +40,7 @@ fi
 
 ## Step 1: Run /code-review
 
-Run `/code-review` against the current branch's diff vs `$BASE_REF`.
+Run `/code-review --auto` against the current branch's diff vs `$BASE_REF`. The `--auto` flag is mandatory here — `/dev:review` is an auto-only stage, and when the parent `/dev:ff` runs inside a `/ggx-dispatcher`-spawned `general-purpose` subagent the inner `/code-review` cannot spawn `git-branch-code-reviewer` via the `Agent` tool (nested-Agent spawn is unavailable). `--auto` triggers `/code-review`'s inline execution path; see `commands/dev/code-review.md` step 2's mode table.
 
 ## Step 2: Address critical issues
 

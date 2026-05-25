@@ -427,19 +427,21 @@ Single message, N parallel `Agent` calls (one per ticket):
   this dispatcher eventually does heavy reasoning inline in this
   `general-purpose` subagent:
     - Dev lane: `/dev:apply --auto` runs `/opsx:apply` inline (see
-      `commands/dev/dev/apply.md:15-17`).
+      `commands/dev/dev/apply.md:15-17`); `/dev:review` runs
+      `/code-review --auto` which inlines the git-branch-code-reviewer
+      contract (see `commands/dev/code-review.md` step 2 mode table).
     - Port lane: `/port:explore --auto` runs the dev-consult contract
       inline, and `/port:synth --auto` runs the synth loop inline (see
       `commands/dev/port/explore.md` step 6 and `commands/dev/port/synth.md`
       step 6 mode tables).
-  All three paths exist because nested-Agent spawns from a subagent
+  All four paths exist because nested-Agent spawns from a subagent
   fail (`Task`/`Agent` not available), so the heavy work must run in
   the dispatcher-spawned subagent itself — which therefore needs opus
   quality reasoning. The `/port:plan` stage still spawns `pm-agent` /
-  `designer-agent` (both sonnet) — nested sonnet spawns from a
-  subagent are known to work in practice (see
-  `commands/dev/dev/apply.md` rationale), so `/port:plan` is NOT
-  inlined.
+  `designer-agent` (both sonnet) and `/dev:verify` still spawns
+  `verify-agent` (sonnet) — nested sonnet spawns from a subagent are
+  known to work in practice (see `commands/dev/dev/apply.md`
+  rationale), so those stages are NOT inlined.
 - `prompt`: the dispatch command plus a short loop-driving framing.
   `/ggx-work` itself owns the per-iteration loop discipline (call
   `/route` → execute → repeat); the framing below exists only so the
