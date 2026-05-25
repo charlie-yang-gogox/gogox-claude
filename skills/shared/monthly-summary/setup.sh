@@ -34,7 +34,7 @@ check_env() {
   local python3_path=""
   local gh_ok=false
   local parse_py_ok=false
-  local parse_py_path="${HOME}/.claude/skills/daily-summary/parse.py"
+  local parse_py_path="${HOME}/.claude/skills/_lib/parse.py"
 
   if command -v python3 &>/dev/null; then
     python3_ok=true

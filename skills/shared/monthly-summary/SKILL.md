@@ -88,7 +88,7 @@ Parse the JSON output. For each **missing** optional dependency, show:
 | Dependency | Required | What it does | Install | If skipped |
 |-----------|----------|-------------|---------|------------|
 | python3 | Yes (for parse.py) | Parses transcript .jsonl files to extract session metrics | `brew install python3` (macOS) / `apt install python3` (Linux) | Behavioral analysis (TOP 5, session patterns, slash command stats) unavailable |
-| parse.py | Yes | Companion script in daily-summary skill | Part of daily-summary skill — install daily-summary first | Same as python3 missing |
+| parse.py | Yes | Transcript-scan helper at ~/.claude/skills/_lib/parse.py | Shipped with gogox-claude install.sh — re-run `./install.sh` if missing | Same as python3 missing |
 | gh CLI | Optional | Fetches PR data (PRs Merged/Opened) from GitHub | `brew install gh && gh auth login` | PR metrics will not be included |
 
 If python3 is missing, give an extra warning that most behavioral insights
@@ -125,12 +125,54 @@ Report language:
 ##### 0d. Detect Existing Database
 
 Before creating a new database, check if one already exists under the parent
-page. Call `mcp__notion__notion-fetch` with the parent page URL to inspect
-its children. Look for a child database named "Monthly Metrics".
+page. We anchor on **schema**, not name — the user may have renamed the DB,
+and what we actually depend on is the property set.
 
-- **If found:** ask: "Found existing Monthly Metrics DB. Use it? (y/n)"
-  If yes: capture its database ID, skip 0e, proceed to 0f.
-- **If not found:** proceed to 0e.
+**Detection algorithm:**
+
+1. Call `mcp__notion__notion-fetch` on the parent page URL and enumerate
+   every child object whose type is `database` (recurse one level if the
+   parent page contains sub-pages that themselves hold databases — Notion
+   parents that wrap a DB inside a single child page are common).
+2. For each candidate database, fetch its property schema (via
+   `mcp__notion__notion-fetch` on the database URL) and compute a
+   **signature match**:
+   - REQUIRED: a property named `Period` of type `title`.
+   - REQUIRED: at least **3 of these 4** properties present (any type):
+     `Total Cost`, `Total Sessions`, `Active Days`, `AI Active Hours`.
+   - A database that passes both checks is a candidate.
+
+   Rationale: these 4 fields are the most stable landmarks across the
+   18-property schema in Step 0e — unlikely to be removed even if the user
+   reorganizes the DB. The title-type `Period` anchors uniqueness.
+
+3. Branch on candidate count:
+
+   - **0 candidates** → proceed to Step 0e (create new).
+   - **1 candidate** → display the **actual DB name** (not the hardcoded
+     string) and ask:
+     ```
+     Found existing database that matches the Monthly Metrics schema:
+       "<actual DB name>"  (id: <first 8 chars of UUID>)
+     Use this database? (y/n)
+     ```
+     - `y` → capture the database ID, skip 0e, proceed to 0f.
+     - `n` → proceed to Step 0e (create a fresh one).
+   - **2+ candidates** → list every candidate with its actual name and ID
+     prefix, plus a "create new" option:
+     ```
+     Multiple databases match the Monthly Metrics schema:
+       [1] "<name A>"  (id: <prefix>)
+       [2] "<name B>"  (id: <prefix>)
+       [3] Create a new database
+     Which one? (1/2/3)
+     ```
+     Capture the chosen database ID and proceed to 0f, or proceed to 0e
+     if the user picks "Create new".
+
+**Do NOT** match by the literal string "Monthly Metrics" anywhere in this
+step — the user is free to rename. Name appears only as display text inside
+the prompt.
 
 ##### 0e. Create Monthly Metrics DB
 
@@ -199,7 +241,7 @@ Then continue to Step 1 (do not stop — proceed to generate the report).
 **Minimum data check** (runs for both new and existing configs):
 
 ```bash
-python3 ~/.claude/skills/daily-summary/parse.py --month "$YYYY_MM" --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([r for r in d.get('rows',[]) if r.get('total_cost',0)>0]))"
+python3 ~/.claude/skills/_lib/parse.py --month "$YYYY_MM" --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([r for r in d.get('rows',[]) if r.get('total_cost',0)>0]))"
 ```
 If active days < 5, warn: "Only {N} active days found for this month. Report may lack meaningful behavioral insights. Continue? (The report will still be generated but TOP 5 analysis may be thin.)"
 
@@ -258,7 +300,7 @@ numbers from .jsonl (may differ from daily dashboard)`.
 Always run parse.py for behavioral metrics and row-level context:
 
 ```bash
-python3 ~/.claude/skills/daily-summary/parse.py --month "$YYYY_MM" --json
+python3 ~/.claude/skills/_lib/parse.py --month "$YYYY_MM" --json
 ```
 
 Use from this output:
