@@ -73,7 +73,14 @@ Collect two lists:
 - **Review threads** where `isResolved == false` — these become the candidates for FIX/REPLY/STALE/DEFER.
 - **Issue comments** (top-level PR conversation) — same classification, but no thread to resolve. Treat as REPLY/DEFER only (FIX is rare here; if the comment requests code change, classify FIX and reply on the issue comment).
 
-Exclude comments authored by the current `gh api user` login (the user's own prior replies).
+**Self-authored comment handling** — do NOT blanket-exclude comments authored by the current `gh api user` login. The rule is finer:
+
+- **Include** self-authored comments that are *thread starters* or *top-level PR comments* (issue comments / review summaries) — these are self-reviews and carry actionable findings. Self-reviewing your own PR before requesting review is a common pattern; those findings must be classified like any reviewer's.
+- **Exclude** self-authored comments that are *replies inside an existing thread* (i.e. not the first comment in the thread) — those are the user's own prior responses, already accounted for.
+
+Concretely: for each review thread, look at `comments.nodes[0]` (the starter). If `comments.nodes[0].author.login == <self>`, keep the thread. Only skip threads where the starter is someone else AND every later comment is self-authored (pure self-reply chain with no outstanding reviewer ask).
+
+For top-level PR `issueComment`s and `pullRequestReview` bodies authored by self → always include.
 
 ### 3. Classify each comment
 
