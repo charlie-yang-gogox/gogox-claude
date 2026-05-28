@@ -14,8 +14,18 @@ on:
         description: "Linear ticket id (e.g. CAF-603)"
         required: true
         type: string
+      ticket_title:
+        description: "Ticket title (one line)"
+        required: true
+        type: string
+      ticket_description:
+        description: "Full ticket description / acceptance criteria (multi-line OK)"
+        required: true
+        type: string
   repository_dispatch:
     types: [linear-bug-fix]
+      # client_payload schema:
+      #   { "ticket_id": "...", "ticket_title": "...", "ticket_description": "..." }
 
 env:
   TARGET_REPO: gogovan/gogox-client-flutter
@@ -27,16 +37,33 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Resolve ticket id
+      - name: Resolve ticket inputs
         id: ticket
+        env:
+          # Use env to avoid YAML escape issues with multi-line strings
+          WF_TICKET_ID:     ${{ github.event.inputs.ticket_id }}
+          WF_TICKET_TITLE:  ${{ github.event.inputs.ticket_title }}
+          WF_TICKET_DESC:   ${{ github.event.inputs.ticket_description }}
+          RD_TICKET_ID:     ${{ github.event.client_payload.ticket_id }}
+          RD_TICKET_TITLE:  ${{ github.event.client_payload.ticket_title }}
+          RD_TICKET_DESC:   ${{ github.event.client_payload.ticket_description }}
+          EVENT_NAME:       ${{ github.event_name }}
         run: |
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            ID="${{ github.event.client_payload.ticket_id }}"
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            ID="$RD_TICKET_ID"; TITLE="$RD_TICKET_TITLE"; DESC="$RD_TICKET_DESC"
           else
-            ID="${{ github.event.inputs.ticket_id }}"
+            ID="$WF_TICKET_ID"; TITLE="$WF_TICKET_TITLE"; DESC="$WF_TICKET_DESC"
           fi
-          echo "id=${ID}" >> "$GITHUB_OUTPUT"
-          echo "Ticket: ${ID}"
+          # Persist for later steps via $GITHUB_ENV (multi-line via delimiter)
+          echo "TICKET_ID=$ID" >> "$GITHUB_ENV"
+          echo "TICKET_TITLE=$TITLE" >> "$GITHUB_ENV"
+          {
+            echo "TICKET_DESCRIPTION<<__GGX_EOF__"
+            printf '%s\n' "$DESC"
+            echo "__GGX_EOF__"
+          } >> "$GITHUB_ENV"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "Ticket: $ID — $TITLE"
 
       - name: Checkout gogox-claude (this repo)
         uses: actions/checkout@v4
@@ -94,40 +121,44 @@ jobs:
           flutter --version | head -3
           flutter pub get 2>&1 | tail -10
 
+      - name: Write ticket data to disk for Claude to read
+        run: |
+          mkdir -p /tmp/ggx-worker
+          cat > /tmp/ggx-worker/ticket.md <<EOF
+          # ${TICKET_ID} — ${TICKET_TITLE}
+
+          ${TICKET_DESCRIPTION}
+          EOF
+          echo "--- Ticket data persisted to /tmp/ggx-worker/ticket.md (first 30 lines): ---"
+          head -30 /tmp/ggx-worker/ticket.md
+
       - name: Run Claude bug-fix flow
         uses: anthropics/claude-code-base-action@beta
         with:
-          # Claude runs in $GITHUB_WORKSPACE/target so it reads .claude/, CLAUDE.md
-          # of the target repo automatically.
           prompt: |-
             You are running inside a GitHub Actions runner as the **cloud bug worker** for the gogox-claude pipeline.
 
             ## Ticket
             - Linear ticket ID: ${{ steps.ticket.outputs.id }}
             - Repository: gogovan/gogox-client-flutter (already checked out at $GITHUB_WORKSPACE/target)
-            - Working dir: cd to $GITHUB_WORKSPACE/target before doing any work
+            - Full ticket title + description: read `/tmp/ggx-worker/ticket.md` via the Read tool. This file contains everything you need to know about the bug — do NOT improvise or guess at a different fix.
 
             ## Your job
-            Drive this Linear ticket through the equivalent of `/ggx-work <ticket-id> --auto` (bug lane). The full pipeline definition is in ~/.claude/commands/ggx-work.md and ~/.claude/commands/dev/*.md — read them and follow.
+            Drive this ticket through the equivalent of `/ggx-work <ticket-id> --auto` (bug lane). The pipeline definition is in `~/.claude/commands/ggx-work.md` and `~/.claude/commands/dev/*.md` — read them as needed and follow.
 
-            For bug-mode the chain is: dev:start → write the fix → dev:verify → dev:review → dev:ship.
+            For bug-mode the chain is: dev:start → write the fix per ticket → dev:verify → dev:review → dev:ship.
 
             ## Cloud-specific overrides (apply throughout)
             1. cd "$GITHUB_WORKSPACE/target" first; do NOT cd elsewhere.
-            2. `gh` CLI is installed and authenticated via $GH_TOKEN env (the workflow already ran `gh auth login --with-token`). Use `gh pr create`, `gh pr list`, `gh pr view` directly — no MCP needed.
-            3. Branch naming: use the gitBranchName from the Linear ticket (fetch via `mcp__claude_ai_Linear__get_issue`) OR fall back to `fix/<TICKET-ID>`. Create the branch off `trunk`.
-            4. Flutter SDK is at /opt/hostedtoolcache/flutter/... or on PATH. `flutter --version` should show 3.38.7. `flutter pub get` was already run.
-            5. `flutter test` may be slow — run it once if the change touches Dart code; for pure-doc changes (e.g. README only) you can skip test, but still run `flutter analyze`.
-            6. When committing: `git commit -m "<message>" --no-verify` is fine; use the configured ggx-cloud-worker identity (already set globally).
-            7. When done: report PR number + URL + Linear status transition.
-
-            ## Linear MCP usage
-            Use `mcp__claude_ai_Linear__*` tools for ticket read / status update / comment posting. Do NOT skip the starting `<!-- ticket-init:v1 lane=dev -->` comment or the closing summary comment — match what /dev:start and /dev:ship do.
+            2. **`gh` CLI is installed and authenticated** (workflow already ran `gh auth login`). Use `gh pr create`, `gh pr list`, `gh pr view`, `gh pr edit` directly. Do NOT try mcp__github__* — it is not configured here.
+            3. **Linear MCP is NOT available** in this runner. All ticket data you need is in `/tmp/ggx-worker/ticket.md`. Do NOT attempt to call any `mcp__claude_ai_Linear__*` tool. Linear status / comments will be handled by Linear's automatic GitHub PR linkage when the PR title contains the ticket id.
+            4. **Branch naming**: `fix/<TICKET-ID>` off `trunk`. Use the configured `ggx-cloud-worker` git identity (already set globally).
+            5. Flutter SDK is on PATH (`flutter --version` shows 3.38.7). `flutter pub get` already ran. Run `flutter analyze` after edits; run `flutter test` if you touched Dart code; skip test for pure-doc / README-only changes.
+            6. **Implement EXACTLY what the ticket asks** — do not substitute a different bug fix even if you think it would be better.
 
             ## Safety rails
-            - Do NOT force-push to trunk
+            - Do NOT force-push, do NOT push to trunk
             - Do NOT delete any remote branch you did not create
-            - Do NOT touch ANY ticket other than ${{ steps.ticket.outputs.id }}
             - If anything looks unsafe or unrecoverable, stop and report
 
             ## Output
@@ -136,7 +167,6 @@ jobs:
             === GGX CLOUD WORKER OUTCOME ===
             Result       : <success | failure>
             Final stage  : <e.g. dev:ship | dev:verify aborted>
-            Ticket status: <Linear status name>
             PR URL       : <URL or none>
             Files changed: <N files (summary)>
             Notes        : <any noteworthy gotcha>
