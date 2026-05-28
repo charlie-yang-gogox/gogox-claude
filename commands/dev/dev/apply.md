@@ -83,7 +83,12 @@ The agent is responsible for the **full fix loop** — investigate, hypothesize,
 
 ### Step 0-bug.1: Refresh ticket context
 
-Re-fetch the ticket via `mcp__claude_ai_Linear__get_issue` so the agent has the latest description, comments, and any attached repro steps. Capture into local variables `ticket_title`, `ticket_description`, `ticket_comments`.
+Re-fetch the ticket so the agent has the latest description, comments, and any attached repro steps. **System-aware** — resolve `TICKET_SYSTEM` via the `_ticket-lib.md` resolution flow first, then branch:
+
+- **Linear**: `mcp__claude_ai_Linear__get_issue --id "$TICKET_ID"` for title/description; `mcp__claude_ai_Linear__list_comments --issueId "$TICKET_ID" --orderBy createdAt` for comments.
+- **Jira**: a single `mcp__claude_ai_Atlassian_Rovo__getJiraIssue --cloudId "$JIRA_CLOUD_ID" --issueIdOrKey "$TICKET_ID" --responseContentFormat markdown` call — comments are embedded in `.fields.comment.comments[]`.
+
+Capture into local variables `ticket_title`, `ticket_description`, `ticket_comments` (concatenated body text) using the field mapping in `_ticket-lib.md` (`title` ← `.title` or `.fields.summary`; `description` ← `.description` or `.fields.description`; comments per the tracker).
 
 **Spec-review overrides (authoritative — override conflicting ticket / OpenSpec guidance).** After the re-fetch, read `.dev/spec-review-directives.md` (written one-shot by `/dev:start` Step 4c). If its first line is `Status: PRESENT`, include the entire file contents in your working context under the explicit marker `## Spec-review overrides (authoritative — override conflicting design.md / tasks.md / ticket-description guidance)`. Each `### [REVISED]` block's `Directive:` line is a human override that supersedes any conflicting guidance found elsewhere — apply it verbatim. If `Status: NONE`, ignore the file. If the file is missing entirely, treat it as `Status: NONE` (legacy worktree created before this fix landed) — do NOT re-fetch comments to compensate; `/dev:start` is the sole writer.
 
@@ -255,8 +260,8 @@ Spawn `dev-agent` (opus, worktree-isolated) with these inputs:
 
 ```
 ticket_id: $TICKET_ID
-ticket_title: <re-fetched from Linear>
-ticket_description: <re-fetched from Linear>
+ticket_title: <re-fetched from tracker (Linear or Jira, system-aware per _ticket-lib.md)>
+ticket_description: <re-fetched from tracker>
 branch_name: $(git rev-parse --abbrev-ref HEAD)
 worktree_path: $WT
 figma_receipt: .dev/figma-context.md  (pass "none" if first line is `Fetched: SKIPPED`)

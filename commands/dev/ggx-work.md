@@ -1,20 +1,26 @@
 ---
 name: ggx-work
 description: >
-  Single-ticket orchestrator. Drives one Linear ticket through every
-  pipeline it needs (port → spec-review → dev, or just dev, or bug)
+  Single-ticket orchestrator. Drives one ticket (Linear or Jira) through
+  every pipeline it needs (port → spec-review → dev, or just dev, or bug)
   by repeatedly calling `/route --non-interactive` (in --auto mode)
   for decisions and executing the recommended command. Stops cleanly
-  at HITL gates (spec-review via Step 4.4a short-circuit; missing
-  classification label via Step 4.3) so a human can take over, then
+  at HITL gates (spec-review via Step 4.4a short-circuit — Linear only;
+  missing classification via Step 4.3) so a human can take over, then
   can be re-invoked to resume. Used by `/ggx-dispatcher` as the
   uniform spawn target so the cross-pipeline routing logic lives in
   ONE place (`/route`) instead of being re-implemented in every caller.
+  Ticket-system support: Linear (CAF/DAF) and Jira (CET/DET) via the
+  abstraction documented in `_ticket-lib.md`. Jira tickets have no
+  port lane, so the port→spec-review handoff path is Linear-exclusive.
 Prerequisite: >
-  - Linear MCP authenticated.
-  - `<ticket-id>` references a real Linear ticket with a single
-    classification label (`bug` / `port` / `feature`); missing /
-    ambiguous classification halts at the first `/route` call.
+  - Linear MCP authenticated for CAF/DAF tickets; Atlassian Rovo MCP
+    authenticated for CET/DET tickets.
+  - `<ticket-id>` references a real ticket with a derivable lane:
+      - Linear: exactly one classification label ∈ {`bug`,`port`,`feature`}.
+      - Jira: `fields.issuetype.name` ∈ {`Bug`,`Story`,`Task`,`Sub-task`,
+        `Improvement`,`New Feature`}.
+    Anything else halts at the first `/route` call.
   - For ticket worktree-required stages: a worktree at `../<ticket-id>`
     is created on first `/port:ff` / `/dev:ff` invocation by those
     pipelines' own `:start` stages.
@@ -83,13 +89,20 @@ Notes:
 
 ### Step 2: Pre-flight
 
-1. Verify Linear MCP reachability via a lightweight `mcp__claude_ai_Linear__get_issue`
-   call for `<ticket-id>`. Failure (network, not found, permission) → STOP with
-   the verbatim error.
-2. Hold the ticket's `url`, `labels`, `status.name`, `assignee`, `estimate` from
-   the response so subsequent steps don't have to refetch. The `url` is included
-   in any Linear comment posted later; the rest drive Step 2.5's idempotency
-   guard.
+1. **Resolve `<ticket-system>`** via the `_ticket-lib.md` resolution flow
+   (reads `.gogox-claude.yaml` and `org.yaml`). If `unknown` → STOP with:
+   `/ggx-work cannot resolve ticket_system for <ticket-id>. Check .gogox-claude.yaml + org.yaml prefixes.`
+2. Verify ticket-tracker MCP reachability via a lightweight fetch:
+   - **Linear**: `mcp__claude_ai_Linear__get_issue --id <ticket-id>`
+   - **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue --cloudId <jira-cloud-id> --issueIdOrKey <ticket-id> --responseContentFormat markdown`
+
+   Failure (network, not found, permission) → STOP with the verbatim error
+   plus the hint `Verify the ticket id and that the matching MCP server
+   (Linear or Atlassian Rovo) is authenticated.`
+3. Hold from the response (mapped to logical names — see `_ticket-lib.md`
+   "Field mapping"): `url`, `labels` (Linear) or `issue_type` (Jira),
+   `status_name`, `assignee_id`. The `url` is included in any ticket
+   comment posted later; the rest drive Step 2.5's idempotency guard.
 
 ### Step 2.5: Linear lifecycle init (idempotent, both modes)
 
@@ -109,13 +122,18 @@ The flag is still propagated to spawned FF wrappers in Step 3 so the downstream
 `:start` stage's own ticket-init invocation also short-circuits — keeping the
 whole chain consistent for the manual / debugging workflow.
 
-1. **Derive `<lane>` from the classification label** held by Step 2:
-   - exactly one of `{bug, port, feature}` ∈ `<labels>` → that one
-   - zero or multiple → **skip the entire Step 2.5**. Step 3's `/route` call
-     will surface the missing-classification error via its own UNKNOWN_LANE path;
-     duplicating the check here would just produce a second error message.
-
-   Case-insensitive match (Linear sometimes returns `Port` with capital P).
+1. **Derive `<lane>` from the classification** held by Step 2 — system-aware:
+   - **Linear**: exactly one of `{bug, port, feature}` ∈ `<labels>` → that one.
+     Zero or multiple → **skip the entire Step 2.5**. Step 3's `/route`
+     call will surface the missing-classification error via its own
+     UNKNOWN_LANE path; duplicating the check here would just produce a
+     second error message. Case-insensitive match (Linear sometimes
+     returns `Port` with capital P).
+   - **Jira**: derive from `<issue-type>` per `_ticket-lib.md` lane table —
+     `Bug` → `bug`; `Story` / `Task` / `Sub-task` / `Subtask` /
+     `Improvement` / `New Feature` → `feature`; anything else → skip
+     Step 2.5 (let `/route` surface UNKNOWN_LANE).
+     Case-insensitive match.
 
 2. **Map `<lane>` to the `/_ticket-init` lane argument**:
    - `port` → `port`
@@ -297,7 +315,12 @@ Exit non-zero.
 
 **Auto mode**:
 
-Post Linear comment:
+Post a ticket comment (system-aware — Step 2's `<ticket-system>` value):
+
+- **Linear**: `mcp__claude_ai_Linear__save_comment --issueId <ticket-id> --body <markdown>`
+- **Jira**: `mcp__claude_ai_Atlassian_Rovo__addCommentToJiraIssue --cloudId <jira-cloud-id> --issueIdOrKey <ticket-id> --commentBody <markdown>`
+
+Body:
 ```
 <!-- ggx-work-error -->
 `/ggx-work --auto` aborted.
@@ -309,8 +332,9 @@ Last   : `<recommended_command (if any)>`
 Manual investigation needed.
 ```
 
-Print to stdout (in addition to the Linear comment above), so the dispatcher's
-§6.1 cosmetic parse picks up the outcome line from the agent's return message:
+Print to stdout (in addition to the ticket comment above), so the
+dispatcher's §6.1 cosmetic parse picks up the outcome line from the
+agent's return message:
 
 ```
 [ggx-work-result] outcome=failed ticket=<ticket-id>
@@ -361,11 +385,13 @@ When the spawned pipeline terminates:
   **Do NOT re-spawn the failed pipeline.** Do NOT post-fix. The user
   investigates, fixes the root cause, and re-invokes `/ggx-work`.
 
-##### Step 4.4a: port → spec-review short-circuit
+##### Step 4.4a: port → spec-review short-circuit (Linear only)
 
 Triggered only when Step 4.4 just finished a successful `/port:ff`
-invocation. Purpose: terminate the loop without re-invoking `/route` or
-posting a duplicate HITL comment.
+invocation. **Skip entirely if `<ticket-system> == jira`** — Jira repos
+have no port pipeline (rejected at `/route` Step 4.port) so this branch
+is structurally unreachable for Jira. Purpose: terminate the loop
+without re-invoking `/route` or posting a duplicate HITL comment.
 
 ```
 re-fetch ticket labels via mcp__claude_ai_Linear__get_issue <ticket-id>
