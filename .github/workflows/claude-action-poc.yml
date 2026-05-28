@@ -46,7 +46,7 @@ jobs:
         with:
           prompt: ${{ github.event.inputs.prompt_override != '' && github.event.inputs.prompt_override || 'You are running inside a GitHub Actions runner. Do three things and report back: (1) print the output of `uname -a` and `whoami`; (2) print the contents of $GITHUB_WORKSPACE (ls -la); (3) confirm that the GH_TOKEN env var is set (do NOT print its value) and that the gh CLI is authenticated by running `gh auth status`. End your reply with the literal line: === CLAUDE PoC SMOKE COMPLETE ===' }}
           allowed_tools: "Bash,Read,Glob,Grep"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           max_turns: "10"
 
       - name: Show execution summary
