@@ -1,0 +1,56 @@
+name: Claude Action PoC
+
+# Phase 1 of the Linear → GitHub Actions trigger investigation.
+# Minimal test: prove `anthropics/claude-code-base-action@beta` runs at all
+# inside a GitHub Actions runner, can call Anthropic API with the configured
+# secret, and produces some output we can inspect.
+#
+# After this passes, Phase 2 will live in gogox-client-flutter and run the
+# real bug-fix flow (Flutter install + code change + PR open).
+#
+# Trigger: manual via "Run workflow" button in the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt_override:
+        description: "Optional prompt override (leave blank for default smoke test)"
+        required: false
+        default: ""
+
+jobs:
+  test-claude-action:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner environment
+        run: |
+          echo "=== Runner info ==="
+          uname -a
+          cat /etc/os-release | head -5
+          echo "=== Tooling baseline ==="
+          which gh node npm git curl jq bash
+          gh --version | head -1
+          echo "=== GitHub context ==="
+          echo "repo: ${{ github.repository }}"
+          echo "actor: ${{ github.actor }}"
+          echo "event: ${{ github.event_name }}"
+          echo "ref: ${{ github.ref }}"
+
+      - name: Run Claude Code (smoke test)
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          prompt: ${{ github.event.inputs.prompt_override != '' && github.event.inputs.prompt_override || 'You are running inside a GitHub Actions runner. Do three things and report back: (1) print the output of `uname -a` and `whoami`; (2) print the contents of $GITHUB_WORKSPACE (ls -la); (3) confirm that the GH_TOKEN env var is set (do NOT print its value) and that the gh CLI is authenticated by running `gh auth status`. End your reply with the literal line: === CLAUDE PoC SMOKE COMPLETE ===' }}
+          allowed_tools: "Bash,Read,Glob,Grep"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          max_turns: "10"
+
+      - name: Show execution summary
+        if: always()
+        run: |
+          echo "=== Claude Code conclusion ==="
+          echo "Conclusion: ${{ steps.run-claude.outputs.conclusion || 'see action output above' }}"
