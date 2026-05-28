@@ -11,12 +11,7 @@ name: Claude Action PoC
 # Trigger: manual via "Run workflow" button in the Actions tab.
 
 on:
-  workflow_dispatch:
-    inputs:
-      prompt_override:
-        description: "Optional prompt override (leave blank for default smoke test)"
-        required: false
-        default: ""
+  workflow_dispatch: {}
 
 jobs:
   test-claude-action:
@@ -44,7 +39,15 @@ jobs:
       - name: Run Claude Code (smoke test)
         uses: anthropics/claude-code-base-action@beta
         with:
-          prompt: ${{ github.event.inputs.prompt_override != '' && github.event.inputs.prompt_override || 'You are running inside a GitHub Actions runner. Do three things and report back: (1) print the output of `uname -a` and `whoami`; (2) print the contents of $GITHUB_WORKSPACE (ls -la); (3) confirm that the GH_TOKEN env var is set (do NOT print its value) and that the gh CLI is authenticated by running `gh auth status`. End your reply with the literal line: === CLAUDE PoC SMOKE COMPLETE ===' }}
+          prompt: |-
+            You are running inside a GitHub Actions runner. Do these three steps via the Bash tool and report back inline:
+
+            1. Run `uname -a && whoami` and quote the output.
+            2. Run `ls -la "$GITHUB_WORKSPACE"` and quote the first 10 lines.
+            3. Run `gh auth status` (do NOT echo the token) and quote the output.
+
+            End your reply with the literal line:
+            === CLAUDE PoC SMOKE COMPLETE ===
           allowed_tools: "Bash,Read,Glob,Grep"
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           max_turns: "10"
