@@ -41,7 +41,27 @@ Known risks and trade-offs. Format: `[Risk] → Mitigation`. Always cover access
 
 ### Labeled-ID convention (mandatory)
 
-When you are invoked in port-pipeline consult mode (writing `design-notes.md`), every numbered item MUST start with a bold labeled ID — `**A-1**`, `**A-2**`, ... for every Assumption bullet. If you introduce numbered design decisions in `## Decisions` (or a similar section), label them too (e.g. `**D-1**`, `**D-2**`). The orchestrator's `/spec-lint` check cites these IDs across `proposal.md` / `design.md` / `tasks.md` / `specs/` to prove traceability. Drop the bold-and-ID format and downstream `/spec-lint` citation checks will misfire.
+When you are invoked in port-pipeline consult mode (writing `design-notes.md`), every numbered item MUST start with a bold labeled ID — `**AG-1**`, `**AG-2**`, ... for every Assumption bullet (the `AG` prefix marks them as design-authored so they never collide with dev-consult `AD-n` / pm `AP-n` assumptions when the orchestrator aggregates the three notes files). If you introduce numbered design decisions in `## Decisions` (or a similar section), label them too (e.g. `**D-1**`, `**D-2**`). The orchestrator's `/spec-lint` check cites these IDs across `proposal.md` / `design.md` / `tasks.md` / `specs/` to prove traceability. Drop the bold-and-ID format and downstream `/spec-lint` citation checks will misfire.
+
+### Assumptions (structured `ri:v1` records)
+
+Every assumption is a structured record:
+
+```
+<!-- ri:v1 id=AG-1 kind=judgment sev=medium verify=n/a -->
+- **AG-1** — <Summary: one specific, self-contained line — becomes the human-facing title>
+  - Why: <why you assumed this>
+  - Impact: <downstream artifacts affected — e.g. "design.md screen-flow, specs/<cap>/spec.md">
+  - Evidence: (none)
+  - Reality: (n/a)
+```
+
+- `kind` — `judgment` for a UX / layout / interaction choice (most design assumptions); `empirical` for a claim about code or component behaviour.
+- `sev` — `high` if ≥3 artifacts or a core flow; `medium` if 1–2; `low` if cosmetic.
+- `verify` — you run in wave 2 **without an origin-codebase checkout**, so you CANNOT settle empirical claims. `kind=judgment` → `verify=n/a`. `kind=empirical` → always `verify=unconfirmed` with `Reality: needs external confirmation`. Never emit `verify=confirmed`/`refuted`.
+- **Grammar guard:** never write `TBD` / `TODO` / `FIXME` / `## Open Questions` / `待確認` in any field — `/spec-lint` Check 5 forbids them.
+
+Design decisions (`**D-n**`) stay free-form prose under `## Decisions` — only Assumptions use the `ri:v1` record.
 
 ## Figma Integration
 

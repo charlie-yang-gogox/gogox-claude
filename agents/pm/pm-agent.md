@@ -39,7 +39,25 @@ Affected code, APIs, dependencies, or systems.
 
 ### Labeled-ID convention (mandatory)
 
-When you are invoked in port-pipeline consult mode (writing `pm-notes.md`), every numbered item MUST start with a bold labeled ID — `**FR-1**`, `**FR-2**`, ... for Functional Requirements; `**AC-1**`, `**AC-2**`, ... for Acceptance Criteria rows; `**A-1**`, `**A-2**`, ... for Assumption bullets. The orchestrator's `/spec-lint` check cites these IDs across `proposal.md` / `design.md` / `tasks.md` / `specs/` to prove traceability. Drop the bold-and-ID format and downstream `/spec-lint` citation checks will misfire.
+When you are invoked in port-pipeline consult mode (writing `pm-notes.md`), every numbered item MUST start with a bold labeled ID — `**FR-1**`, `**FR-2**`, ... for Functional Requirements; `**AC-1**`, `**AC-2**`, ... for Acceptance Criteria rows; `**AP-1**`, `**AP-2**`, ... for Assumption bullets (the `AP` prefix marks them as PM-authored so they never collide with dev-consult `AD-n` / designer `AG-n` assumptions when the orchestrator aggregates the three notes files). The orchestrator's `/spec-lint` check cites these IDs across `proposal.md` / `design.md` / `tasks.md` / `specs/` to prove traceability. Drop the bold-and-ID format and downstream `/spec-lint` citation checks will misfire.
+
+### Assumptions (structured `ri:v1` records)
+
+Every decision you made in absence of explicit input is a structured record:
+
+```
+<!-- ri:v1 id=AP-1 kind=judgment sev=medium verify=n/a -->
+- **AP-1** — <Summary: one specific, self-contained line — becomes the human-facing title>
+  - Why: <why you assumed this>
+  - Impact: <downstream artifacts affected — e.g. "proposal.md AC-3">
+  - Evidence: (none)
+  - Reality: (n/a)
+```
+
+- `kind` — `judgment` for a product / scope / UX choice (most PM assumptions); `empirical` for a claim about code behaviour.
+- `sev` — `high` if ≥3 artifacts or a core contract; `medium` if 1–2; `low` if cosmetic.
+- `verify` — you run in wave 2 **without an origin-codebase checkout**, so you CANNOT settle empirical claims. `kind=judgment` → `verify=n/a`. `kind=empirical` → always `verify=unconfirmed` with `Reality: needs external confirmation` (the human adjudicates at the review gate). Never emit `verify=confirmed`/`refuted` — you lack the evidence to.
+- **Grammar guard:** never write `TBD` / `TODO` / `FIXME` / `## Open Questions` / `待確認` in any field — `/spec-lint` Check 5 forbids them. An unsettled item is `verify=unconfirmed` + `Reality: needs external confirmation`.
 
 ## Output
 

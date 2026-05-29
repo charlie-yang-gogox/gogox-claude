@@ -23,7 +23,7 @@ The orchestrator (`/port:synth`) hands you four inputs in the spawning prompt:
 ## Step 1: Read the context bundle once
 
 1. `Read <context-md-path>` once at start. Hold the contents in your context for the full loop — do NOT re-read it per artifact.
-2. Skim the bundle for the labeled IDs (`**FR-N**`, `**AC-N**`, `**R-N**`, `**A-N**`). These are the only identifiers you may cite in artifacts.
+2. Skim the bundle for the labeled IDs (`**FR-N**`, `**AC-N**`, `**R-N**`, the assumption namespaces `**AD-N**` / `**AP-N**` / `**AG-N**` / `**AU-N**`, plus legacy bare `**A-N**`). These are the only identifiers you may cite in artifacts.
 
 ## Step 2: Artifact build loop
 
@@ -49,7 +49,7 @@ Iterate `<dependency-order>` in the given order. For each `<artifact-id>`:
    - `<instruction>` is the primary guidance.
    - `<context>` and `<rules>` are silent constraints — apply them but never echo them into the output.
    - The bundle from Step 1 is the source of truth for facts. Dependencies are additional ground truth.
-   - Use the labeled-ID convention: when tasks.md references a functional requirement, write `(FR-3)` not paraphrased text. Same for AC-N, R-N, A-N. Never invent an ID. If `FR-7` is needed but not present in notes, leave the cite off — the downstream `/spec-lint` reverse-citation check exists precisely to catch invented IDs.
+   - Use the labeled-ID convention: when tasks.md references a functional requirement, write `(FR-3)` not paraphrased text. Same for AC-N, R-N, and the assumption namespaces AD-N / AP-N / AG-N / AU-N (and legacy A-N). Never invent an ID. If `FR-7` is needed but not present in notes, leave the cite off — the downstream `/spec-lint` reverse-citation check exists precisely to catch invented IDs.
    - Artifact-specific guidance from the source flow:
      - `proposal.md` — Why / What Changes / Capabilities (from pm-notes Proposed Capabilities) / Impact.
      - `specs/<cap>/spec.md` — one delta per capability; requirements traced to pm-notes Functional Requirements.
@@ -91,7 +91,7 @@ Do not run `openspec validate`, do not run `/spec-lint`, do not edit `.port/*-no
 - **Model is pinned to opus** in this agent's frontmatter (D21). The orchestrator MUST NOT override. Synthesis is the hallucination-sensitive stage.
 - **Write only inside `<change-dir>/`.** Any `outputPath` from `openspec instructions` that escapes this prefix is a hard stop, not a warning.
 - **Never invent identifiers.** Cite only IDs that appear in `.port/*-notes.md` (visible in the bundle from Step 1). Missing → leave the cite off; the lint reverse-check catches invention.
-- **Forbidden markers are forbidden.** Never emit `## Open Questions`, `TBD`, `TODO`, `FIXME`, or `待確認` in any artifact. If something is uncertain, surface it as an explicit `**A-N**: ...` Assumption referencing the matching note.
+- **Forbidden markers are forbidden.** Never emit `## Open Questions`, `TBD`, `TODO`, `FIXME`, or `待確認` in any artifact. If something is uncertain, cite the matching assumption from the notes by its existing ID (`AD-N` / `AP-N` / `AG-N` / `AU-N`) — do NOT mint a new assumption ID in the artifacts; assumption IDs originate in the notes files only.
 - **`.port/*-notes.md` and `.port/context.md` are inputs, not outputs.** Do not modify them. Do not add new IDs to them.
 - **`<context>` / `<rules>` are silent constraints.** Apply them; never copy them into the artifact body. The artifact reads as a finished document, not as filled-in template scaffolding.
 - **Atomic writes only.** Every artifact lands via `<outputPath>.tmp` + `mv`. A crash mid-loop must never leave a half-written artifact visible to the next stage.

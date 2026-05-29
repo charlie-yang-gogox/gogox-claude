@@ -5,7 +5,7 @@ description: >
   PARALLEL (single message, two Agent calls) to produce
   `.port/pm-notes.md` and `.port/design-notes.md` from the dev-notes
   grounding plus ticket / PRD / Figma context. Both agents must use
-  bold labeled IDs (FR-N / AC-N / A-N) for /spec-lint traceability.
+  bold labeled IDs (FR-N / AC-N / AP-N for pm, AG-N for designer) for /spec-lint traceability.
 ---
 
 # /port:plan — PM + Designer Notes
@@ -80,7 +80,9 @@ Run `pm-agent` and `designer-agent` in parallel against the dev-notes grounding 
    Numbered items MUST use bold labeled IDs:
      - Functional Requirements → **FR-1**, **FR-2**, ...
      - Acceptance Criteria rows → **AC-1**, **AC-2**, ...
-     - Assumption bullets       → **A-1**, **A-2**, ...
+     - Assumption bullets       → **AP-1**, **AP-2**, ... as structured
+       `ri:v1` records (see your agent definition's "Assumptions" section —
+       AP namespace, kind/sev/verify marker; empirical items are verify=unconfirmed).
    /spec-lint cites these IDs across artifacts. Drop the bold-and-ID format
    and downstream traceability checks misfire.
 
@@ -117,10 +119,13 @@ Run `pm-agent` and `designer-agent` in parallel against the dev-notes grounding 
    ## Adaptation Recommendations
    ## Assumptions  (what / why / downstream impact)
 
-   Numbered items MUST use bold labeled IDs (`**A-1**`, `**A-2**`, ...) for
-   every assumption. If you introduce numbered design decisions, label them
-   too. /spec-lint checks these IDs against artifacts; dropping the format
-   breaks traceability.
+   Numbered items MUST use bold labeled IDs (`**AG-1**`, `**AG-2**`, ...) for
+   every assumption, written as structured `ri:v1` records (see your agent
+   definition's "Assumptions" section — AG namespace, kind/sev/verify marker;
+   empirical items are verify=unconfirmed). If you introduce numbered design
+   decisions, label them `**D-1**`, ... (free-form prose, not ri:v1).
+   /spec-lint checks these IDs against artifacts; dropping the format breaks
+   traceability.
 
    If the feature has no UI scope, write a short "No design scope —
    backend/data-only feature" note under each section and stop.
@@ -175,8 +180,8 @@ POSIX `mv` on the same filesystem is atomic. This protects existence-implies-com
 - Wave 2 NEVER runs without `dev-notes.md`. If absent → STOP with `run /port:explore first`.
 - The two agent calls MUST be issued in a SINGLE message (parallel dispatch). Sequential calls are a defect, not an optimization opportunity.
 - Both agents are `model: sonnet`. Their job is structured summarization from existing inputs — opus would burn tokens for no quality gain.
-- Both agent prompts include the labeled-ID convention reminder (`**FR-N**`, `**AC-N**`, `**A-N**`). `/spec-lint` Check 8 fires when notes lack labeled IDs; that's the early-warning for prompt drift.
-- Designer always runs. A truly backend-only feature gets a "no design scope" note (still uses `**A-N**` for any assumptions).
+- Both agent prompts include the labeled-ID convention reminder (`**FR-N**`, `**AC-N**`, pm `**AP-N**`, designer `**AG-N**`). `/spec-lint` Check 8 fires when notes lack labeled IDs; that's the early-warning for prompt drift.
+- Designer always runs. A truly backend-only feature gets a "no design scope" note (still uses `**AG-N**` for any assumptions).
 - All Linear MCP calls use `mcp__claude_ai_Linear__*`.
 - `.port/` writes are atomic via `mktemp` + `mv` (D16).
 - This stage never spawns synth, never validates, never lints — those belong to `/port:synth` (PR 4b).

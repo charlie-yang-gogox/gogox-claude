@@ -5,12 +5,14 @@ description: >
   state. Two invocation shapes: pass a ticket id to review just that one,
   or call with no args to auto-fetch every `need-spec-review` ticket assigned
   to you on the active team and walk them sequentially. Walks the human
-  through every reviewable item upstream synthesis left behind —
-  `[AUTO-ACCEPTED]` markers, `### Assumptions` (A-N), and `### Risks`
-  (R-N) — captures decisions (Confirm / Revise / Defer), posts a single
-  structured Linear comment with a stable marker, and flips the label to
-  `ready-to-dev`. Does NOT modify OpenSpec artifacts, does NOT commit, does
-  NOT touch the filesystem. Pure Linear-side review gate.
+  through every reviewable item upstream synthesis left behind — structured
+  `ri:v1` records (joined by ID, routed by `verify`: `unconfirmed`/`n/a`
+  items need a human decision, `confirmed`/`refuted` items are shown as
+  verified-FYI and not prompted), plus legacy `[AUTO-ACCEPTED]` / `A-N` /
+  `R-N` shapes for older comments — captures decisions (Confirm / Revise /
+  Defer), posts a single structured Linear comment with a stable marker, and
+  flips the label to `ready-to-dev`. Does NOT modify OpenSpec artifacts, does
+  NOT commit, does NOT touch the filesystem. Pure Linear-side review gate.
 Prerequisite: >
   - Linear MCP authenticated.
   - Ticket has typically been processed by /port:ff (label `need-spec-review`).
@@ -158,15 +160,19 @@ failure handling is documented inline in Steps 5 and 6.
 
 ### Step 2: Extract review items
 
-A ticket's port-summary comment may surface review items in **three** shapes.
-Spec-review accepts all three and merges them into a single review list.
+A ticket's port-summary comment may surface review items in several shapes.
+The current writers (`/port:revise` + `/port:ship`) emit **structured `ri:v1`
+records**; older comments use the legacy shapes. Spec-review accepts all of
+them and merges them into a single review list, **joining on the `id=`
+attribute (never fuzzy-matching prose)**.
 
-| Shape | Marker | Example | Default severity |
+| Shape | Marker | Example | Severity / queue |
 |-------|--------|---------|------------------|
-| Auto-accept (v1) | `<!-- ac:v1 sev=X -->**[AUTO-ACCEPTED]** ...` | `<!-- ac:v1 sev=medium -->**[AUTO-ACCEPTED]** medium — Risk R-1 ...` | explicit from marker |
-| Auto-accept (legacy) | `**[AUTO-ACCEPTED] X**` | `- **[AUTO-ACCEPTED] medium** — Risk R-1 ...` | explicit from marker |
-| Assumption | `**A-N**` / `**AR-N**` under `### Assumptions` | `- **A-1**: bookmarkedTransportOrdersProvider is already populated ...` | `low` |
-| Risk | `**R-N**` under `### Risks` | `- **R-1**: CAF-368 not yet built — Edit screen depends on ...` | `medium` |
+| **Review item (`ri:v1`)** — primary | `<!-- ri:v1 id=X kind=K sev=S verify=V -->` | `<!-- ri:v1 id=AD-1 kind=empirical sev=medium verify=unconfirmed -->` | `sev` from marker; queue from `verify` (see §2.3a) |
+| Auto-accept (v1) — legacy | `<!-- ac:v1 sev=X -->**[AUTO-ACCEPTED]** ...` | `<!-- ac:v1 sev=medium -->**[AUTO-ACCEPTED]** medium — Risk R-1 ...` | explicit from marker; review |
+| Auto-accept (legacy) | `**[AUTO-ACCEPTED] X**` | `- **[AUTO-ACCEPTED] medium** — Risk R-1 ...` | explicit from marker; review |
+| Assumption | `**A-N**` / `**AR-N**` / `**AD/AP/AG/AU-N**` under an Assumptions / `### Needs review` heading | `- **AD-1** — provider is already populated ...` | `low` (unless marker); review |
+| Risk | `**R-N**` under `### Risks` | `- **R-1**: CAF-368 not yet built — Edit screen depends on ...` | `medium`; review |
 
 #### Steps
 
@@ -175,27 +181,56 @@ Spec-review accepts all three and merges them into a single review list.
 2. Walk comments newest → oldest. The first comment that contains a port
    summary (heuristic in §2.6) is the **target comment**. Parse it as below;
    stop iterating once parsed.
-3. **Parse auto-accepts** (precedence: v1 > legacy):
-   - **v1 path** — find all `<!-- ac:v1 sev=(low|medium|high) -->`. For each:
+3. **Parse `ri:v1` records (PRIMARY path — current writers).**
+   - Find all `<!-- ri:v1 id=(\S+) kind=(empirical|judgment|lint) sev=(low|medium|high) verify=(confirmed|refuted|unconfirmed|n/a) -->`.
+   - For each marker, the `body` = the marker line's following block: the
+     `- **<id>** — <Summary>` line plus its indented continuation lines
+     (`Why` / `Impact` / `Evidence` / `Reality`), until the next `<!-- ri:v1`
+     marker, the next section heading, or end of comment. Capture the **whole
+     block verbatim** — this rich body is what makes the item understandable.
+   - Capture per item: `id`, `kind`, `severity` (= `sev`), `verify`,
+     `source` = `"ri"`, `parser_mode` = `"ri-v1"`.
+   - `id` is the join key; never re-derive provenance by matching prose.
+
+3a. **Queue routing for `ri:v1` items** (this is the value of the verify field):
+   - `verify` ∈ {`confirmed`, `refuted`} → `queue = "fyi"`. These were settled
+     against the code in `/port:explore`; they are an audit trail, NOT
+     human-decision items. They are shown (Step 3 overview + recorded in the
+     posted comment) but the Step 4 decision loop does NOT prompt on them.
+   - `verify` ∈ {`unconfirmed`, `n/a`} → `queue = "review"`. Genuine
+     human-decision items (judgment calls + empirical claims the pipeline
+     could not settle). These flow into the Step 4 loop.
+   - A `refuted` item's body carries `Reality:` — surface it prominently in
+     the FYI section so the reviewer sees what the original guess got wrong.
+
+3b. **Parse legacy auto-accepts** — ONLY if step 3 found zero `ri:v1` records
+   in this comment (older comments predating the `ri:v1` rollout). Precedence
+   v1 > legacy:
+   - **ac:v1 path** — find all `<!-- ac:v1 sev=(low|medium|high) -->`. For each:
      - `severity` = HTML attribute value
      - `body` = the line containing the marker plus continuation lines (until
        next `- ` list item / blank line / section heading)
-     - `source` = `"auto-accept"`, `parser_mode` = `"v1"`
-   - **Legacy fallback** — only if v1 found nothing in this comment. Regex:
+     - `source` = `"auto-accept"`, `parser_mode` = `"v1"`, `queue = "review"`
+   - **Legacy fallback** — only if ac:v1 found nothing in this comment. Regex:
      ```
      \*\*\[AUTO-ACCEPTED\]\s+(low|medium|high)\*\*\s+—\s+(.+?)(?=\n- \*\*|\n###|\n##|\Z)
      ```
-     `source` = `"auto-accept"`, `parser_mode` = `"legacy"`.
-4. **Parse Assumption items** (independent of auto-accept presence):
-   - Locate every section heading matching `^###\s+Assumptions?\b` (e.g.
-     `### Assumptions`, `### Assumptions (post-clarification)`).
+     `source` = `"auto-accept"`, `parser_mode` = `"legacy"`, `queue = "review"`.
+4. **Parse Assumption items** — ONLY for items NOT already captured as `ri:v1`
+   in step 3 (e.g. an old comment with bare `**A-N**` bullets, or a record that
+   lost its marker). Join by ID against step-3 results to avoid double-counting.
+   - Locate every section heading matching
+     `^###\s+(Assumptions?|Needs review)\b` (e.g. `### Assumptions`,
+     `### Assumptions (post-clarification)`, `### Needs review`).
    - Within the section body (until the next `^##` or `^###` heading), match
-     list items shaped `- \*\*(A|AR)-\d+\*\*:?\s*(.+?)(?=\n- \*\*|\n###|\n##|\Z)`.
-     The body may span multiple lines (continuation if subsequent lines start
-     with whitespace).
-   - For each hit: `severity` = `low`, `source` = `"assumption"`.
+     list items shaped
+     `- \*\*(A|AR|AD|AP|AG|AU)-\d+\*\*\s*(?:—|:)?\s*(.+?)(?=\n- \*\*|\n<!--|\n###|\n##|\Z)`.
+     **The alternation EXTENDS the legacy `(A|AR)` — it must keep `A` so bare
+     legacy `A-7` IDs still match.** The body may span multiple lines.
+   - For each hit: `severity` = `low`, `source` = `"assumption"`,
+     `queue = "review"`.
    - Sub-sections such as `**From dev-notes**:`, `**From pm-notes**:` inside
-     `### Assumptions` are walked transparently — items are flattened.
+     the section are walked transparently — items are flattened.
 5. **Parse Risk items**:
    - Locate every section heading matching `^###\s+Risks?\b`.
    - Same list-item shape as assumptions but ID prefix `R`:
@@ -206,15 +241,23 @@ Spec-review accepts all three and merges them into a single review list.
      `Skipped R-N as informational (out-of-scope / tracked elsewhere).`
 6. **Heuristic — is this a port summary?**
    Set `<port_summary_seen>` = `True` if any inspected comment body contains
-   any of (case-sensitive): `## Port summary`, `## Synth summary`,
+   any of (case-sensitive): `<!-- ri:v1`, `### Needs review`,
+   `### Verified (FYI)`, `## Port summary`, `## Synth summary`,
    `Authored by port:`, `[AUTO-ACCEPTED]`, or **both** of (`### Assumptions`
    AND `### Risks`).
-7. Build `<items>: [{severity, body, source, comment_id, parser_mode}]`.
-   Deduplicate: if the same `A-N`/`R-N` ID appears both inside an
-   `[AUTO-ACCEPTED]` body AND as a standalone assumption/risk item, keep
-   only the auto-accept (it's the explicit reviewer call).
+7. Build `<items>: [{id, kind, severity, verify, queue, body, source, comment_id, parser_mode}]`
+   (`id`/`kind`/`verify` are empty for legacy shapes that lack them; legacy
+   items default `queue = "review"`).
+   Deduplicate **by `id`** (the join key): if the same ID appears via more than
+   one parser path (e.g. a `ri:v1` record AND a bare `**A-N**` fallback), keep
+   the `ri:v1` capture (richest body + verdict). For legacy-only comments,
+   fall back to the old rule: if the same `A-N`/`R-N` ID appears both inside an
+   `[AUTO-ACCEPTED]` body AND as a standalone assumption/risk item, keep the
+   auto-accept.
 8. Compute `<source_hash[i]> = sha256(<items[i].body>)`. Keep first 16 hex chars.
 9. **Cross-check (defends silent zero-acceptance)**:
+   - Let `<review-items>` = items with `queue == "review"`,
+     `<fyi-items>` = items with `queue == "fyi"`.
    - If `len(items) == 0` AND `<port_summary_seen>` is `True`:
      - Parse-error territory, NOT lite mode. Print first 300 chars of the
        suspect comment.
@@ -225,55 +268,77 @@ Spec-review accepts all three and merges them into a single review list.
      - Default to (a) on ambiguous input.
      - On (a) → STOP with: `Review-item parser drift detected. Inspect the
        suspect comment and update either /port:* writers or this skill's parser.`
+   - If `len(<review-items>) == 0` AND `len(<fyi-items>) > 0`:
+     - Legitimate "all settled upstream" case — NOT a parse error. Print the
+       FYI items (so the reviewer sees what was auto-verified), then proceed to
+       the lite-mode flow (**Step 7**): confirm-as-is and record the FYI items.
    - If `len(items) == 0` AND `<port_summary_seen>` is `False`:
      - True lite mode. Skip to **Step 7** (lite-mode flow).
-10. Print: `Found <N> review items — auto-accept:<a>, assumption:<b>, risk:<c> (parser: <v1|legacy|sections>).`
-    - `parser_mode` on output = `v1` if any v1 hit, else `legacy` if any
-      legacy hit, else `sections` (assumptions/risks only).
+10. Print: `Found <N> review items (<R> need review, <F> verified-FYI) — ri:<r>, auto-accept:<a>, assumption:<b>, risk:<c> (parser: <ri-v1|v1|legacy|sections>).`
+    - `parser_mode` on output = `ri-v1` if any `ri:v1` hit, else `v1` if any
+      ac:v1 hit, else `legacy` if any legacy hit, else `sections`.
 11. If any item has `parser_mode == "legacy"`, set `<legacy_warning>` = `True`
-    (used in Step 5's posted comment).
+    (used in Step 5's posted comment). When `parser_mode == "ri-v1"`,
+    `<legacy_warning>` stays `False` — the rich path needs no re-run hint.
 
 ### Step 3: Pre-HITL overview (mandatory when N ≥ 5; recommended otherwise)
 
-Print a single overview message before any decision prompts. Sort by:
+Print a single overview message before any decision prompts. The overview has
+two parts: the **review queue** (`queue == "review"` — what Step 4 walks) and a
+collapsed **Verified (FYI)** list (`queue == "fyi"` — shown for transparency,
+never prompted).
+
+Sort the review queue by:
 1. severity `high → medium → low`
-2. source priority `auto-accept → risk → assumption` (auto-accepts get
-   reviewed first — they're the items synth explicitly flagged for human input)
+2. `verify` priority `unconfirmed → n/a` (empirical-but-unsettled first — those
+   are the items where code and assumption may still diverge), then
+   source priority `auto-accept → risk → assumption`
 3. source order within group
 
 Format:
 
 ```
-Found <N> review items:
-  auto-accept:<a>  assumption:<b>  risk:<c>
+Found <N> review items — <R> need review, <F> verified upstream (FYI):
 
-  [HIGH]   [AC]  1. <first 80 chars of body>
-  [MED]    [AC]  2. <...>
-  [MED]    [R]   3. <...>
-  [LOW]    [A]   4. <...>
-  ...
+Review queue (<R>):
+  [HIGH]  [unconfirmed] [empirical]  1. <first 80 chars of Summary>
+  [MED]   [n/a]         [judgment]   2. <...>
+  [MED]   [—]           [R]          3. <...>
+  [LOW]   [—]           [A]          4. <...>
 
-Legend: [AC]=auto-accept, [A]=assumption, [R]=risk
+Verified upstream — no action needed (<F>):
+  [✓ confirmed] AD-2 — <Summary>   (evidence: lib/…:42)
+  [✗ refuted]   AD-5 — <Summary>   → Reality: <…>
+
+Legend: queue verify=[unconfirmed|n/a]; source [AC]=auto-accept [A]=assumption [R]=risk; FYI verify=[confirmed|refuted]
 ```
 
-This forces the reviewer to see the shape of the review before the
-per-item flow starts. No prompt at the end of this step — just print and move
-on to step 4.
+For a `refuted` FYI item, always print its `Reality:` line — that is the
+single most useful thing in the whole review (the pipeline caught a false
+premise and corrected it). This forces the reviewer to see the shape of the
+review before the per-item flow starts. No prompt at the end of this step —
+just print and move on to step 4.
 
 ### Step 4: HITL decision loop
 
-Iterate `<items>` in the sorted order from step 3.
+Iterate the **review queue only** (`<review-items>`, `queue == "review"`) in
+the sorted order from step 3. FYI items (`queue == "fyi"`) are NEVER prompted —
+they were settled against the code upstream and are recorded as-is in Step 5.
 
 For each item:
 
 1. Print the **full** body of the item (not truncated). Format:
    ```
    ─────────────────────────────────────────
-   [<SEVERITY>] [<SOURCE>] Item <i>/<N>
-   <full body text>
+   [<SEVERITY>] [<SOURCE>] [<KIND>/<VERIFY>] Item <i>/<R>
+   <full body text — Summary + Why + Impact + Evidence + Reality>
    ─────────────────────────────────────────
    ```
-   `<SOURCE>` is one of `AUTO-ACCEPT`, `ASSUMPTION`, `RISK`.
+   `<SOURCE>` is one of `AUTO-ACCEPT`, `ASSUMPTION`, `RISK`, `LINT`.
+   `<KIND>/<VERIFY>` is e.g. `empirical/unconfirmed` or `judgment/n-a` (omit
+   the bracket for legacy items that carry no kind/verify).
+   - When `verify == "unconfirmed"`, append a one-line hint:
+     `↳ empirical claim the pipeline could not settle against the code — confirm against external source before accepting.`
 
 2. `AskUserQuestion` with four options:
    - `Accept as-is` (mark Recommended only when severity is `low`)
@@ -326,7 +391,12 @@ For each item:
 3. Build the comment body using the schema in **§A**. Include:
    - Header HTML marker `<!-- spec-review:v1 ticket=<ticket-id> -->`
    - One block per decision (CONFIRMED / REVISED / DEFERRED) with severity,
-     verdict, and source_hash
+     source, `Verify:` (the upstream verdict, if the item carried one), and
+     source_hash
+   - A `### [FYI] Verified upstream` block listing the `<fyi-items>` verbatim
+     (id + Summary + verify + evidence/reality) — recorded so `/dev:apply` and
+     any later reviewer can see what was settled against the code and not
+     re-litigate it. Omit the block when there are no FYI items.
    - Footer: authoritative-for-/dev:apply note
    - If `<legacy_warning>` is True: prepend a one-line note inside the comment:
      `> Note: parsed legacy auto-accept marker format. Recommend re-running
@@ -370,14 +440,18 @@ For each item:
      Continue to the next ticket. The fuller summary is emitted by Step 8 once
      the loop ends.
 
-### Step 7: Lite mode (only reached from §Step 2.5 when no port summary exists)
+### Step 7: Lite mode
 
-This branch handles tickets that genuinely have no upstream auto-accepts
-(e.g. manually created OpenSpec changes routed through `need-spec-review`).
+Reached in two cases: (a) no port summary exists at all (manually created
+OpenSpec changes routed through `need-spec-review`); (b) a port summary exists
+but every item was settled upstream — all `<fyi-items>`, zero `<review-items>`
+(Step 2.9 second branch).
 
 1. `AskUserQuestion`:
-   - Question: "No auto-accepts found in ticket comments. Confirm review with
-     no revisions, or abort?"
+   - Question (case a): "No review items found in ticket comments. Confirm
+     review with no revisions, or abort?"
+   - Question (case b): "All <F> items were verified against the code upstream
+     (shown above); nothing needs a human decision. Confirm as-is, or abort?"
    - Options: `Confirm — review approved as-is` / `Abort`
 2. On Abort:
    - **Single mode** → STOP, no side effects.
@@ -385,14 +459,17 @@ This branch handles tickets that genuinely have no upstream auto-accepts
      batch summary, print `[<k>/<N>] <ticket-id> skipped — lite-mode aborted.`,
      and **continue to the next ticket**.
 3. On Confirm:
-   - Post short comment with body:
+   - Post short comment. Case (a) body:
      ```
      <!-- spec-review:v1 ticket=<ticket-id> -->
      ## Spec Review — No revisions
 
-     No auto-accepted assumptions were posted by upstream synthesis.
+     No review items were posted by upstream synthesis.
      Reviewer confirmed artifacts as-is at <ISO timestamp>.
      ```
+   - Case (b) body: same header + `## Spec Review — No revisions`, plus the
+     `### [FYI] Verified upstream` block (§A) listing the `<fyi-items>` verbatim
+     so the audit trail persists.
    - Then proceed to Step 6 (flip label). Same retry / failure semantics.
 
 ### Step 8: Batch summary (batch mode only)
@@ -446,25 +523,35 @@ it with regex anchored on the HTML marker and the bracketed verdict tags.
 ## Spec Review — Final Decisions
 
 ### [CONFIRMED] <one-line label derived from item body>
+- ID: <AD-1|AP-1|...|A-1|—>
 - Severity: <low|medium|high>
-- Source: <auto-accept|assumption|risk>
+- Source: <auto-accept|assumption|risk|lint>
+- Verify: <confirmed|refuted|unconfirmed|n/a|—>
 - Verdict: Accept as-is
 - Source hash: `sha256:<16 hex>`
 
 ### [REVISED] <one-line label>
+- ID: <id|—>
 - Severity: <low|medium|high>
-- Source: <auto-accept|assumption|risk>
+- Source: <auto-accept|assumption|risk|lint>
+- Verify: <confirmed|refuted|unconfirmed|n/a|—>
 - Verdict: Reject — needs change
 - Original: <one-line summary of original item body, ≤120 chars>
 - Directive: <user-written replacement directive, full text>
 - Source hash: `sha256:<16 hex>`
 
 ### [DEFERRED] <one-line label>
+- ID: <id|—>
 - Severity: <low|medium|high>
-- Source: <auto-accept|assumption|risk>
+- Source: <auto-accept|assumption|risk|lint>
+- Verify: <confirmed|refuted|unconfirmed|n/a|—>
 - Verdict: Defer — note only
 - Note: <user-written note, may be empty>
 - Source hash: `sha256:<16 hex>`
+
+### [FYI] Verified upstream (no decision required)
+<one bullet per fyi-item, verbatim — omit this whole heading if none>
+- `<id>` (<verify>) — <Summary>  ·  Evidence: <path:line | none>  ·  Reality: <… | n/a>
 
 ---
 
@@ -474,19 +561,27 @@ guidance in OpenSpec artifacts. If `source_hash` mismatches the current
 item body, re-review is required.**
 
 **Precedence hint for `/dev:apply`**:
+- `Verify: refuted` directives — HARD override. The pipeline verified against
+  the code that the original premise is false; the `Reality:` / directive is
+  ground truth, not a suggestion.
 - `Source: auto-accept` directives — firm, override artifacts unconditionally.
 - `Source: risk` directives — firm, treat as mitigation requirements.
 - `Source: assumption` directives — strong guidance; artifacts may still
   contradict if the implementation reveals the assumption is false. Document
   the divergence in commit message if so.
+- `[FYI] Verified upstream` items — already settled against the code; treat as
+  established facts. Do NOT re-open them.
 ```
 
 ### Schema rules
 
-- Severity / Source / Verdict / Source hash are required on every block.
-- "One-line label" is the first 60 chars of the item body, trimmed at a word
-  boundary, no trailing punctuation. For assumption / risk items, prefix
-  the label with the original ID: `A-1: <label>` / `R-1: <label>`.
+- Severity / Source / Verdict / Source hash are required on every decision block.
+  `ID` and `Verify` are required when the source item carried them (`ri:v1`
+  items always do); use `—` for legacy items that lacked them.
+- "One-line label" is the item's `Summary` (the `- **<id>** — <Summary>` text)
+  when present; otherwise the first 60 chars of the item body, trimmed at a
+  word boundary, no trailing punctuation. For assumption / risk items without a
+  Summary, prefix the label with the original ID: `A-1: <label>` / `R-1: <label>`.
 - Original / Directive / Note text are passed through verbatim except for
   trailing whitespace strip; do NOT re-render markdown inside.
 - Source hash format: literal string `sha256:` followed by exactly 16
@@ -502,11 +597,16 @@ item body, re-review is required.**
 |----------|------|----------|
 | Missing `need-spec-review` label | 1.3 | Warn + AskUserQuestion to continue |
 | 0 comments on ticket | 2 | Lite mode (Step 7) |
-| Port summary has `[AUTO-ACCEPTED]` items | 2.3 | Reviewed first, explicit severity |
-| Port summary has only `### Assumptions` / `### Risks` (no auto-accepts) | 2.4-2.5 | Reviewed with default severities (A=low, R=medium) |
+| Comment has `ri:v1` records (current writers) | 2.3 | Primary path; join by `id`, route by `verify` |
+| `ri:v1` item `verify=confirmed`/`refuted` | 2.3a | `queue=fyi` — shown, recorded, NOT prompted |
+| `ri:v1` item `verify=unconfirmed`/`n/a` | 2.3a | `queue=review` — walked in Step 4 |
+| All items are FYI, zero review items | 2.9 | Not a parse error; print FYI + lite-confirm (Step 7) |
+| Old comment, no `ri:v1` (legacy `[AUTO-ACCEPTED]` / bare `A-N`) | 2.3b-2.4 | Legacy fallback paths; regex keeps `A` so still parses |
+| Port summary has only `### Assumptions` / `### Risks` (no markers) | 2.4-2.5 | Reviewed with default severities (A=low, R=medium) |
 | Port summary exists, 0 items of any shape parsed | 2.9 | Parse error abort (default) |
 | Risk item marked `out of scope` / `tracked in .port` | 2.5 | Skipped as informational |
-| Same `A-N`/`R-N` ID appears in both auto-accept and section | 2.7 | Dedup, keep auto-accept |
+| Same ID appears via `ri:v1` AND a legacy fallback path | 2.7 | Dedup by `id`, keep the `ri:v1` capture |
+| Same `A-N`/`R-N` ID in both auto-accept and section (legacy) | 2.7 | Dedup, keep auto-accept |
 | Reviewer can't articulate Reject directive | 4.4 | Fall back to Defer with note |
 | Reviewer chooses "Other" verdict | 4.6 | Reroute to Reject + confirm loop |
 | Concurrent reviewer race (single) | 5.2 | Abort, ask user to re-run |
