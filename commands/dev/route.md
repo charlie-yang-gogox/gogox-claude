@@ -1,20 +1,24 @@
 ---
 name: route
 description: >
-  Atomic decision command. Reads a Linear ticket's classification label
-  (`bug` / `port` / `feature`) plus minimal worktree state and recommends
-  the ONE pipeline entry-point command to run next (`/port:ff`, `/dev:ff`,
-  `/bug:ff`, or `/spec-review`). Advisory only by default — prints the
-  recommendation for the user to copy-paste. Does NOT execute the command,
-  does NOT mutate Linear labels, does NOT detect resume points inside a
-  pipeline (the FF wrappers do that themselves via `infer_*_stage`). The
-  `/ggx-work` orchestrator (and `/ggx-dispatcher` via spawned `/ggx-work`)
-  call `/route --non-interactive` to drive multi-stage flows; in that mode
+  Atomic decision command. Reads a ticket's classification (Linear label
+  `bug` / `port` / `feature`, or Jira `issuetype.name`) plus minimal
+  worktree state and recommends the ONE pipeline entry-point command to
+  run next (`/port:ff`, `/dev:ff`, `/bug:ff`, or `/spec-review`). Advisory
+  only by default — prints the recommendation for the user to copy-paste.
+  Does NOT execute the command, does NOT mutate ticket state, does NOT
+  detect resume points inside a pipeline (the FF wrappers do that
+  themselves via `infer_*_stage`). Supports both Linear and Jira via the
+  abstraction documented in `_ticket-lib.md`. The `/ggx-work` orchestrator
+  (and `/ggx-dispatcher` via spawned `/ggx-work`) call
+  `/route --non-interactive` to drive multi-stage flows; in that mode
   prompts are converted to structured `Status:` errors with non-zero exit.
 Prerequisite: >
-  - Linear MCP authenticated.
-  - For port-classified tickets: a worktree at `../<ticket-id>` is helpful
-    but not required (absent worktree → recommend /port:ff).
+  - Linear MCP authenticated for CAF/DAF tickets; Atlassian Rovo MCP
+    authenticated for CET/DET tickets.
+  - For port-classified tickets (Linear only — Jira has no port lane): a
+    worktree at `../<ticket-id>` is helpful but not required (absent
+    worktree → recommend /port:ff).
 ---
 
 # `/route [ticket-id]`
@@ -78,18 +82,36 @@ Prerequisite: >
      > "No ticket id provided and the current directory is not a ticket worktree.
      > What Linear ticket should I route?" — free-text answer; abort if empty.
 
-### Step 2: Fetch ticket
+### Step 2: Resolve ticket_system + fetch ticket
 
-Call `mcp__claude_ai_Linear__get_issue` for `<ticket-id>`.
+Run the resolution block from `_ticket-lib.md` to set `<ticket-system>` ∈
+`{linear, jira}` and (if Jira) `<jira-cloud-id>`. If `<ticket-system> ==
+unknown` → STOP with structured error:
 
-- Failure (network, not found, permission) → STOP with the verbatim MCP error
-  and the hint `Verify the ticket id and that Linear MCP is authenticated.`
+```
+Status: UNKNOWN_TICKET_SYSTEM
+Ticket: <ticket-id>
+Reason: profile does not resolve to linear or jira (check .gogox-claude.yaml + org.yaml prefixes)
+```
 
-Hold `<labels>` = the `labels[]` array from the response.
+Exit non-zero.
 
-### Step 3: Determine lane from classification label
+Then fetch the issue per the matching branch:
 
-Match `<labels>` against `{bug, port, feature}`:
+- **Linear**: `mcp__claude_ai_Linear__get_issue` for `<ticket-id>`. Hold
+  `<labels>` = `.labels[].name`. `<issue-type>` is `null` for Linear.
+- **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` with
+  `cloudId: <jira-cloud-id>`, `issueIdOrKey: <ticket-id>`,
+  `responseContentFormat: markdown`. Hold `<issue-type>` =
+  `.fields.issuetype.name`. `<labels>` is irrelevant for Jira lane derivation.
+
+Failure (network, not found, permission) → STOP with the verbatim MCP error
+and the hint `Verify the ticket id and that the matching MCP server (Linear
+or Atlassian Rovo) is authenticated.`
+
+### Step 3: Determine lane
+
+**Linear path** — match `<labels>` against `{bug, port, feature}`:
 
 | Match shape                    | `<lane>`  |
 |--------------------------------|-----------|
@@ -97,24 +119,38 @@ Match `<labels>` against `{bug, port, feature}`:
 | zero of the three              | `unknown` |
 | two or three of the three      | `unknown` |
 
+**Jira path** — derive from `<issue-type>` (case-insensitive):
+
+| `<issue-type>`                                              | `<lane>`   |
+|-------------------------------------------------------------|------------|
+| `Bug`                                                       | `bug`      |
+| `Story`, `Task`, `Sub-task`, `Subtask`, `Improvement`, `New Feature` | `feature` |
+| anything else                                               | `unknown`  |
+
+Jira repos have no `port` lane — the port pipeline is Linear-specific
+(copy-from-source CAF/DAF tickets). A Jira ticket can only resolve to `bug`
+or `feature`.
+
 If `<lane> == unknown`:
 
 - `<non-interactive> == True` → STOP with structured error:
   ```
   Status: UNKNOWN_LANE
   Ticket: <ticket-id>
-  Reason: ticket has no single classification label
-  Labels found in {bug,port,feature}: <comma-joined or 'none'>
+  System: <linear|jira>
+  Reason: <linear: ticket has no single classification label | jira: issuetype.name not recognized>
+  Signal: <linear: comma-joined labels∩{bug,port,feature} or 'none' | jira: issuetype.name value>
   ```
   Exit non-zero. `/ggx-work` (the canonical non-interactive caller) is
-  expected to translate this into a Linear comment + abort.
+  expected to translate this into a ticket comment + abort.
 - `<non-interactive> == False` → **AskUserQuestion**:
-  > "Ticket `<ticket-id>` has no single classification label (found:
-  > `<comma-joined labels∩{bug,port,feature} or 'none'>`). Which pipeline
-  > should it use?"
+  > "Ticket `<ticket-id>` cannot derive a lane (system=<linear|jira>, signal=
+  > `<labels-or-issuetype>`). Which pipeline should it use?"
 
-  Options: `bug` / `port` / `feature`. The user's answer becomes `<lane>`.
-  `confidence = user-input`. Continue to Step 4 with the chosen lane.
+  Options for Linear: `bug` / `port` / `feature`. Options for Jira:
+  `bug` / `feature` (no port lane on Jira — silently omit). The user's
+  answer becomes `<lane>`. `confidence = user-input`. Continue to Step 4
+  with the chosen lane.
 
 Otherwise `confidence = rule-based`.
 
@@ -164,7 +200,12 @@ next_after_recommended = "(none — /dev:ff terminates at /dev:ship)"
 
 Skip to Step 5.
 
-#### Step 4.port — lane is `port`
+#### Step 4.port — lane is `port` (Linear only)
+
+If `<ticket-system> == jira` and `<lane> == port` somehow → STOP with
+`Status: UNKNOWN_LANE` (per Step 3 Jira mapping, port should already have
+been rejected; this is a defense-in-depth guard).
+
 
 Run the two binary probes below. The full decision matrix is:
 
@@ -296,10 +337,14 @@ STOP. Do not execute the recommended command.
 
 ## Guardrails
 
-- **Read-only.** No `save_issue`, no `save_comment`, no file writes, no
+- **Read-only.** No writes to either tracker, no file writes, no
   git mutations. Linear MCP calls are limited to `get_issue` and
   `list_comments` (the latter only when phase resolves to `ready-for-dev`,
   purely to surface the spec-review WARN line in Step 5 — read-only).
+  Jira MCP calls are limited to `getJiraIssue` (returns embedded comments).
+- **Ticket-system aware.** Always run the `_ticket-lib.md` resolution
+  block. Never default to Linear silently; emit `UNKNOWN_TICKET_SYSTEM`
+  and exit non-zero if the profile does not resolve.
 - **No dispatcher coupling.** `/route` does not read `ready-to-port`,
   `ready-to-dev`, or `dispatcher-*-in-flight` labels. The classification
   label + `need-spec-review` + worktree filesystem are the only signals.

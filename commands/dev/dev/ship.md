@@ -1,6 +1,6 @@
 ---
 name: ship
-description: "Stage 8 — archive OpenSpec changes, commit the archive, push the branch, open a draft PR, transition Linear to In Review, write the final session report, and post a summary comment to Linear. Auto mode only."
+description: "Stage 8 — archive OpenSpec changes (feature mode only), commit the archive, push the branch, open a draft PR, transition the ticket to In Review (Linear or Jira), write the final session report, and post a summary comment to the tracker. Auto mode (or bug mode). Supports both Linear and Jira via the abstraction documented in `_ticket-lib.md`."
 ---
 
 # `/dev:ship`
@@ -66,14 +66,24 @@ Run `/pull-request --draft` to push the branch and create the PR as a draft.
 
 Capture the PR URL from the output.
 
-## Step 3: Linear status update
+## Step 3: Ticket status update (system-aware)
 
-Single `mcp__claude_ai_Linear__save_issue` call that performs both transitions in one payload:
+Resolve `TICKET_SYSTEM` (and `JIRA_CLOUD_ID` if Jira) via the
+`_ticket-lib.md` resolution flow. Then:
+
+**Linear path** — single `mcp__claude_ai_Linear__save_issue` call that performs both transitions in one payload:
 
 1. Set ticket status to `In Review`.
 2. Remove `dispatcher-dev-in-flight` label if currently present (no-op if absent). This is the canonical "dispatcher work is complete" signal — see `commands/dev/ggx-dispatcher.md` §2 Plan X. Without this, the next `/ggx-dispatcher` run would treat the just-shipped ticket as a recovery candidate via Q4.
 
 If the ticket was NOT dispatched (user ran `/dev:ff --auto` from main with no in-flight label present), step 2 is a no-op — Linear `save_issue` accepts a label-set that excludes labels the ticket doesn't have.
+
+**Jira path** — two calls:
+
+1. `mcp__claude_ai_Atlassian_Rovo__getTransitionsForJiraIssue --cloudId "$JIRA_CLOUD_ID" --issueIdOrKey "$TICKET_ID"` → find the transition whose `to.name` matches `In Review` (case-insensitive). If no match exists in this project's workflow, fall back to `Code Review` or `Review`; if still no match, log one WARN line `dev:ship: no In Review transition available on Jira; status left unchanged` and continue (PR is the primary "done" signal).
+2. `mcp__claude_ai_Atlassian_Rovo__transitionJiraIssue --cloudId "$JIRA_CLOUD_ID" --issueIdOrKey "$TICKET_ID" --transition '{"id":"<matched-id>"}'`.
+
+Jira repos have no `dispatcher-dev-in-flight` label (dispatcher is Linear-only — see `_ticket-lib.md` "Workflow-label parity table"); skip the label-drop step entirely.
 
 Reviewer assignment is intentionally not automated here — rely on `CODEOWNERS` (or PR template) to invite reviewers.
 
@@ -102,9 +112,14 @@ Write `claude-reports/$TICKET_ID/report.md`:
 
 (Stage history is no longer persisted — git log + result files cover audit.)
 
-## Step 5: Post Linear summary
+## Step 5: Post tracker summary
 
-Use `mcp__claude_ai_Linear__save_comment`:
+System-aware post (uses the `TICKET_SYSTEM` resolved in Step 3):
+
+- **Linear**: `mcp__claude_ai_Linear__save_comment --issueId "$TICKET_ID" --body <markdown>`
+- **Jira**: `mcp__claude_ai_Atlassian_Rovo__addCommentToJiraIssue --cloudId "$JIRA_CLOUD_ID" --issueIdOrKey "$TICKET_ID" --commentBody <markdown>`
+
+Body (identical for both trackers):
 
 ```markdown
 ## Auto-dev complete: <ticket_id>
@@ -120,8 +135,8 @@ Use `mcp__claude_ai_Linear__save_comment`:
 
 No state mutation. The done markers are:
 
-- Feature mode: (1) `openspec/changes/archive/$N/` exists, (2) `gh pr view $TICKET_ID --json state -q .state` returns `OPEN`, (3) Linear status is `In Review`, (4) `dispatcher-dev-in-flight` label absent on the ticket (per Step 3 + `commands/dev/ggx-dispatcher.md` Plan X).
-- Bug mode: (2)–(4) above. Step (1) is intentionally absent — there is no OpenSpec change in bug mode, so the walker derives `done` from PR-open + Linear `In Review` alone.
+- Feature mode: (1) `openspec/changes/archive/$N/` exists, (2) `gh pr view $TICKET_ID --json state -q .state` returns `OPEN`, (3) tracker status is `In Review` (Linear) or matched transition applied (Jira), (4) `dispatcher-dev-in-flight` label absent on the ticket (Linear only — per Step 3 + `commands/dev/ggx-dispatcher.md` Plan X; Jira tickets do not have this label).
+- Bug mode: (2)–(4) above. Step (1) is intentionally absent — there is no OpenSpec change in bug mode, so the walker derives `done` from PR-open + tracker `In Review` alone.
 
 Print: `Pipeline complete. PR: <PR URL>.`
 

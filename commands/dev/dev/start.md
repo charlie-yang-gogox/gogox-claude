@@ -1,8 +1,9 @@
 ---
 name: start
-description: "Stage 1 of the /dev:* atomic pipeline. Resolves the project profile, parses the ticket, runs pre-flight checks, optionally creates a worktree (auto mode), and assigns the ticket on Linear. This stage no longer creates state.json — pipeline progress is derived from filesystem markers by /dev:ff's walker."
+description: "Stage 1 of the /dev:* atomic pipeline. Resolves the project profile, parses the ticket, runs pre-flight checks, optionally creates a worktree (auto mode), and assigns the ticket on the tracker (Linear or Jira). This stage no longer creates state.json — pipeline progress is derived from filesystem markers by /dev:ff's walker. Supports both Linear and Jira via the abstraction documented in `_ticket-lib.md`."
 Prerequisite: >
-  - Linear MCP authenticated.
+  - Linear MCP authenticated for CAF/DAF tickets; Atlassian Rovo MCP
+    authenticated for CET/DET tickets.
   - Default mode: already on the branch/worktree for the ticket. Git clean.
   - --auto mode: on trunk with clean working tree. gh CLI authenticated.
     Environment variables USER_NAME and GH_USER_NAME set.
@@ -53,7 +54,22 @@ If in flight, STOP with: `Pipeline already in flight in this worktree. Resume wi
 
 ## Step 3: Pre-flight + ticket assignment
 
-**Linear ownership check** (both modes): fetch via `mcp__claude_ai_Linear__get_issue`. If the ticket is not assigned to the current user, STOP.
+**Resolve `TICKET_SYSTEM`** via the `_ticket-lib.md` resolution flow first.
+If `unknown` → STOP. For Jira, capture `JIRA_CLOUD_ID` and discover the
+current user's `accountId` via `mcp__claude_ai_Atlassian_Rovo__atlassianUserInfo`.
+
+**Ownership check** (both modes):
+
+- **Linear**: `mcp__claude_ai_Linear__get_issue --id "$TICKET_ID"` →
+  if `.assignee.id` (or `.assignee.name`) ≠ current user, STOP with
+  `FAIL: ticket <ticket-id> is not assigned to you on Linear.`
+- **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue --cloudId "$JIRA_CLOUD_ID" --issueIdOrKey "$TICKET_ID" --responseContentFormat markdown` →
+  if `.fields.assignee.accountId` ≠ the current `accountId` from
+  `atlassianUserInfo`, STOP with the equivalent Jira message.
+
+`/_ticket-init` (Step 3c) handles the post-check assignment for both
+trackers, so this gate is purely defensive: a ticket assigned to someone
+else should not be claimed silently.
 
 ### Step 3a: Runtime artifact residue handling
 
@@ -85,9 +101,11 @@ fi
 **Auto mode**:
 
 1. Verify git is clean and on `trunk`. If not → STOP.
-2. Read the Linear ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`).
+2. Read the ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`):
+   - **Linear**: `mcp__claude_ai_Linear__get_issue` (already done in ownership check; reuse the snapshot). Branch type heuristic: `bug` label → `fix`; otherwise default to `feat`.
+   - **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` (already done; reuse). Branch type heuristic: `.fields.issuetype.name == "Bug"` → `fix`; otherwise `feat`. The `--bug` flag (when set by `/bug:ff`) is the authoritative override in both trackers.
 3. Invoke `/add-worktree <ticket-id> --type <type>` — handles fetch, branch, EnterWorktree, port-settings, `{deps_install}`.
-4. Write the full ticket content to `/tmp/<ticket-id>.md`.
+4. Write the full ticket content to `/tmp/<ticket-id>.md` (whatever tracker returned).
 
 **Default mode**:
 
@@ -108,13 +126,22 @@ When `--no-ticket-init` is set, log a single line `ticket-init: skipped (--no-ti
 
 ```bash
 mkdir -p .dev
-TICKET_BODY=$(mcp__claude_ai_Linear__get_issue ... | jq -r '.description // ""')
+# system-aware fetch — Linear vs Jira (see _ticket-lib.md "Field mapping").
+if [ "$TICKET_SYSTEM" = "linear" ]; then
+  TICKET_BODY=$(mcp__claude_ai_Linear__get_issue --id "$TICKET_ID" | jq -r '.description // ""')
+  TICKET_COMMENTS=$(mcp__claude_ai_Linear__list_comments --issueId "$TICKET_ID" | jq -r '.comments[].body // ""' | tr '\n' ' ')
+else  # jira
+  JIRA_ISSUE=$(mcp__claude_ai_Atlassian_Rovo__getJiraIssue \
+                 --cloudId "$JIRA_CLOUD_ID" --issueIdOrKey "$TICKET_ID" \
+                 --responseContentFormat markdown)
+  TICKET_BODY=$(jq -r '.fields.description // ""' <<<"$JIRA_ISSUE")
+  TICKET_COMMENTS=$(jq -r '.fields.comment.comments[]?.body // ""' <<<"$JIRA_ISSUE" | tr '\n' ' ')
+fi
 
 # Concatenate every comment body into one stream so the same regex catches
 # Figma URLs whether they were placed in the description or added later via
 # a comment. This is the move that retired the dispatcher's pre-detection
 # of `--no-figma`: /dev:start is now authoritative.
-TICKET_COMMENTS=$(mcp__claude_ai_Linear__list_comments ... | jq -r '.comments[].body // ""' | tr '\n' ' ')
 
 HAS_FIGMA_URL=$(printf '%s\n%s\n' "$TICKET_BODY" "$TICKET_COMMENTS" \
   | grep -cE 'figma\.com/(design|file|board|slides|make)/')
@@ -156,6 +183,24 @@ probes alone cannot detect that revisions exist. This step captures the
 latest such comment into `.dev/spec-review-directives.md` so every
 downstream stage (`/dev:apply`, dev-agent, bug-mode agent) can honor
 `[REVISED]` directives without re-fetching Linear comments.
+
+**Jira short-circuit**: `/spec-review` is a port-pipeline concept, and
+Jira repos have no port lane. For `TICKET_SYSTEM == jira`, always write
+`Status: NONE` and skip the comment fetch entirely:
+
+```bash
+if [ "$TICKET_SYSTEM" = "jira" ]; then
+  mkdir -p .dev
+  {
+    printf 'Status: NONE\n'
+    printf 'Spec-review is Linear-only (port pipeline concept). Jira ticket — nothing to capture.\n'
+  } > .dev/spec-review-directives.md.tmp
+  mv .dev/spec-review-directives.md.tmp .dev/spec-review-directives.md
+  # Skip the rest of Step 4c.
+fi
+```
+
+For `TICKET_SYSTEM == linear`, run the original fetch:
 
 This step is one-shot — `/dev:apply` only reads the file; it never re-fetches.
 
