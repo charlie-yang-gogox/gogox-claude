@@ -71,6 +71,43 @@ NOTION_VERSION = "2022-06-28"
 MCP_CONF = os.path.expanduser("~/.claude/daily-summary-mcp.json")
 DS_CONF = os.path.expanduser("~/.claude/daily-summary-config.json")
 
+SETUP_GUIDE = f"""\
+No Notion token found for the headless write path.
+
+This is a per-user, one-time setup (the token is personal and is NOT stored in
+the repo). Interactive `/daily-summary` runs do NOT need this — they use the
+OAuth Notion MCP. You only need a token if you run the skill headless (the
+nightly launchd job), which writes Work Items via a Notion internal-integration
+token (no expiry, so the job never needs re-auth).
+
+To set it up:
+
+  1. Create a Notion internal integration:
+       https://www.notion.so/profile/integrations  ->  New integration
+     Copy its "Internal Integration Secret" (starts with `ntn_`).
+
+  2. Share your work-record hub page with that integration:
+     open the Notion page that owns your Work History DB (the
+     `parent_page_id` in {DS_CONF}) -> top-right ... -> Connections ->
+     add your integration. Child databases inherit access.
+
+  3. Create {MCP_CONF} with this exact shape (replace ntn_YOURTOKEN):
+
+     {{
+       "mcpServers": {{
+         "notion": {{
+           "env": {{
+             "OPENAPI_MCP_HEADERS": "{{\\"Authorization\\":\\"Bearer ntn_YOURTOKEN\\",\\"Notion-Version\\":\\"2022-06-28\\"}}"
+           }}
+         }}
+       }}
+     }}
+
+  4. chmod 600 {MCP_CONF}
+
+Alternatively pass --token ntn_... or export NOTION_TOKEN=ntn_... for a one-off run.
+"""
+
 
 def _ssl_context():
     """Default context, but fall back to certifi's CA bundle so the framework
@@ -94,8 +131,9 @@ def resolve_token(cli_token):
         auth = hdrs["Authorization"]
         return auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else auth
     except Exception as e:
-        sys.exit(f"FATAL: could not resolve Notion token ({e}). "
-                 f"Pass --token, set $NOTION_TOKEN, or fix {MCP_CONF}.")
+        sys.stderr.write(SETUP_GUIDE)
+        sys.stderr.write(f"\n(could not read {MCP_CONF}: {e})\n")
+        sys.exit(2)
 
 
 def resolve_db(cli_db):

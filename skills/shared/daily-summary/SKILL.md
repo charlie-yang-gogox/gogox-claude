@@ -238,16 +238,46 @@ that path** — do not mix.
   / `child_database` blocks — the over-delete hazard in section B does not apply to it.
 
 - **Neither available** (headless AND the `ntn_` token cannot be resolved — file
-  missing / integration revoked): output the 4a table to stdout, emit
-  `> Notion 寫入未執行 (no OAuth MCP, no ntn_ token)`, and SKIP 4b/4d.
+  missing / integration revoked): output the 4a table to stdout, then emit the
+  setup pointer and SKIP 4b/4d:
+  `> Notion 寫入未執行 (headless 無 ntn_ token)。一次性設定見「Headless token setup」段，或執行 notion_rest.py 會印出步驟。`
+  Do NOT fail silently — a new user of this shared repo must learn how to enable it.
 
-The `ntn_` token lives in `~/.claude/daily-summary-mcp.json` under
-`mcpServers.notion.env.OPENAPI_MCP_HEADERS` (`Authorization: Bearer ntn_...`); the
-helper resolves it automatically (also honors `$NOTION_TOKEN` and `--token`). The
-integration (`tw-mobile`) must stay shared with the `📏 Charlie work record` hub
-page — children DBs (Work History etc.) inherit. If a headless run logs
-`401 unauthorized`, the integration was unshared or the token rotated; re-share
-the hub page or paste a fresh `ntn_` into the config.
+The `ntn_` token is **per-user and is never committed to this repo**; the helper
+resolves it at runtime (config file → `$NOTION_TOKEN` → `--token`). If it is
+missing, `notion_rest.py` prints the full setup steps and exits non-zero. If a
+headless run logs `401 unauthorized`, that user's integration was unshared from
+their hub page or their token rotated — re-share the page or replace the token.
+
+**Headless token setup (one-time, per-user) — required only to enable the launchd automation:**
+
+Interactive runs need NOTHING here (they use the OAuth Notion MCP). A user only
+needs a token to run the skill headless. Steps:
+
+1. Create a Notion internal integration at <https://www.notion.so/profile/integrations>
+   → **New integration** → copy its **Internal Integration Secret** (`ntn_...`).
+2. Share your work-record hub page with that integration: open the page that owns
+   your Work History DB (the `parent_page_id` in `~/.claude/daily-summary-config.json`)
+   → top-right `⋯` → **Connections** → add your integration. Child DBs inherit.
+3. Write `~/.claude/daily-summary-mcp.json`:
+   ```json
+   {
+     "mcpServers": {
+       "notion": {
+         "env": {
+           "OPENAPI_MCP_HEADERS": "{\"Authorization\":\"Bearer ntn_YOURTOKEN\",\"Notion-Version\":\"2022-06-28\"}"
+         }
+       }
+     }
+   }
+   ```
+4. `chmod 600 ~/.claude/daily-summary-mcp.json`
+
+**When running INTERACTIVELY:** if `~/.claude/daily-summary-mcp.json` is absent AND
+the user asks about / is setting up the nightly automation, offer to do step 3 for
+them — prompt once for their `ntn_` value, then write the config file with the
+shape above (do NOT echo the token back). Otherwise do not nag interactive users
+about the missing token; it is irrelevant to interactive runs.
 
 > **Why not OAuth headless:** `mcp.notion.com/mcp` only accepts claude.ai-issued
 > OAuth tokens, and those lapse. The `ntn_` internal-integration token has no
