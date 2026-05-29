@@ -1,0 +1,60 @@
+{
+  "name": "ggx-bug-resolver",
+  "cron_expression": "23 * * * *",
+  "enabled": true,
+  "persist_session": false,
+  "job_config": {
+    "ccr": {
+      "environment_id": "<ENVIRONMENT_ID>",
+      "events": [
+        {
+          "data": {
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": "Hourly cloud bug-worker for team <TEAM_KEY>. SELF-DISCOVERING: find the routine-owner's actionable bug tickets and drive each to a DRAFT PR via the local /ggx-work pipeline. You ARE allowed to write code, commit, push, open draft PRs, and update Linear for MATCHED tickets — scoped to gogovan/gogox-client-flutter only.\n\n## Phase 1 — DISCOVERY (do this FIRST, before any bootstrap / clone / flutter install)\nUsing the Linear MCP tools in this env (namespace `mcp__Linear__*`), find tickets matching ALL of:\n- Team: <TEAM_KEY> (e.g. CAF = CA Flutter Revamp)\n- Assignee: ME (the routine owner — resolve via the Linear \"me\"/current-user filter; do NOT hardcode an email)\n- State: `To-do` (exact name, unstarted type)\n- Labels: include BOTH `bug` AND `ready-to-dev`\nQuery: `mcp__Linear__list_issues` with assignee=me, label=ready-to-dev, state=To-do, team=<TEAM_KEY>; then POST-FILTER to those whose full label set ALSO contains `bug`. Sort by priority (Urgent>High>Medium>Low>None) then createdAt ascending.\n\nIf ZERO match → emit the Phase 4 report with `Matches: 0` and STOP IMMEDIATELY. Do NOT install Flutter, do NOT touch any repo.\n\n## Phase 0 — BOOTSTRAP (only if >=1 match)\n```bash\nset -e\nexport PATH=\"/opt/flutter/bin:$PATH\"\nbash /home/user/gogox-claude/install.sh >/tmp/install.log 2>&1\nls ~/.claude/commands/ggx-work.md >/dev/null && echo 'gogox-claude: installed'\nif ! command -v flutter >/dev/null 2>&1; then\n  cd /tmp\n  curl -fsSL -o flutter.tar.xz 'https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.38.7-stable.tar.xz'\n  tar -xJf flutter.tar.xz -C /opt 2>&1 | tail -1; rm -f flutter.tar.xz\nfi\ngit config --global --add safe.directory '*'\nflutter config --no-analytics --no-cli-animations >/dev/null 2>&1\nflutter --version | head -2\ncd /home/user/gogox-client-flutter\nPROXY_REMOTE=$(git config --get remote.origin.url)\nPROXY_BASE=$(echo \"$PROXY_REMOTE\" | sed -E 's|/gogovan/gogox-client-flutter$||')\ngit config --global --add url.\"${PROXY_BASE}/\".insteadOf 'git@github.com:'\ngit config --global --add url.\"${PROXY_BASE}/\".insteadOf 'ssh://git@github.com/'\ngit fetch origin --quiet; git checkout trunk 2>&1 | tail -1; git pull --ff-only --quiet\n```\nRe-export `PATH=\"/opt/flutter/bin:$PATH\"` at the top of every later bash block.\n\n## Phase 2 — PROCESS EACH TICKET SEQUENTIALLY\nFor each matched ticket T (sorted), handle INDEPENDENTLY — one ticket's failure must NOT abort the rest:\n  a. Anti-duplicate: `mcp__github__list_pull_requests` on gogovan/gogox-client-flutter; if an OPEN PR's head branch or title references T → skip T, go to next.\n  b. Work it: read `~/.claude/commands/ggx-work.md` and follow it for `T --auto` (bug lane). ticket-init flips T to In Progress (= claim; a future fire's To-do filter then skips it). Apply the cloud overrides below.\n  c. Record outcome. On FAILURE: leave T claimed (In Progress) + post a Linear failure comment; do NOT abort — continue to the next ticket.\n  d. Reclaim disk: remove T's worktree (read `~/.claude/commands/remove-worktree.md`; if it refuses because the PR is unmerged, fall back to `cd /home/user/gogox-client-flutter && git worktree remove --force ../<T>`). ALWAYS clean before the next ticket so only ONE worktree exists at a time.\n  e. Next ticket.\n\n## Cloud-specific overrides (apply to every /ggx-work run)\n1. Linear namespace: local .md uses `mcp__claude_ai_Linear__*` → use `mcp__Linear__*` here.\n2. gh CLI NOT installed → use `mcp__github__*`: create_pull_request (draft=true), list_pull_requests, pull_request_read, update_pull_request.\n3. Subagent spawns (verify-agent, git-branch-code-reviewer, etc.) → do NOT call the Agent tool; read `~/.claude/agents/<name>.md` and follow inline.\n4. EnterWorktree unavailable → `cd ../<T>`; re-export the flutter PATH after cd.\n5. git push is fine; NEVER force-push, NEVER push to trunk, NEVER delete remote branches you did not create.\n6. PRs are DRAFT.\n7. Commit signing may be broken (0-byte key / HTTP 400) → if a commit fails on signing, retry with `-c commit.gpgsign=false`.\n\n## Phase 4 — REPORT (always emit, even on 0 matches)\n=== HOURLY BUG-WORKER OUTCOME ===\nRun (UTC)   : <timestamp>\nMatches     : <N>\nProcessed   : <per ticket outcome>\nPRs opened  : <urls | none>\nNotes       : <notable>\n=== HOURLY BUG-WORKER COMPLETE ==="
+            }
+          }
+        }
+      ],
+      "session_context": {
+        "allowed_tools": [
+          "Bash",
+          "Read",
+          "Write",
+          "Edit",
+          "Glob",
+          "Grep"
+        ],
+        "model": "claude-opus-4-8",
+        "sources": [
+          {
+            "git_repository": {
+              "url": "https://github.com/charlie-yang-gogox/gogox-claude"
+            }
+          },
+          {
+            "git_repository": {
+              "allow_unrestricted_git_push": true,
+              "url": "https://github.com/gogovan/gogox-client-flutter"
+            }
+          },
+          {
+            "git_repository": {
+              "allow_unrestricted_git_push": true,
+              "url": "https://github.com/gogovan/flutter-core-sdk"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "mcp_connections": [
+    {
+      "connector_uuid": "<LINEAR_CONNECTOR_UUID>",
+      "name": "Linear",
+      "transport_type": "http",
+      "url": "https://mcp.linear.app/mcp"
+    }
+  ]
+}
