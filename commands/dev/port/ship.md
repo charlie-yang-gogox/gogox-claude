@@ -151,18 +151,23 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
       ### Validation
       <openspec validate summary>
       ```
-    - **`--auto` mode additions** (read from `claude-reports/<session>/`):
-      ```markdown
-      ### Auto-fixes applied
-      <verbatim contents of claude-reports/<session>/auto-fixes.md, or "(none)">
+    - **Review items — single `ri:v1` renderer for BOTH modes.** Whatever the mode, render two sections from the structured `<!-- ri:v1 ... -->` assumption records (the `AD-`/`AP-`/`AG-`/`AU-` blocks). Copy each record **verbatim, marker included** — never re-summarise; `/spec-review` joins on the `id=` attribute, so a dropped or rewritten marker breaks the join. Route each record by its `verify` attribute:
+      - `verify=unconfirmed` or `verify=n/a` → `### Needs review` (genuine human-decision items: judgment calls + empirical claims that could not be settled against the code).
+      - `verify=confirmed` or `verify=refuted` → `### Verified (FYI)` (already settled in `/port:explore` against the code — an audit trail, not a decision queue; a `refuted` record carries the corrected `Reality:` so the reviewer sees what the original guess got wrong).
 
-      ### Auto-accepted assumptions (REVIEW REQUIRED)
-      <verbatim contents of claude-reports/<session>/auto-accepted.md, or "(none)">
-      ```
-    - **HITL mode addition**:
+      Source of the records by mode:
+      - **`--auto`**: read `claude-reports/<session>/auto-accepted.md` — `/port:revise` step 7 already split it into `## Needs review` / `## Verified (FYI)` blocks; map them straight onto these two headings. Also emit `### Auto-fixes applied` from `claude-reports/<session>/auto-fixes.md` (or `(none)`).
+      - **HITL**: gather the `ri:v1` records that survived the `/port:revise` loop directly from `.port/*-notes.md` (use the same `awk '/^##+ / { f = ($0 ~ /Assumptions/) } f'` extraction `/port:synth` uses) and route them by `verify` exactly as above. Items resolved during the clarification loop are excluded.
+
       ```markdown
-      ### Assumptions (post-clarification)
-      <only the assumptions that survived the /port:revise loop, aggregated from .port/*-notes.md "## Assumptions" sections — items resolved during clarification are excluded>
+      ### Auto-fixes applied    (--auto only; omit in HITL)
+      <verbatim contents of auto-fixes.md, or "(none)">
+
+      ### Needs review
+      <verbatim ri:v1 records with verify=unconfirmed | n/a, or "(none)">
+
+      ### Verified (FYI)
+      <verbatim ri:v1 records with verify=confirmed | refuted, or "(none)">
       ```
     - Always append the trailing blocks:
       ```markdown

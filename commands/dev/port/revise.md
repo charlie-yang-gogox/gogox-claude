@@ -39,7 +39,7 @@ Read the synth report, apply machine-resolvable fixes, walk the user through cla
 4. **Partition findings.**
    - Walk the report's check sections. Tag each finding as one of:
      - **machine-resolvable**:
-       - **Check 5 — Forbidden markers** (`## Open Questions`, `TBD`, `TODO`, `FIXME`, `待確認`). Convert each hit to a labeled `**A-N**` Assumption (D10).
+       - **Check 5 — Forbidden markers** (`## Open Questions`, `TBD`, `TODO`, `FIXME`, `待確認`). Convert each hit to a labeled `**AU-N**` `ri:v1` Assumption (D10) — see step 5.
        - **Check 9 — Cascade scan** stale terms from a prior `--after-edit` run. Targeted Edit removing the stale term, replacing with the new term carried in the report.
      - **needs user input** (everything else):
        - Check 1 capability-name mismatches.
@@ -55,10 +55,19 @@ Read the synth report, apply machine-resolvable fixes, walk the user through cla
    - Iterate `<machine-queue>` deterministically.
 
    **Forbidden marker → Assumption conversion:**
-   - For each hit: read the artifact line via `Read`. Identify the next available `A-N` index by grepping for existing `**A-\d+**` IDs in the artifact (and `.port/*-notes.md` if the marker lives there) — pick `max + 1`.
-   - Reframe the marker line as a positive Assumption sentence (e.g. `## Open Questions\n- can users delete?` → `**A-7**: users cannot delete in v1; revisit when the delete capability ships.`).
-   - Targeted `Edit` that replaces the original marker line with the new Assumption line. NEVER `Write` the whole file.
-   - Print a one-liner: `auto-fixed: <file>:L<line> forbidden-marker → A-N assumption`.
+   - For each hit: read the artifact line via `Read`. Identify the next available `AU-N` index by grepping for existing `**AU-\d+**` IDs in the artifact (and `.port/*-notes.md` if the marker lives there) — pick `max + 1`. The `AU` ("unresolved") namespace marks assumptions minted here from a forbidden marker, distinct from the authoring agents' `AD-`/`AP-`/`AG-` namespaces; `/spec-lint` matches it and `/spec-review` parses it.
+   - Reframe the marker line as a positive Assumption sentence and emit it as a structured `ri:v1` record (the same shape the authoring agents write). Because a converted open-question is by definition unsettled, it is `kind=judgment` (or `kind=empirical verify=unconfirmed` if it is a code-fact) so the human adjudicates it at review:
+     ```
+     <!-- ri:v1 id=AU-7 kind=judgment sev=medium verify=n/a -->
+     - **AU-7** — users cannot delete in v1; revisit when the delete capability ships.
+       - Why: converted from a forbidden `## Open Questions` marker during /port:revise
+       - Impact: <the artifact + section where the marker lived>
+       - Evidence: (none)
+       - Reality: (n/a)
+     ```
+     Never carry the original `TBD` / `TODO` / `## Open Questions` / `待確認` wording into any field — that re-trips Check 5.
+   - Targeted `Edit` that replaces the original marker line(s) with the new `ri:v1` record. NEVER `Write` the whole file.
+   - Print a one-liner: `auto-fixed: <file>:L<line> forbidden-marker → AU-N assumption`.
 
    **Cascade staleness:**
    - Targeted `Edit` replacing every stale `<old-term>` with `<new-term>` across the artifacts cited by the cascade scan finding. One Edit per file (use `replace_all` if every occurrence in a file is genuinely stale).
@@ -90,13 +99,26 @@ Read the synth report, apply machine-resolvable fixes, walk the user through cla
      - For each `accept-as-is` on an Assumption-style finding: rewrite the assumption sentence in the relevant `.port/*-notes.md` to make the acceptance explicit (e.g. add `(accepted as-is at review)`). Optional but preferred — keeps the audit visible inside the spec.
      - For each `defer-to-later`: do nothing. The finding survives into the next `/spec-lint` pass.
 
-7. **Capture auto-accepted assumptions (`--auto` only).**
-   - For every `<user-queue>` finding that the auto-mode would have asked about: classify impact (`high` if it affects ≥3 artifacts, else `medium / low`).
-   - Append a line per finding to `claude-reports/<session>/auto-accepted.md`:
-     ```
-     - [AUTO-ACCEPTED] <impact>: <finding summary> — current assumption stands. Affects: <files>.
-     ```
-   - Atomic write via `mktemp` + `mv`. This file is consumed by `/port:ship` for the Linear summary `### Auto-accepted assumptions (REVIEW REQUIRED)` section.
+7. **Capture auto-accepted items (`--auto` only).**
+
+   Two distinct sources feed `claude-reports/<session>/auto-accepted.md`. Both are written as full structured records (no lossy one-line compression — the human reviewer must be able to understand each item without re-deriving its context):
+
+   **(a) Assumption records from the notes files.** Gather every `<!-- ri:v1 ... -->` record across `.port/*-notes.md` (the `AD-`/`AP-`/`AG-`/`AU-` assumptions). Route each by its `verify` attribute:
+   - `verify=confirmed` or `verify=refuted` → these were already settled against the code in `/port:explore`. Emit them under a `## Verified (FYI)` heading — they are an audit trail, NOT items the human must adjudicate.
+   - `verify=unconfirmed` or `verify=n/a` (judgment) → emit them under a `## Needs review` heading — these are the genuine human-decision items.
+   - **Copy each record verbatim** (the whole `ri:v1` marker + block, joined by its ID — never re-summarise, never re-match by prose). This is what kills the old fuzzy-provenance problem: the ID is the join key end-to-end.
+
+   **(b) Residual spec-lint `<user-queue>` findings** (Checks 1–8 that are not assumption records — coverage gaps, citation issues, drift). For each, classify impact (`high` if ≥3 artifacts, else `medium`/`low`) and emit under `## Needs review` as a labeled item with enough context to act on:
+   ```
+   <!-- ri:v1 id=LINT-<check>-<n> kind=lint sev=<impact> verify=n/a -->
+   - **LINT-<check>-<n>** — <what the lint finding means in one specific line>
+     - Why: spec-lint Check <n> (<check-name>)
+     - Impact: <the artifact:line the finding points at>
+     - Evidence: (none)
+     - Reality: (n/a)
+   ```
+
+   - Atomic write the whole file via `mktemp` + `mv`. `/port:ship` consumes it for the Linear summary's `### Needs review` and `### Verified (FYI)` sections.
 
 8. **Re-run `/spec-lint` (full check, no `--after-edit`).**
    - Invoke `/spec-lint --change <change-name> --report .port/synth-report.md` (writes a fresh `synth-report.md`). Atomic write per the spec-lint contract.
@@ -173,7 +195,7 @@ POSIX `mv` on the same filesystem is atomic — partial reports must never be vi
 
 - **Targeted Edit, never full-file Write** for revisions inside `openspec/changes/<change-name>/`. Preserves surrounding context and removes LLM variance from the loop.
 - **Cascade scan after every Edit** is non-negotiable. The orchestrator MUST invoke `/spec-lint --after-edit --stale "<old-term>"` after every revision Edit and apply targeted Edits for any stale hits before continuing. The grep decides — never judge an artifact "agnostic" and skip it.
-- **Forbidden markers are converted to Assumptions, never silently dropped.** The marker text becomes a positive `**A-N**` line. This preserves the question for downstream review while removing the lint failure.
+- **Forbidden markers are converted to Assumptions, never silently dropped.** The marker text becomes a positive `**AU-N**` `ri:v1` record (the `AU` "unresolved" namespace). This preserves the question for downstream review while removing the lint failure.
 - **Auto-fixes are reported (D10).** Every machine fix prints a one-liner; in `--auto` they are accumulated to `claude-reports/<session>/auto-fixes.md` for inclusion in the Linear summary by `/port:ship`.
 - **In `--auto`, NEVER call `AskUserQuestion`.** Both step 6 (clarification loop) and step 9 (review gate) are skipped. Auto-accept all assumptions (G7); auto-approve the final gate (G8); record both audit trails for ship-side reporting.
 - **`Review approved` sentinel** is the only handshake `/port:ship` uses to detect approval. Never write it on `abort` or on a non-converged loop.

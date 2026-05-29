@@ -50,7 +50,11 @@ Synthesize OpenSpec artifacts (`proposal.md`, `design.md`, `tasks.md`, `specs/*/
    - Fetch `<ticket-context>` via `mcp__claude_ai_Linear__get_issue` for `<ticket-id>`.
    - Read `<port-dir>/prd.md` if present, else `<prd-text>` = `(none)`.
    - Read all three notes files into memory.
-   - Aggregate `## Assumptions` blocks: `awk '/^## Assumptions/,/^## /' <file>` for each notes file, concatenate.
+   - Aggregate the Assumptions section from each notes file, concatenated. The section heading is `### Assumptions` (h3, as the authoring agents emit it) or `## Assumptions` (h2) — and the body now contains multi-line `<!-- ri:v1 ... -->` structured records that MUST be copied **verbatim, markers included** (downstream `/spec-review` joins on the `id=` attribute, so a dropped marker breaks the join). Use a flag-based awk that captures from any Assumptions heading to the next non-Assumptions heading at the same or higher level:
+     ```bash
+     awk '/^##+ / { f = ($0 ~ /Assumptions/) } f' <file>
+     ```
+     for each notes file. This is heading-level agnostic (h2/h3) and preserves the HTML comment markers and the full block. (The old `awk '/^## Assumptions/,/^## /'` matched only h2 and would have silently captured nothing from the h3 sections the agents actually write.)
    - Build the bundle body:
      ```markdown
      # Port context bundle for <change-name>
@@ -133,7 +137,7 @@ Synthesize OpenSpec artifacts (`proposal.md`, `design.md`, `tasks.md`, `specs/*/
    **`--auto` mode — inline execution.** Do NOT call the `Agent` tool. The current session executes the synth-agent contract directly:
    1. Read `agents/dev/synth-agent.md` (`<gogox-claude-repo>/agents/dev/synth-agent.md`) once. Treat its Step 0 → Step 3 loop and `## Guardrails` as binding. **Path-escape guard is non-negotiable**: any `outputPath` from `openspec instructions` that does NOT start with `<change-dir>/` is a hard STOP — abort the loop and return `synth-agent: refusing outputPath outside change dir: <outputPath>` as `<synth-summary>`.
    2. `cd <worktree-path>` for every `openspec` invocation.
-   3. Read `<port-dir>/context.md` once. Skim for labeled IDs (`**FR-N**`, `**AC-N**`, `**R-N**`, `**A-N**`) — these are the only identifiers you may cite in artifacts. Never invent an ID.
+   3. Read `<port-dir>/context.md` once. Skim for labeled IDs (`**FR-N**`, `**AC-N**`, `**R-N**`, and the assumption namespaces `**AD-N**` / `**AP-N**` / `**AG-N**` / `**AU-N**`, plus legacy bare `**A-N**`) — these are the only identifiers you may cite in artifacts. Never invent an ID.
    4. For each `<artifact-id>` in `<dependency-order>` (apply-required order, leaves first):
       ```bash
       openspec instructions <artifact-id> --change "<change-name>" --json

@@ -56,14 +56,14 @@ Lint an OpenSpec change directory for parity, traceability, and drift before it 
 
 8. **Check 6 — B-citation forward (synthesis OMISSION, per D17).**
    - For each `.port/<role>-notes.md` (pm, dev, design):
-     - Extract IDs: `grep -noE '\*\*(FR|AC|R|A)-[0-9]+\*\*' <file> | sort -u` → list of `<file>:<line>:**ID**`.
+     - Extract IDs: `grep -noE '\*\*(FR|AC|AD|AP|AG|AU|R|A)-[0-9]+\*\*' <file> | sort -u` → list of `<file>:<line>:**ID**`.
      - For each ID (strip the `**` bold), grep across `proposal.md design.md tasks.md specs/`:
-       `grep -rnE '\b(FR|AC|R|A)-[0-9]+\b' proposal.md design.md tasks.md specs/ | grep -wE '<ID>' | head -1`.
+       `grep -rnE '\b(FR|AC|AD|AP|AG|AU|R|A)-[0-9]+\b' proposal.md design.md tasks.md specs/ | grep -wE '<ID>' | head -1`.
      - Zero matches → flag `❌ <ID> (<notes-file>:L<line>) — no artifact reference`.
    - All IDs referenced → `✅ all labeled IDs in notes are referenced`.
 
 9. **Check 7 — B-citation reverse (synthesis HALLUCINATION, per D17 — higher severity).**
-   - From artifacts: `grep -rnoE '\b(FR|AC|R|A)-[0-9]+\b' proposal.md design.md tasks.md specs/ | sort -u`.
+   - From artifacts: `grep -rnoE '\b(FR|AC|AD|AP|AG|AU|R|A)-[0-9]+\b' proposal.md design.md tasks.md specs/ | sort -u`.
    - For each artifact-cited ID, verify it is defined as a labeled `**ID**` in some `.port/*-notes.md`:
      `grep -lE '\*\*<ID>\*\*' .port/*-notes.md`.
    - Zero hits → flag `❌ HIGH: <artifact-file>:L<line> references <ID>, but <ID> not defined in any notes file`.
@@ -71,7 +71,7 @@ Lint an OpenSpec change directory for parity, traceability, and drift before it 
 
 10. **Check 8 — Zero-ID warning (D15).**
     - For each `.port/<role>-notes.md`:
-      - `count=$(grep -cE '\*\*(FR|AC|R|A)-[0-9]+\*\*' <file>)`.
+      - `count=$(grep -cE '\*\*(FR|AC|AD|AP|AG|AU|R|A)-[0-9]+\*\*' <file>)`.
       - `count == 0` → warn `⚠️ <file> has zero labeled IDs — checks 6 and 7 will be unreliable for this file (agent likely dropped the labeled-ID convention)`.
 
 11. **Check 9 — Cascade scan (`--after-edit --stale "term1,term2"`).**
@@ -154,4 +154,5 @@ Summary: <total> findings (hallucination: <H>, omission: <O>, others: <X>)
 - **No commit.** This skill never runs `git add` or `git commit`. The caller (`/port:synth` → `/port:revise` → `/port:ship` → `/commit`) owns commit boundaries.
 - **Cascade scan is exclusive.** When `--after-edit --stale ...` is passed, ONLY check 9 runs. Do not also run checks 1–8 (they will see stale-but-being-removed terms and double-flag).
 - **Pure-grep means pure-grep.** No `jq` for parsing notes content (only allowed for `openspec status --json`). Notes structure is free-form markdown — anchor on `**ID**` regex and section headers, never a schema.
+- **Labeled-ID namespaces.** Assumptions are namespaced by authoring source so cross-notes IDs never collide: `AD-n` (dev-consult), `AP-n` (pm), `AG-n` (designer), `AU-n` (revise forbidden-marker conversion). `FR-`/`AC-` (pm), `R-` (risks), and bare `A-` (legacy, pre-namespace notes) remain matched. The Check 6/7/8 alternation `(FR|AC|AD|AP|AG|AU|R|A)` is a strict superset of the old `(FR|AC|R|A)` — legacy `A-1` still matches — so mixed-version worktrees (old notes + new lint) are safe. List multi-letter prefixes before bare `A` in the alternation so `AD-1` is not greedily split.
 - **Standalone usage.** This command must be runnable on any OpenSpec change directory, not just `/port` ones. Checks 4 (divergence markers) and 6/7 (B-citation) silently skip when `.port/` is absent.
