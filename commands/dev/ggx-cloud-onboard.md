@@ -152,7 +152,7 @@ Substitute exactly three placeholders:
 
 Keep these FIXED — do NOT change them:
 - `model: "claude-opus-4-8"` — see "Why opus" below.
-- `cron_expression: "23 * * * *"`.
+- `cron_expression: "0 4,10,16,22 * * *"` (Taiwan time 00/06/12/18 = 04/10/16/22 UTC).
 - `enabled: false` — initial create is disabled; we test before enabling.
 - The three `sources[]` exactly as below.
 - The full prompt text exactly as below (it already remaps
@@ -168,7 +168,7 @@ session (so the opus pinning in agent frontmatter is bypassed) and the
 ```json
 {
   "name": "ggx-bug-resolver",
-  "cron_expression": "23 * * * *",
+  "cron_expression": "0 4,10,16,22 * * *",
   "enabled": false,
   "persist_session": false,
   "job_config": {
@@ -257,7 +257,7 @@ Then tell the colleague:
 
 Wait for the colleague to confirm the test looks right before Step 6.
 
-### Step 6: Enable the hourly cron
+### Step 6: Enable the 6-hourly cron
 
 After the colleague confirms the test outcome looks right:
 ```
@@ -267,7 +267,7 @@ Then print:
 ```
 ggx-bug-resolver is LIVE.
 Trigger id : <trigger_id>
-Cron       : 23 * * * *  (hourly, at minute 23)
+Cron       : 0 4,10,16,22 * * *  (Taiwan time 00/06/12/18 = 04/10/16/22 UTC)
 Next run   : <server-parsed next run from the update summary line>
 Model      : claude-opus-4-8
 Team       : <TEAM_KEY>
