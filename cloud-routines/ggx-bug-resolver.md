@@ -210,7 +210,7 @@ both the prompt and the JSON before creating your routine:
 | Placeholder / field | Rule |
 |---|---|
 | **Assignee** | Use the Linear **"me" / current-user** filter only. Remove any hardcoded email — `me` auto-resolves to whoever OWNS the routine. (The §3 prompt already does this.) |
-| **gogox-claude source** | Use `https://github.com/gogovan/gogox-claude` (an org-hosted copy) as the source URL — NOT a personal fork. **Mirror/move gogox-claude to a shared org location; do not point at a personal fork.** |
+| **gogox-claude source** | **Currently `https://github.com/charlie-yang-gogox/gogox-claude`** (temporary). ⚠️ This is a personal repo — a colleague creating their own routine must have read access to it. **TODO: mirror/move gogox-claude to a shared org location (e.g. `gogovan/gogox-claude`) and switch this URL before broad team rollout.** |
 | **`<TEAM_KEY>`** | Linear team key. `CAF` (CA Flutter Revamp) is the worked example; `DAF` and other teams reuse the same template by swapping this. |
 | **`<ENVIRONMENT_ID>`** | Per-account CCR environment id. Leave as a placeholder; fill with your own. |
 | **`<LINEAR_CONNECTOR_UUID>`** | Per-account Linear MCP connector UUID. Leave as a placeholder; fill with your own. |
