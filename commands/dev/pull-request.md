@@ -69,6 +69,12 @@ Based on `ticket_system` from the product profile:
 **If `ticket_system` is not set, or fetch fails:**
 - Use the branch name as the PR title
 
+**CRITICAL — PR title format:**
+- The PR title MUST be exactly `{TICKET_ID}: {ticket title from tracker}`.
+- Example: `CAF-593: "Account deactivated" dialog shows incorrect body text when user tries to edit payment settings`
+- Do NOT use conventional-commit format (e.g., `fix(scope): ...`) for the PR title.
+- Do NOT rephrase, summarize, or abbreviate the ticket title — use the exact title from the tracker.
+
 ### 5. Build PR Body
 
 Collect commit messages:
@@ -79,7 +85,7 @@ git log origin/trunk..HEAD --pretty='format:- %s' --reverse --no-merges
 
 Generate a **Summary** section by reading the commit messages and writing a plain-English description of what this PR does. Be concise — 2-5 bullet points. Write from the perspective of a reviewer who needs to understand the "why" and "what", not the "how".
 
-Build the PR body using this template:
+**CRITICAL — the PR body MUST use EXACTLY this template. All five sections are REQUIRED. Do NOT omit any section. Do NOT reorder sections. Do NOT rename headings.**
 
 ```markdown
 #### Ticket ####
@@ -102,14 +108,22 @@ Build the PR body using this template:
 <!-- Add screenshots or screen recordings here -->
 ```
 
-Where:
+**Mandatory field definitions — follow exactly:**
 - `{TICKET_ID}` is the extracted ticket ID (e.g., `CAF-272`, `CET-7911`)
 - `{TICKET_URL}` is:
   - Linear: `{linear_base_url}/{TICKET_ID}` (e.g., `https://linear.app/gogox/issue/CAF-272`)
   - Jira: `{jira_base_url}/{TICKET_ID}` (e.g., `https://gogotech.atlassian.net/browse/CET-7911`)
-- `{GENERATED_SUMMARY_BULLETS}` is a plain-English summary generated from the commits
-- `{COMMIT_MESSAGES_AS_CHECKLIST}` is each commit message formatted as `- [x] <message>`
-- `{GENERATED_TEST_PLAN}` is a QA-oriented checklist generated from the diff and commits (see Step 6d)
+- `{GENERATED_SUMMARY_BULLETS}` — plain-English summary as bullet points (not narrative paragraphs)
+- `{COMMIT_MESSAGES_AS_CHECKLIST}` — each commit message formatted as `- [x] <message>` (one per commit, in chronological order)
+- `{GENERATED_TEST_PLAN}` — QA-oriented numbered checklist generated from the diff and commits (see Step 6d)
+
+**DO NOT:**
+- Omit the `#### Ticket ####` section or move the ticket link elsewhere (e.g., bottom of body)
+- Omit the `## What Changes` section
+- Omit the `## Demo` section
+- Use `Test plan` (lowercase) — it MUST be `## Test Plan`
+- Write the Summary as narrative paragraphs — use bullet points
+- Add a `Linear:` or `Jira:` link outside the Ticket section
 
 **If `--dry-run`**: print the PR title, body, and implementation notes (Step 6), then stop. Do not push, create, or post.
 
