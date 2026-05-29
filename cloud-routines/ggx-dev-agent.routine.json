@@ -1,0 +1,65 @@
+{
+  "name": "ggx-dev-agent",
+  "cron_expression": "0 4,10,16,22 * * *",
+  "enabled": true,
+  "persist_session": false,
+  "job_config": {
+    "ccr": {
+      "environment_id": "<ENVIRONMENT_ID>",
+      "events": [
+        {
+          "data": {
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": "Hourly cloud dev-agent for team <TEAM_KEY>. SELF-DISCOVERING + LABEL-DRIVEN: find the routine-owner's actionable tickets and drive each through the local /ggx-work pipeline, which self-routes to port / dev / bug. You ARE allowed to write code, commit, push, open DRAFT PRs, and update Linear for MATCHED tickets — scoped to the declared <TARGET_REPO> only.\n\n## Phase 1 — DISCOVERY (do this FIRST, before any bootstrap / clone / toolchain install)\nUsing the Linear MCP tools in this env (namespace `mcp__Linear__*`), run TWO queries (state filter OMITTED on purpose — the port→dev hand-off keeps status at In Progress, so a To-do filter would drop wave-2 port tickets):\n- Q_port: `mcp__Linear__list_issues` assignee=me, team=<TEAM_KEY>, label=`ready-to-port`\n- Q_dev : `mcp__Linear__list_issues` assignee=me, team=<TEAM_KEY>, label=`ready-to-dev`\nMerge by ticket id (union the label arrays). POST-FILTER OUT any ticket whose status type is `completed` / `canceled`. Sort by priority (Urgent>High>Medium>Low>None) then createdAt ascending. Tag each survivor with its lane bucket: `port` (had ready-to-port) or `dev` (had ready-to-dev). A ticket cannot be in both buckets at once (the labels are mutually exclusive across waves).\n\nIf ZERO match → emit the Phase 4 report with `Matches: 0` and STOP IMMEDIATELY. Do NOT install anything, do NOT touch any repo.\n\n## Phase 0 — BOOTSTRAP (only if >=1 match; install CONDITIONALLY on matched buckets)\n```bash\nset -e\nbash /home/user/gogox-claude/install.sh >/tmp/install.log 2>&1\nls ~/.claude/commands/ggx-work.md >/dev/null && echo 'gogox-claude: installed'   # flattened: NOT dev/ggx-work.md\ngit config --global --add safe.directory '*'\ngit config --global commit.gpgsign false   # sandbox signing is broken (0-byte key / HTTP 400) → commit unsigned from the start; do not rely on a per-commit fallback\ncd /home/user/<TARGET_REPO>\nPROXY_REMOTE=$(git config --get remote.origin.url)\nPROXY_BASE=$(echo \"$PROXY_REMOTE\" | sed -E 's|/<ORG>/<TARGET_REPO>$||')\ngit config --global --add url.\"${PROXY_BASE}/\".insteadOf 'git@github.com:'\ngit config --global --add url.\"${PROXY_BASE}/\".insteadOf 'ssh://git@github.com/'\ngit fetch origin --quiet; git checkout trunk 2>&1 | tail -1; git pull --ff-only --quiet\n```\n- If the `ready-to-dev` bucket is non-empty (dev/bug lane builds + opens a PR):\n```bash\nexport PATH=\"/opt/flutter/bin:$PATH\"\nif ! command -v flutter >/dev/null 2>&1; then\n  cd /tmp\n  curl -fsSL -o flutter.tar.xz 'https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.38.7-stable.tar.xz'\n  tar -xJf flutter.tar.xz -C /opt 2>&1 | tail -1; rm -f flutter.tar.xz\nfi\nflutter config --no-analytics --no-cli-animations >/dev/null 2>&1\nflutter --version | head -2\n```\nRe-export `PATH=\"/opt/flutter/bin:$PATH\"` at the top of every later bash block when the dev/bug lane runs.\n- If the `ready-to-port` bucket is non-empty (port wave-1 synth needs the openspec CLI):\n```bash\n# openspec CLI = npm package @fission-ai/openspec (bin `openspec`). Pinned to the\n# version local dev uses (1.3.1) so the CLI output the synth loop parses (openspec\n# status/instructions/validate --json) does not drift. /port:start|synth|ship call:\n# openspec new change | status | instructions | validate | archive.\nif ! command -v openspec >/dev/null 2>&1; then\n  command -v npm >/dev/null 2>&1 || { echo 'FATAL: npm/node absent in sandbox — add a node bootstrap before installing openspec'; }\n  npm install -g @fission-ai/openspec@1.3.1 2>&1 | tail -3\nfi\nopenspec --version || { echo 'FATAL: openspec CLI unavailable — cannot run port lane'; }\n# Seed the MAIN-repo port-settings.json NOW. /port:start Step 3 reads\n# <main-repo>/.claude/port-settings.json BEFORE the worktree exists and --auto\n# STOPs if it is missing. (The worktree copy is seeded later by override #5,\n# because git worktrees do NOT inherit this gitignored file.)\nmkdir -p /home/user/<TARGET_REPO>/.claude\nprintf '{\\n  \"originalProjectPath\": \"/home/user/<ORIGIN_REPO>\"\\n}\\n' > /home/user/<TARGET_REPO>/.claude/port-settings.json\n```\nFlutter is NOT needed for port wave-1 (no build).\n\n## Phase 2 — PROCESS EACH TICKET SEQUENTIALLY\nThis routine writes NO Linear labels of its own. Claiming + the label/status lifecycle are owned entirely by /ggx-work (its ticket-init) and /port:ship / /dev:ship. There is NO in-flight label and NO crash recovery — if a fire dies mid-pipeline the ticket is just left at In Progress (orphan) and a human re-adds `ready-to-*` to restart it from scratch.\nFor each matched ticket T (sorted), handle INDEPENDENTLY — one ticket's failure must NOT abort the rest. `<lane>` = T's bucket (`port` or `dev`).\n  a. ANTI-DUPLICATE (durable completion check — skip work that's already done):\n     - port bucket: `git ls-remote --heads origin \"feat/<T>\"` exists, OR T's labels already include `need-spec-review` → skip T (already shipped / awaiting human spec-review).\n     - dev bucket: `mcp__github__list_pull_requests` on <TARGET_REPO>; an OPEN PR's head branch or title references T → skip T (already shipped).\n  b. WORK IT: read `~/.claude/commands/ggx-work.md` (flattened — NOT `dev/ggx-work.md`) and follow it for `T --auto`. /ggx-work's ticket-init (Step 2.5) is the CLAIM: it flips status To-do→In Progress and removes `ready-to-*`, so the next fire's discovery won't re-match T. Apply the cloud overrides below. /ggx-work → /route self-selects /port:ff (wave-1) or /dev:ff (wave-2 / feature) or /bug:ff.\n  c. RECORD the `[ggx-work-result] outcome=<...>` line — informational only, NO label writes by this routine:\n     - `done` (dev/bug PR open) / `port-paused` (port shipped, /port:ship already added need-spec-review) → nothing to do; labels are already correct.\n     - `failed` → post a Linear failure comment; leave T at In Progress (orphan, no `ready-to-*`). Do NOT abort the batch; continue to the next ticket. (A human re-adds `ready-to-*` later to restart T from scratch.)\n  d. RECLAIM DISK: remove T's worktree (read `~/.claude/commands/remove-worktree.md`; if it refuses because the PR is unmerged, fall back to `cd /home/user/<TARGET_REPO> && git worktree remove --force ../<T>`). ALWAYS clean before the next ticket so only ONE worktree exists at a time.\n  e. Next ticket.\n\n## Cloud-specific overrides (apply to every /ggx-work run)\n1. Linear namespace: local .md uses `mcp__claude_ai_Linear__*` → use `mcp__Linear__*` here (for /ggx-work's calls, and for this routine's only direct Linear write — the Phase 2c failure comment).\n2. gh CLI NOT installed → use `mcp__github__*` for dev/bug PRs: create_pull_request (draft=true), list_pull_requests, pull_request_read, update_pull_request. The PORT lane opens NO PR — /port:ship only `git push`es feat/<T>.\n3. Subagent spawns are inlined by `--auto` (dev-consult / pm / designer / synth / verify / review). Do NOT call the Agent tool; if a step still references an agent, read `~/.claude/agents/<name>.md` and follow inline.\n4. `/add-worktree` (invoked by /dev:start and /port:start) is INTERACTIVE and has NO `--auto` mode — in the cloud there is no human, so resolve its prompts deterministically as you follow it:\n   - Its Step 4 says \"use the EnterWorktree tool\" → EnterWorktree is unavailable here; instead `cd ../<T>` and re-export `PATH=\"/opt/flutter/bin:$PATH\"` after cd (dev/bug lane).\n   - Its Step 2 branch/worktree-state questions → resolve WITHOUT prompting: only the **remote** `feat/<T>` exists → `git worktree add --track -b feat/<T> ../<T> origin/feat/<T>` (this is the **port wave-2 / resume** case — restores the committed OpenSpec change); local branch exists (with or without remote) → reuse it (`git worktree add ../<T> feat/<T>`); `../<T>` already a registered worktree → enter it (skip create); `../<T>` is a non-worktree dir → STOP (never overwrite). Neither branch nor worktree exists → normal create from `origin/trunk`.\n5. PORT origin path: the port pipeline reads `<worktree>/.claude/port-settings.json`. Git worktrees do NOT inherit it. So IMMEDIATELY AFTER /port:start (via /add-worktree) creates `../<T>`, and BEFORE /port:explore runs, write `../<T>/.claude/port-settings.json` containing exactly `{\"originalProjectPath\": \"/home/user/<ORIGIN_REPO>\"}`. In --auto /port:explore STOPs if this file is missing, so this seed is mandatory for the port lane.\n6. git push is fine; NEVER force-push, NEVER push to trunk, NEVER delete remote branches you did not create. PRs (dev/bug only) are DRAFT.\n7. Commit signing is broken in the sandbox (0-byte key / HTTP 400). Phase 0 already sets `git config --global commit.gpgsign false`, so every commit is unsigned from the start. Belt-and-suspenders: if a commit STILL fails on signing (e.g. a sub-command overrides config), retry with `-c commit.gpgsign=false`. (Do NOT rely on a piped `... | tail` masking the exit code — set the global config, don't depend on the fallback firing.)\n\n## Phase 4 — REPORT (always emit, even on 0 matches)\n=== HOURLY DEV-AGENT OUTCOME ===\nRun (UTC)            : <timestamp>\nMatches              : port=<n> dev=<m>\nProcessed            : <per ticket: id lane outcome>\nPRs opened (dev/bug) : <urls | none>\nSpecs → spec-review  : <port ids now at need-spec-review | none>\nOrphaned (failed)    : <ids left In Progress | none>\nNotes                : <notable>\n=== HOURLY DEV-AGENT COMPLETE ==="
+            }
+          }
+        }
+      ],
+      "session_context": {
+        "allowed_tools": [
+          "Bash",
+          "Read",
+          "Write",
+          "Edit",
+          "Glob",
+          "Grep"
+        ],
+        "model": "claude-opus-4-8",
+        "sources": [
+          {
+            "git_repository": {
+              "url": "https://github.com/charlie-yang-gogox/gogox-claude"
+            }
+          },
+          {
+            "git_repository": {
+              "allow_unrestricted_git_push": true,
+              "url": "https://github.com/gogovan/gogox-client-flutter"
+            }
+          },
+          {
+            "git_repository": {
+              "allow_unrestricted_git_push": true,
+              "url": "https://github.com/gogovan/flutter-core-sdk"
+            }
+          },
+          {
+            "git_repository": {
+              "url": "https://github.com/gogovan/gogovan-client-v2-android"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "mcp_connections": [
+    {
+      "connector_uuid": "<LINEAR_CONNECTOR_UUID>",
+      "name": "Linear",
+      "transport_type": "http",
+      "url": "https://mcp.linear.app/mcp"
+    }
+  ]
+}
