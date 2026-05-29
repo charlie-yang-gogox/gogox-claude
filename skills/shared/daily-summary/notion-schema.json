@@ -1,0 +1,134 @@
+{
+  "_comment": "Schema-as-code for /daily-summary Notion artifacts. Used by the first-run bootstrap in SKILL.md to create a teammate's own work record + dashboards. After bootstrap, the resolved IDs are written to ~/.claude/daily-summary-config.json; this file is then only consulted on schema drift / re-bootstrap.",
+  "_schema_version": "1.0",
+
+  "parent_page": {
+    "_purpose": "Top-level page holding the live dashboard sections (📊 本週交付 / 📈 12 週趨勢) plus a child Work Items database and a child inner page.",
+    "default_title": "Daily Summary Work Record",
+    "icon": "📊",
+    "initial_children_hint": [
+      "## 📊 本週交付 (placeholder — refreshed by /daily-summary 4d-2)",
+      "## 📈 12 週趨勢 (placeholder — refreshed by /daily-summary 4d-5)"
+    ]
+  },
+
+  "work_items_db": {
+    "_purpose": "Per-row daily session log. One Notion page per parse.py row, append-only (4b).",
+    "default_title": "Work History",
+    "_title_note": "Historical naming inconsistency — DB title is `Work History` even though the schema's primary key is `工作摘要`. Kept for back-compat with existing dashboards.",
+    "parent": "parent_page",
+    "title_property": "工作摘要",
+    "properties": {
+      "工作摘要": { "type": "title" },
+      "Ticket": { "type": "multi_select", "options_grow": true },
+      "Linear": { "type": "url" },
+      "Date": { "type": "date" },
+      "時段": { "type": "rich_text" },
+      "Sessions": { "type": "number", "format": "number" },
+      "費用": { "type": "number", "format": "dollar" },
+      "Tokens": { "type": "number", "format": "number" },
+      "Active Hours": { "type": "number", "format": "number" },
+      "Thinking Hours": { "type": "number", "format": "number" },
+      "Subagent Spawns": { "type": "number", "format": "number" },
+      "Cost Opus": { "type": "number", "format": "dollar" },
+      "Cost Sonnet": { "type": "number", "format": "dollar" },
+      "Cost Haiku": { "type": "number", "format": "dollar" },
+      "Cache Read Tokens": { "type": "number", "format": "number" },
+      "Cache Creation Tokens": { "type": "number", "format": "number" },
+      "Output": {
+        "type": "select",
+        "options": [
+          "PR shipped",
+          "feature dev",
+          "bug fix",
+          "code review",
+          "code review (routine)",
+          "PRD/spec",
+          "tooling",
+          "research",
+          "devops"
+        ]
+      },
+      "Week": { "type": "formula", "formula": "formatDate(prop(\"Date\"), \"\\\"W\\\"WW\")" }
+    }
+  },
+
+  "inner_page": {
+    "_purpose": "Child of parent_page. Holds Weekly PRs and Weekly Metrics databases plus a manual Daily Stats chart section.",
+    "default_title": "📋 本週明細 & 歷史",
+    "icon": "📋",
+    "parent": "parent_page",
+    "_legacy_titles": ["📋 PR 明細"]
+  },
+
+  "weekly_prs_db": {
+    "_purpose": "Per-PR row, upserted by title; accumulates across weeks (4d-3 Section A).",
+    "default_title": "Weekly PRs",
+    "parent": "inner_page",
+    "title_property": "Title",
+    "properties": {
+      "Title": { "type": "title", "_note": "Truncate PR title to 80 chars on write" },
+      "Week": { "type": "select", "_note": "e.g. W18; options grow as new weeks arrive" },
+      "Repo": {
+        "type": "select",
+        "_note": "Options seeded from repos.allowed in user config; new repos auto-added",
+        "default_options": [
+          "gogox-client-flutter",
+          "gogovan-client-v2-android",
+          "gogovan-driver-flutter"
+        ]
+      },
+      "State": {
+        "type": "select",
+        "options": ["merged", "open", "closed"]
+      },
+      "Opened": { "type": "date" },
+      "Merged": { "type": "date" },
+      "Ticket": {
+        "type": "rich_text",
+        "_note": "Hyperlinked Markdown: [CAF-XXX](pr_url) or [#number](pr_url)"
+      }
+    }
+  },
+
+  "weekly_metrics_db": {
+    "_purpose": "12-week metric history, one row per ISO week, upserted by Week (4d-3 Section B).",
+    "default_title": "Weekly Metrics",
+    "parent": "inner_page",
+    "title_property": "Week",
+    "properties": {
+      "Week": { "type": "title" },
+      "Week Start": { "type": "date" },
+      "Merged": { "type": "number", "format": "number" },
+      "Opened": { "type": "number", "format": "number" },
+      "Closed": { "type": "number", "format": "number" },
+      "Reopened": { "type": "number", "format": "number" },
+      "Review Pressure": { "type": "number", "format": "number" },
+      "Sessions/PR": { "type": "number", "format": "number" },
+      "Ticket-to-PR": { "type": "number", "format": "number" },
+      "Net Delivery Eff": { "type": "number", "format": "number" },
+      "Cost": { "type": "number", "format": "dollar" },
+      "Cost/Ticket": { "type": "number", "format": "dollar" },
+      "Cost/Net Line": { "type": "number", "format": "dollar" },
+      "Cache %": { "type": "number", "format": "percent", "_note": "Write 0-1 fraction (Notion displays ×100)" },
+      "Tool Error %": { "type": "number", "format": "percent", "_note": "Divide parse.py's 0-100 value by 100 before writing" },
+      "Late Night %": { "type": "number", "format": "percent", "_note": "Divide parse.py's 0-100 value by 100 before writing" },
+      "Lost Work $": { "type": "number", "format": "dollar" },
+      "Output/Turn": { "type": "number", "format": "number" },
+      "Sessions": { "type": "number", "format": "number" },
+      "Health": {
+        "type": "select",
+        "options": ["🟢 green", "🟡 yellow", "🔴 red"]
+      },
+      "AI 建議": { "type": "rich_text" }
+    }
+  },
+
+  "bootstrap_order": [
+    "parent_page",
+    "work_items_db",
+    "inner_page",
+    "weekly_prs_db",
+    "weekly_metrics_db"
+  ]
+}
