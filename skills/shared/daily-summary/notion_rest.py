@@ -27,8 +27,9 @@ The parent page's 📈 section sits directly above the "🔧 Debug View"
 column_list. A naive "delete to next heading" would destroy it. So section
 content is collected from the matched heading until the FIRST barrier block
 (another heading_*, or any column_list / child_database / child_page /
-synced_block / table_of_contents) — the barrier is never crossed, never
-deleted. New content is inserted with the `after` cursor pinned to the
+synced_block / table_of_contents / toggle / embed / image / video) — the
+barrier is never crossed, never deleted, matching SKILL.md section B's
+chart-preservation set. New content is inserted with the `after` cursor pinned to the
 heading, so blocks land inside the section, not at page end. Use --dry-run
 to print the exact delete/append plan before any mutation.
 
@@ -111,10 +112,13 @@ Every value is pre-computed by the orchestrator; this helper just writes it.
 
   Block DSL (expanded to Notion blocks in Python):
     callout   {emoji, color, text}  OR  {emoji, color, rich:[seg,...]}
-    table     {headers:[...], rows:[[...],...]}  (first row = column header)
+    table     {headers:[...], rows:[[cell,...],...]}  (first row = column header)
     link      {text, url}                        (a paragraph with one linked run)
     paragraph {text}  OR  {rich:[seg,...]}
   rich segment: {t:"text", b:bool, i:bool, code:bool, color:"...", link:"url"}
+  table cell: a plain string, OR a rich segment dict {t,b,...}, OR a list of
+    segments. Bold etc. is structural — NOT markdown (pass {"t":"May","b":true},
+    never "**May**", which would render with literal asterisks).
   Property values are coerced by the LIVE db schema's type, so callers pass
   plain values; rich_text hyperlinks pass {"text":..., "url":...}; null/"" on a
   select/date/url clears it, null on any other type omits the property.
@@ -342,10 +346,13 @@ API = "https://api.notion.com/v1"
 # Block types that END a section. The section-replace never crosses or deletes
 # one of these — this is what protects the 🔧 Debug View column_list that sits
 # directly below the 📈 section on the parent page.
+# Mirrors SKILL.md section B's chart-preservation set (column_list / child_* /
+# embed / image / video / toggle / synced_block) plus headings + table_of_contents.
 BARRIER_TYPES = {
     "heading_1", "heading_2", "heading_3",
     "column_list", "child_database", "child_page",
     "synced_block", "table_of_contents",
+    "toggle", "embed", "image", "video",
 }
 
 
@@ -416,6 +423,18 @@ def _rich(text=None, segs=None):
     return [{"type": "text", "text": {"content": text or ""}}]
 
 
+def _cell_rich(cell):
+    """A table cell is a plain string, a single rich segment dict {t,b,...}, or
+    a list of such segments. No markdown is parsed — bold/italic etc. are carried
+    structurally (so e.g. a current-week row passes {"t": "May 2026", "b": true}
+    rather than the literal "**May 2026**")."""
+    if isinstance(cell, list):
+        return _rich(segs=cell)
+    if isinstance(cell, dict):
+        return _rich(segs=[cell])
+    return _rich(str(cell))
+
+
 def _dsl_to_block(spec):
     if "callout" in spec:
         c = spec["callout"]
@@ -439,7 +458,7 @@ def _dsl_to_block(spec):
         def row_block(cells):
             cells = list(cells) + [""] * (width - len(cells))
             return {"type": "table_row",
-                    "table_row": {"cells": [_rich(str(c)) for c in cells[:width]]}}
+                    "table_row": {"cells": [_cell_rich(c) for c in cells[:width]]}}
 
         children = [row_block(headers)] + [row_block(r) for r in rows]
         return {"type": "table", "table": {
@@ -548,7 +567,10 @@ def _coerce_prop(ptype, val):
     if ptype == "select":
         return {"select": ({"name": str(val)} if val not in (None, "") else None)}
     if ptype == "multi_select":
-        return {"multi_select": [{"name": str(x)} for x in (val or [])]}
+        # null omits (per contract); [] explicitly clears.
+        if val is None:
+            return None
+        return {"multi_select": [{"name": str(x)} for x in val]}
     if ptype == "date":
         return {"date": ({"start": val} if val else None)}
     if ptype == "url":
@@ -577,6 +599,10 @@ def _upsert_db(token, spec, inner_page_id, dry):
     types = {k: v["type"] for k, v in schema["properties"].items()}
     title_prop = next((k for k, t in types.items() if t == "title"), None)
     key = spec.get("key", title_prop)
+    if not key or key not in types:
+        raise RuntimeError(
+            f"upsert key {key!r} not a property of db {db_id} "
+            f"(schema: {sorted(types)}) — fix spec.key")
 
     existing = _query_db(token, db_id)
     index = {}
@@ -587,7 +613,12 @@ def _upsert_db(token, spec, inner_page_id, dry):
 
     created = updated = failed = 0
     for row in spec.get("rows", []):
-        kv = str(row.get(key, ""))
+        raw_key = row.get(key)
+        if raw_key is None or str(raw_key).strip() == "":
+            print(f"    WARN skip row with empty key {key!r}: {row!r:.80}")
+            failed += 1
+            continue
+        kv = str(raw_key)
         props = {}
         for pname, pval in row.items():
             if pname not in types:

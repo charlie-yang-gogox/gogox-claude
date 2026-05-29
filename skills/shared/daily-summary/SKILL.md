@@ -851,8 +851,10 @@ Map the interactive sections onto the payload (full schema + block DSL in
   numbers via `rich` segments with `"b": true`), the 6-row detail `table`, and
   the inner-page `link`.
 - **4d-5 (📈 12 週趨勢)** → one `sections[]` entry. `locate_prefix = "📈 12 週趨勢"`,
-  `heading_text = "📈 12 週趨勢"`, `blocks` = the month-bucket `table` (bold the
-  current row's cells by wrapping each cell string in `**…**`).
+  `heading_text = "📈 12 週趨勢"`, `blocks` = the month-bucket `table`. Bold the
+  current (last) row's cells **structurally** — pass each as `{"t": cell, "b": true}`
+  instead of a plain string (the helper does NO markdown, so `**…**` would render
+  literal asterisks; see the table-cell note in `notion_rest.py`'s DSL docs).
 - **4d-3 (Weekly PRs / Weekly Metrics)** → two `databases[]` entries. Pass the
   configured id plus `db_title` + `config_key` so a stale id self-heals by title
   search. `key = "Title"` for Weekly PRs, `key = "Week"` for Weekly Metrics.
