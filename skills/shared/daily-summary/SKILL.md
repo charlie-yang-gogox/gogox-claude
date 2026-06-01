@@ -223,19 +223,28 @@ that path** — do not mix.
   Do NOT depend on OAuth here. The hosted `notion-hosted` OAuth token lapses
   periodically (refresh-token rotation + nights the Mac is asleep / the 23:30 job
   is missed), which silently broke past headless runs — they produced only the
-  stdout table and skipped all Notion writes. Instead, write **4b via the bundled
-  REST helper** using the long-lived internal integration token (`ntn_...`), which
-  never expires:
+  stdout table and skipped all Notion writes. Instead, run **BOTH 4b and 4d via
+  the bundled REST helper** using the long-lived internal integration token
+  (`ntn_...`), which never expires:
 
   ```bash
+  # 4b — Work Items (one row per day)
   python3 ~/.claude/skills/daily-summary/notion_rest.py create-work-items <rows.json>
+  # 4d — dashboard (📊 / 📈 section-replace + Weekly PRs / Weekly Metrics upsert)
+  python3 ~/.claude/skills/daily-summary/notion_rest.py refresh-dashboard <dashboard-payload.json>
   ```
 
-  See 4b **"Headless variant"** for how to build `<rows.json>`. In headless mode,
-  **4d is SKIPPED** (dashboard refresh stays interactive-only — unchanged trade-off;
-  the Work Items write is the primary deliverable). The helper writes PROPERTIES
-  ONLY (no block content), so it cannot touch the dashboard charts / `column_list`
-  / `child_database` blocks — the over-delete hazard in section B does not apply to it.
+  See 4b **"Headless variant"** for `<rows.json>` and 4d **"Headless variant"**
+  for `<dashboard-payload.json>`. The helper still computes nothing and generates
+  no text — YOU (the headless LLM, which IS running; only the OAuth MCP is
+  missing) build both JSON files: every number, every zh-TW AI 草稿 / AI 建議.
+  The helper does only the mechanical Notion REST I/O. It is **chart-boundary
+  safe**: section-replace collects blocks from the matched H2 only until the first
+  barrier block (`heading_*` / `column_list` / `child_database` / `child_page` /
+  `synced_block` / `table_of_contents`), so the 🔧 Debug View `column_list`
+  directly below 📈 is never crossed (see section B for the same rule). Always
+  build the payload, then **run `refresh-dashboard --dry-run` first** and confirm
+  the printed delete/append plan before the real call.
 
 - **Neither available** (headless AND the `ntn_` token cannot be resolved — file
   missing / integration revoked): output the 4a table to stdout, then emit the
@@ -281,9 +290,10 @@ about the missing token; it is irrelevant to interactive runs.
 
 > **Why not OAuth headless:** `mcp.notion.com/mcp` only accepts claude.ai-issued
 > OAuth tokens, and those lapse. The `ntn_` internal-integration token has no
-> expiry, so the nightly job never needs re-auth. (Interactive runs still use OAuth
-> because re-auth there is a trivial `/mcp` away, and OAuth gives the high-level
-> tools 4d needs.)
+> expiry, so the nightly job never needs re-auth. Both 4b and 4d now run over the
+> `ntn_` REST helper headless (the helper hand-builds blocks instead of relying on
+> the OAuth Markdown tools). Interactive runs still use the OAuth Markdown tools
+> for 4d because they're already loaded and re-auth there is a trivial `/mcp` away.
 
 **B. Chart-preservation rule — do NOT touch column_list / child_database / child_page / embed / image / video / toggle / synced_block**
 
@@ -457,11 +467,13 @@ multi_select options for unseen IDs.
 
 #### 4d. Refresh work record top sections (Phase 2 dashboard)
 
-> **Headless skip:** if `mcp__claude_ai_Notion__*` is absent (launchd run), SKIP
-> all of 4d and emit `> 4d dashboard skipped (headless — refresh on next interactive run)`.
-> 4d requires the high-level OAuth Markdown tools (section-replace + chart-boundary
-> handling) that the `ntn_` REST helper deliberately does not implement. Dashboard
-> refresh is interactive-only by design.
+> **Headless path (launchd):** if `mcp__claude_ai_Notion__*` is absent, do NOT
+> skip 4d. Build a `<dashboard-payload.json>` (see **"4d Headless variant"** at
+> the end of this 4d block) carrying every number + zh-TW AI text, then run
+> `notion_rest.py refresh-dashboard <payload> --dry-run` (confirm the plan) and
+> the real call. The helper handles section-replace + chart-boundary safety +
+> DB upsert + stale-id self-heal. The interactive OAuth-Markdown path below is
+> still used when those tools ARE loaded.
 
 After writing Work Items, regenerate two H2 sections on the parent page plus one inner detail page:
 **📊 本週交付** (KPI table + conditional ⚠️ action callout + inner-page link),
@@ -820,6 +832,50 @@ Updated work record (page_id={user_config.notion.parent_page_id})
 not skip the rest. If all UI rewrites fail, log error and exit 0 — the
 Work Items write (4b) already succeeded and is the primary deliverable;
 section refresh is best-effort.
+
+##### 4d Headless variant (REST + `ntn_` token) — use when `mcp__claude_ai_Notion__*` is ABSENT
+
+The interactive steps above use the OAuth Markdown tools' `update_content`
+(markdown in, section-replace handled for you). Headless, you instead **build a
+single `dashboard-payload.json`** with the SAME computed content and hand it to
+the REST helper, which does the block-level plumbing. You (the LLM) still own
+every number and every zh-TW string (AI 草稿, AI 建議) — the helper has no LLM.
+
+Map the interactive sections onto the payload (full schema + block DSL in
+`notion_rest.py`'s module docstring — read it before building):
+
+- **4d-2 (📊 本週交付)** → one `sections[]` entry. `locate_prefix = "📊 本週交付"`,
+  `heading_text` = the full computed H2 (with the `W{NN} · … · Day N/5` suffix
+  rules from 4d-2). `blocks` in order: AI 草稿 `callout` (emoji `🧠`,
+  `gray_background`), Hero KPI `callout` (emoji `📊`, `blue_background`, bold
+  numbers via `rich` segments with `"b": true`), the 6-row detail `table`, and
+  the inner-page `link`.
+- **4d-5 (📈 12 週趨勢)** → one `sections[]` entry. `locate_prefix = "📈 12 週趨勢"`,
+  `heading_text = "📈 12 週趨勢"`, `blocks` = the month-bucket `table`. Bold the
+  current (last) row's cells **structurally** — pass each as `{"t": cell, "b": true}`
+  instead of a plain string (the helper does NO markdown, so `**…**` would render
+  literal asterisks; see the table-cell note in `notion_rest.py`'s DSL docs).
+- **4d-3 (Weekly PRs / Weekly Metrics)** → two `databases[]` entries. Pass the
+  configured id plus `db_title` + `config_key` so a stale id self-heals by title
+  search. `key = "Title"` for Weekly PRs, `key = "Week"` for Weekly Metrics.
+  Build `rows[]` exactly per the 4d-3 Section A / Section B property mappings
+  (the helper coerces each value to the live schema's type; pass `Ticket` on
+  Weekly PRs as `{"text": "CAF-XXX", "url": "<pr_url>"}` for the hyperlink). The
+  helper upserts (match by key → update, else create); old weeks accumulate.
+- **4d-4 (Daily Stats)** → omit. Still manual-recreation-only.
+
+Then:
+
+```bash
+python3 ~/.claude/skills/daily-summary/notion_rest.py refresh-dashboard /tmp/dashboard-payload.json --dry-run
+# confirm: 📈 plan shows it deletes ONLY [table, paragraph] (never column_list); DBs resolve
+python3 ~/.claude/skills/daily-summary/notion_rest.py refresh-dashboard /tmp/dashboard-payload.json
+```
+
+`refresh-dashboard` is best-effort and always exits 0 (4b is the primary
+deliverable). The `## 📋 本週 PRs` / `## 📊 12 週指標` heading + DB-embed blocks
+on the inner page persist untouched — only their DB rows are upserted, so the
+inner page needs no section-replace headless.
 
 ### Step 5: Edge Cases
 
