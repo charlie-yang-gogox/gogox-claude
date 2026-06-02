@@ -5,3 +5,19 @@ deps_install: flutter pub get
 test_cmd: /check-test --all --fix
 format_cmd: /format --skip-commit
 ide_open_hint: "run /work <ticket-id> to start, or /list-worktrees to see all active worktrees"
+
+# --- /ui-tweak skill (UI-Designer mode) ---
+# Build-only: confirm the change compiles; no deploy/run/screenshot.
+# Generic default (no flavor). Flavored repos override `ui_build_cmd` in <repo>/.gogox-claude.yaml
+# (e.g. `--flavor stag --target-platform android-arm64`) to avoid the false "Gradle build failed to
+# produce an .apk file" tail and skip the 3x fat-APK assembly. The gate keys on exit code, not log
+# text, so the false tail is harmless either way (verify.md Step 1).
+ui_build_cmd: flutter build apk --debug   # or `flutter build ios --debug --simulator` on iOS targets
+
+# Phase-1 preview (R18): build the change INTO a device so the designer can SEE it on a real screen
+# (NOT build-only anymore). `{device}` is substituted by /ui-tweak:preview after the device cascade
+# (boot an emulator/simulator → else any connected device incl. physical → else honest skip).
+# `flutter run` covers BOTH Android emulators and iOS simulators, so one template serves both.
+# Device discovery uses `flutter devices` / boot uses `flutter emulators --launch <id>`.
+# Repo override (e.g. flavor) lives in <repo>/.gogox-claude.yaml.
+ui_preview_cmd: flutter run -d {device} --debug   # repos add their flavor, e.g. `--flavor stag`

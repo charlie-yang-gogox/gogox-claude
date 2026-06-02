@@ -5,3 +5,7 @@ deps_install: ""  # varies per project — override in repo .gogox-claude.yaml i
 test_cmd: bundle exec fastlane ios pr
 format_cmd: swiftformat . && swiftlint --fix --quiet && swiftlint --strict
 ide_open_hint: "open the .xcworkspace in Xcode"
+
+# --- /ui-tweak skill (UI-Designer mode) ---
+# Build-only: confirm the change compiles; no deploy/run/screenshot.
+ui_build_cmd: xcodebuild -workspace *.xcworkspace -scheme <scheme> -destination 'platform=iOS Simulator,name=iPhone 15' build

@@ -130,6 +130,91 @@ for cat in "${CATEGORIES[@]}"; do
   fi
 done
 
+# PreToolUse hook for the /ui-tweak skill (UI-Designer mode). Registered in
+# ~/.claude/settings.json so the harness runs skills/_lib/ui_guard.py before
+# every Edit|Write|MultiEdit|NotebookEdit|Bash. The guard is a strict no-op
+# unless a `.dev/ui-designer-mode.json` sentinel is present (written by the
+# skill), so this registration has ZERO effect on normal /dev or /port work.
+# Idempotent: re-running install never duplicates the entry or clobbers other hooks.
+HOOK_STATUS="$(SETTINGS="$HOME/.claude/settings.json" GUARD="$SKILLS_DIR/_lib/ui_guard.py" python3 - <<'PY'
+import json, os, sys
+
+settings_path = os.environ["SETTINGS"]
+guard = os.environ["GUARD"]
+command = 'python3 "%s"' % guard
+matcher = "Edit|Write|MultiEdit|NotebookEdit|Bash"
+
+try:
+    with open(settings_path) as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        print("skip: settings.json is not a JSON object — leaving untouched"); sys.exit(0)
+except FileNotFoundError:
+    data = {}
+except Exception as e:
+    print("skip: could not parse settings.json (%s) — leaving untouched" % e); sys.exit(0)
+
+hooks = data.setdefault("hooks", {})
+pre = hooks.setdefault("PreToolUse", [])
+if not isinstance(pre, list):
+    print("skip: hooks.PreToolUse is not a list — leaving untouched"); sys.exit(0)
+
+# settings.local.json takes precedence over (and can shadow) settings.json. If
+# the user keeps their hooks there, a guard registered only in settings.json may
+# never fire — the hard wall would be silently absent while the SKILL believes it
+# is present (Step 6 greps settings.json and would report a false 'registered').
+# We still register into settings.json (the canonical file the SKILL checks), but
+# WARN loudly if settings.local.json already carries a PreToolUse block, so the
+# user knows to keep the ui_guard hook in settings.json (not local).
+local_path = os.path.join(os.path.dirname(settings_path), "settings.local.json")
+local_warning = ""
+try:
+    with open(local_path) as lf:
+        ldata = json.load(lf)
+    lpre = ((ldata or {}).get("hooks") or {}).get("PreToolUse")
+    if isinstance(lpre, list) and lpre:
+        has_guard = any(
+            "ui_guard.py" in (h.get("command") or "")
+            for e in lpre for h in (e or {}).get("hooks", []) or [])
+        if not has_guard:
+            local_warning = (
+                " WARNING: settings.local.json has its own PreToolUse hooks and "
+                "takes precedence — the ui_guard hook MUST live in settings.json "
+                "(where it is registered); do not move hooks to settings.local.json "
+                "or the /ui-tweak guard may never fire.")
+except FileNotFoundError:
+    pass
+except Exception:
+    pass
+
+# Already registered? (match on the guard path, regardless of matcher edits)
+for entry in pre:
+    for h in (entry or {}).get("hooks", []) or []:
+        if "ui_guard.py" in (h.get("command") or ""):
+            print("ok: ui_guard hook already registered" + local_warning); sys.exit(0)
+
+pre.append({
+    "matcher": matcher,
+    "hooks": [{"type": "command", "command": command}],
+})
+
+# Backup then write pretty.
+try:
+    if os.path.exists(settings_path):
+        with open(settings_path) as f:
+            os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+        with open(settings_path + ".bak", "w") as b:
+            b.write(open(settings_path).read())
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+    with open(settings_path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    print("ok: registered ui_guard PreToolUse hook" + local_warning)
+except Exception as e:
+    print("skip: could not write settings.json (%s)" % e)
+PY
+)"
+
 if git -C "$REPO_DIR" rev-parse --short HEAD >/dev/null 2>&1; then
   COMMIT="$(git -C "$REPO_DIR" rev-parse --short HEAD)"
 else
@@ -186,6 +271,13 @@ fi
 if [ "$INSTALLED_SKILL_LIB" = true ]; then
   echo "Skill helpers — called at runtime by skills:"
   echo "  ~/.claude/skills/_lib/"
+  echo
+fi
+
+if [ -n "${HOOK_STATUS:-}" ]; then
+  echo "UI-Designer guard (/ui-tweak):"
+  echo "  $HOOK_STATUS"
+  echo "  PreToolUse hook -> ~/.claude/skills/_lib/ui_guard.py (no-op unless .dev/ui-designer-mode.json present)"
   echo
 fi
 
