@@ -1,6 +1,6 @@
 ---
 name: ui-tweak
-description: "UI-Designer-safe codebase edit. Given a UI change described as free text, a Linear/Jira ticket (ID or URL), and/or a Figma link, it edits the codebase for UI-only changes (visual values, layout, structure) and builds to confirm it compiles — never touching logic or build config (a PreToolUse hard-block hook enforces this physically at the file level; an independent 2-judge panel blocks logic changes inside UI files). Use when a designer says 'make the order-page button 5dp bigger', 'change this color', 'increase the padding', 'reorder these sections', passes a ticket like CAF-1234 that describes a UI tweak, or provides a Figma frame to match."
+description: "UI-Designer-safe codebase edit. Given a UI change described as free text, a Linear/Jira ticket (ID or URL), and/or a Figma link, it edits the codebase for UI-only changes (visual values, layout, structure) and builds to confirm it compiles — never touching logic or build config. There is no edit-time hook: a build (Phase 1) plus an independent decorrelated 2-judge panel (Phase 2, both judges always run) catch any logic/behavior change and revert the whole run before anything is committed. Use when a designer says 'make the order-page button 5dp bigger', 'change this color', 'increase the padding', 'reorder these sections', passes a ticket like CAF-1234 that describes a UI tweak, or provides a Figma frame to match."
 ---
 
 <!--
@@ -26,8 +26,8 @@ only ever types `/ui-tweak`; everything else is internal.
 - `<source>` is **polymorphic**: free text (`make the order-page button 5dp taller`), a Linear/Jira ticket
   (`CAF-1234` / a ticket URL — the richest source; often already names the screen, target value, and
   Figma frame), or implicitly carries a trailing `[figma-url]` to ground the exact target.
-- The pipeline, stages, markers, guard, judges, and every wayfinding card are specified in
-  `plans/ui-tweak-v2-build-spec.md` and implemented in `commands/design/ui-tweak/{ff,apply,verify,start}.md`.
+- The pipeline, stages, markers, judges, and every wayfinding card are implemented in
+  `commands/design/ui-tweak/{ff,start,apply,preview,audit}.md`.
 
 ## What to do when invoked
 
@@ -55,31 +55,24 @@ plain-language cards.
 
 ## The guarantee (read this first)
 
-The skill accepts **any UI-form change** and is built so a designer **cannot break logic**, on two
-levels:
+The skill accepts **any UI-form change** and is built so a designer **cannot ship broken logic**.
+There is **no edit-time hook** — enforcement is deferred to two checks that run at different times:
 
-- **HARD — file-level containment (the `PreToolUse` hook `skills/_lib/ui_guard.py`).** While armed it
-  *physically* blocks any write to a non-UI/logic file (ViewModels, Repositories, `data/`/`domain/`/
-  `network/`/DI, build config, manifests, tests, generated code), any edit outside the repo or
-  through a symlink, **creating any new source file**, and **all Bash**. The unbreakable floor: a
-  designer can only ever touch existing UI-eligible files.
-- **BEST-EFFORT — no-logic-inside-UI-files (build + a 2-judge panel, across two phases R18).** Inside
-  a UI file (Compose/SwiftUI/Flutter share UI+logic syntax) no static rule perfectly tells UI from
-  logic, so two checks run at **different times**: (1) the **build** runs in **Phase 1
-  (`/ui-tweak:preview`)** when the designer asks to see it — it builds the change INTO a device and
-  reverts anything that won't compile; (2) the **decorrelated 2-judge panel** (`ui-verify-agent`,
-  sonnet UI-lens + `dev-reviewer`, opus behavior-lens, with a deterministic structural pre-pass) runs
-  in **Phase 2 (`/ui-tweak:audit`)** when the designer ships — ONCE, on the final cumulative diff, and
-  **reverts on any logic/behavior change (unanimous CLEAR required) before anything is committed or a
-  PR is opened**. Iteration stays free (apply only, no build); a build or audit failure is treated as
-  the agent's implementation problem and **auto-repaired in `apply` (max 3 attempts)** before the
-  designer is ever shown an "ask an engineer" card. The promise inside a UI file is "you only ever
-  make UI changes; the panel is the safety net at the gate".
-- **DEFAULT policy is `strict`** (token-level value-only hard gate) for the designer alias — this is
-  what keeps the *un-audited working-tree diff safe while iterating*: strict proves value-only at edit
-  time without an LLM. `open` (accept any UI-form change, logic caught only by the panel) is per-repo
-  / power-user opt-in; under `open` the diff is genuinely un-audited until ship, and the panel still
-  gates the PR.
+- **Build (Phase 1, `/ui-tweak:preview`).** When the designer asks to see it, the change is built
+  INTO a device; anything that won't compile is reverted.
+- **Decorrelated 2-judge panel (Phase 2, `/ui-tweak:audit`).** When the designer ships, BOTH judges
+  run ONCE on the final cumulative diff: `ui-verify-agent` (sonnet, UI-lens) + `dev-reviewer` (opus,
+  behavior-lens), plus a deterministic structural pre-pass. **Unanimous CLEAR is required**; any
+  logic/behavior change — a non-UI file that should never have been touched, OR logic edited inside
+  an otherwise-UI file — reverts the whole run **before anything is committed or a PR is opened**.
+  Because nothing upstream proves the diff is value-only, the panel **always runs both judges**;
+  neither is skipped.
+
+Iteration stays free (apply only, no build). A build or audit failure is treated as the agent's
+implementation problem and **auto-repaired in `apply` (max 3 attempts)** before the designer is ever
+shown an "ask an engineer" card. The working-tree diff is **un-audited while iterating** — the panel
+is the safety net at the gate, not at edit time. The promise: "you only ever make UI changes; the
+build and the panel catch anything that isn't, before it ships."
 
 **Two phases, two designer decisions (R18).** Iteration is build-free — adjust as often as you like
 for free. **Phase 1**: pick "I'm done — show me" and the change is **built + launched onto a real

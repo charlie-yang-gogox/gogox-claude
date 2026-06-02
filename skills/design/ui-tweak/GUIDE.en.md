@@ -37,20 +37,16 @@ ticket status.**
 
 ## 2. Prerequisites (check before your first run)
 
-1. **Run `install.sh` first**: this registers a "guard" program (a hook) into Claude Code's settings
-   file `~/.claude/settings.json`. Without it, the skill **refuses to work** (the hard guarantee is
-   missing).
-2. **After registering the hook, restart your Claude Code session** so it takes effect — the hook is
-   loaded at session start, so a fresh install without a restart isn't active yet.
-3. **Use it inside the actual App project folder**, not inside this tooling repo — i.e. inside the
+1. **Run `install.sh` first**: this links the skill / commands / agents into Claude Code. **It no
+   longer installs any hook and leaves no "guard" in your settings file** (`~/.claude/settings.json`)
+   — safety is enforced instead by a build (Phase 1) plus a 2-judge panel (Phase 2) that run before
+   you ship, not at edit time (see "The guarantee" below).
+2. **Use it inside the actual App project folder**, not inside this tooling repo — i.e. inside the
    Android / Flutter / iOS code project. That project's root needs a `.gogox-claude.yaml` (tells the
    skill which platform it is and which commands compile it / build it onto a device).
-4. **To see it on a device**: either have an emulator/simulator you can boot, or connect a physical
+3. **To see it on a device**: either have an emulator/simulator you can boot, or connect a physical
    phone first. If neither exists, that's fine — it will honestly tell you "I couldn't find a device
    to show it on, but I confirmed it compiles", and you decide whether to ship anyway.
-
-> Reminder: hook, guard, and "guard program" all mean the same thing — a small program that checks
-> before Claude writes any file and blocks the ones it shouldn't touch.
 
 ---
 
@@ -124,49 +120,30 @@ should go to an engineer**".
 
 ---
 
-## 5. Safety guarantees (plain language — two layers, two moments)
+## 5. Safety guarantees (plain language)
 
-The design goal: **make it impossible for a designer to break logic by accident.** Protection comes at
-two strengths:
+The design goal: **make it hard for a designer to break logic by accident.** There is **no edit-time
+guard** — protection is deferred to two checks that run before anything ships:
 
-**Layer 1: hard guarantee (ironclad, no AI judgment)**
-- It **physically cannot touch non-UI files**: ViewModels, Repositories, data/network layers, DI,
-  build config, manifests, tests, generated files — these are **unwritable** during the edit window.
-- During the edit window, **no terminal (Bash) command can run at all** — build tools are engines that
-  run arbitrary code, and there's no such thing as a "safe command allowlist", so it's all blocked.
-
-**Layer 2: best-effort (AI + compile), run at two different moments:**
-- The **compile** runs when you pick "show me" (Phase 1); if it doesn't compile, it's reverted.
-- The **independent AI auditors (two, with different lenses)** run when you pick "Ship it", **once**,
-  just before the PR opens; they read the whole diff to decide whether logic was touched. **If either
-  one flags logic, the whole change is sent back for the agent to redo (never silently shipped).**
+- **Compile (Phase 1)** runs when you pick "show me"; if it doesn't compile, it's reverted.
+- **Two independent AI auditors, with different lenses (Phase 2)** run when you pick "Ship it",
+  **once**, just before the PR opens; they read the whole diff and decide whether logic was touched.
+  **Both must pass — if either flags logic (a non-UI file that shouldn't have changed, OR logic
+  edited inside a UI file), the whole change is sent back for the agent to redo, never silently
+  shipped.** Because nothing upstream proves the diff is values-only, **both auditors always run** —
+  neither is skipped.
 
 > Why put the logic check at the very end, once? Because while you iterate you don't need to burn an
 > AI audit every time — running it once, right before shipping, is the most economical, and it audits
-> exactly the version that will ship. In the **default `strict` mode**, the working tree is locked by
-> the guard to "values only" while you iterate, so skipping the audit mid-iteration is safe.
+> exactly the version that will ship. The working tree is **un-audited while you iterate** — the
+> auditors are the safety net at the gate, not at edit time.
 
-**In one sentence:**
-Ironclad = "can't touch non-UI files" + "no terminal commands during the edit". "No logic inside a UI
-file" is **best-effort** — backed by the pre-ship AI audit + compile, not a physical impossibility —
-so **you should still only make UI changes**.
+**In one sentence:** "no logic changes" is **best-effort** — backed by the pre-ship dual AI audit +
+compile, not a physical impossibility — so **you should only make UI changes**.
 
 ---
 
-## 6. `strict` vs `open` modes
-
-| Mode | Allows | How it's gated | When |
-|---|---|---|---|
-| **strict (designer default)** | values only, or pure reorder (same lines, new order) | the guard hard-checks at the character level and only lets value changes through (locked at edit time, no AI needed) | everyday designer use. Safest — would rather over-block than let something wrong through |
-| **open (power-user / per-repo opt-in)** | any "UI-form" change: values, layout, reorder, add/remove UI elements | the guard only blocks non-UI files; inside a UI file it relies entirely on the pre-ship AI audit + compile | larger structural changes, for people who accept "the working tree is un-audited until ship" |
-
-Quick rule: **designers default to `strict` (safest, values / pure reorder only).** `strict` blocks
-some otherwise-reasonable structural UI changes — that's the price of certainty; switching to `open`
-when you hit that is a per-repo / power-user choice, not the default.
-
----
-
-## 7. What gets blocked (examples)
+## 6. What gets blocked (examples)
 
 These are blocked; the skill stops and tells you why:
 
@@ -183,13 +160,13 @@ These are blocked; the skill stops and tells you why:
 
 ---
 
-## 8. Limits & known weak spots
+## 7. Limits & known weak spots
 
 - **Flutter / SwiftUI / Compose mixed files are hardest to tell apart**: UI and logic live in the same
   file with the same syntax, and no static rule perfectly separates "UI vs logic".
-- So in **`open` mode the guarantee inside a UI file is "pre-ship review + compile" level**, not
-  physical impossibility. It defends against **accidental breakage**, not against someone deliberately
-  trying to bypass it. (`strict` doesn't have this weakness — it's locked to values-only at edit time.)
+- Because there is **no edit-time guard**, the guarantee is **"pre-ship dual review + compile" level**,
+  not physical impossibility. It defends against **accidental breakage**, not against someone
+  deliberately trying to bypass it.
 - **Seeing it needs a device**: with no emulator / physical phone, it can only confirm "it compiles",
   not show you the screen — connect a device and re-run, or ship and let an engineer look.
 - Android is the cleanest case (resource files are clearly separated); for Flutter / SwiftUI, changes
@@ -197,23 +174,7 @@ These are blocked; the skill stops and tells you why:
 
 ---
 
-## 9. Troubleshooting
-
-**Most important: a prior run was interrupted, so now every command is blocked**
-- Cause: during the edit window the skill drops an "armed" marker file (the sentinel). If the previous
-  run was interrupted (crash, Ctrl-C, context reset), that marker is left in the "armed" state, and the
-  guard then blocks even the simplest command on the next run.
-- Normal fix: re-run `/ui-tweak` — its first step detects and clears the stale marker itself.
-- Manual fix (when stuck): delete the marker file.
-  ```
-  rm <project-root>/.dev/ui-designer-mode.json
-  ```
-
-**Hook not taking effect? (changes aren't blocked, or the skill says guard MISSING)**
-- Fix: **re-run `install.sh`**, then **restart the Claude Code session**.
-- Note: the hook must be registered in `~/.claude/settings.json`, not `settings.local.json` (the
-  latter overrides the former, creating a "looks installed but the guard isn't active" illusion). When
-  in doubt, re-run `install.sh` and read its notices.
+## 8. Troubleshooting
 
 **"Show me" can't open a device / no device found**
 - It tries, in order: boot an emulator/simulator → use an already-connected device (incl. physical) →
@@ -227,12 +188,12 @@ These are blocked; the skill stops and tells you why:
 
 ---
 
-## 10. Where it ends (important)
+## 9. Where it ends (important)
 
 `/ui-tweak`'s terminal is a **draft PR**, and it only gets there **when you personally pick "Ship it"**:
 
 - Iterating, or picking "show me" → nothing is shipped; the change just stays in your working tree.
 - Picking "Ship it" → logic check → commit → open a **draft PR** + leave a link on the ticket.
 - **It never auto-merges, never flips draft → ready, never changes ticket status.** The human review
-  step is kept on purpose — in `open` mode "no logic inside a UI file" is only best-effort, so a human
-  must do the final check on the PR.
+  step is kept on purpose — with no edit-time guard, "no logic changes" is only best-effort (pre-ship
+  dual audit + compile), so a human must do the final check on the PR.

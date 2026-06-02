@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline (R18) — build + install + launch the change onto a device, then STOP and hand the device to the designer to look at and drive THEMSELVES. The agent never screenshots, taps, navigates, or grants permissions — its job ends the moment the app is up. Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (boot an emulator/simulator → else any connected device incl. physical → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators). Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Runs UNARMED. Internal stage — designers run /ui-tweak. Spec: §4.4b."
+description: "Phase-1 stage of the /ui-tweak pipeline (R18) — build + install + launch the change onto a device, then STOP and hand the device to the designer to look at and drive THEMSELVES. The agent never screenshots, taps, navigates, or grants permissions — its job ends the moment the app is up. Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (boot an emulator/simulator → else any connected device incl. physical → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators). Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -14,8 +14,8 @@ description: "Phase-1 stage of the /ui-tweak pipeline (R18) — build + install 
 > old "build-only, can't show a screen" terminal (R18). Reached only when
 > `.dev/ui-tweak/preview-requested` exists (designer picked "I'm done — show me" on card C1). It does
 > NOT run the LLM logic audit — that is Phase 2 (`/ui-tweak:audit`), gated behind the designer
-> confirming the look. Runs while **unarmed** (build/git/device tooling need a
-> shell). Build is folded in here — `flutter run` builds + installs + launches in one step.
+> confirming the look. Build is folded in here — `flutter run` builds + installs + launches in one
+> step.
 
 ## Inputs
 
@@ -37,8 +37,8 @@ BASE=$(cat "$WT/.dev/ui-tweak/base_ref")
 git diff "$BASE" --name-only > "$WT/.dev/ui-tweak/audit-files"
 ```
 
-Confirm the sentinel is **disarmed**. Resolve `ui_preview_cmd` / `ui_build_cmd`: prefer a repo
-override in `<repo>/.gogox-claude.yaml`, else the platform default.
+Resolve `ui_preview_cmd` / `ui_build_cmd`: prefer a repo override in `<repo>/.gogox-claude.yaml`,
+else the platform default.
 
 ## Step 1 — device cascade (a → b → c, R18)
 

@@ -1,6 +1,6 @@
 ---
 name: audit
-description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — the deferred LLM logic gate. Reached only after the designer confirms the look and picks 'Ship it' (R18). Formats, then runs the decorrelated dual-judge panel (ui-verify-agent sonnet UI-lens + dev-reviewer opus behavior-lens, with a deterministic structural pre-pass) ONCE on the final cumulative diff (base_ref → working tree); BOTH must return CLEAR. Risk-tiered: strict + no-MIXED-file diffs run only ui-verify-agent. CLEAR → writes .dev/ui-verify-pass.md (Status: CLEAR) → orchestrator advances to commit. BLOCKED → writes repair-context + bumps repair-count → orchestrator routes back to /ui-tweak:apply for an agent UI-only fix (max 3, then engineer card Ce); no standalone C2 card. Runs UNARMED. Internal stage — designers run /ui-tweak. Spec: §4.4a."
+description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — the deferred LLM logic gate, and the SOLE logic enforcement in the skill (there is no edit-time hook). Reached only after the designer confirms the look and picks 'Ship it' (R18). Formats, then runs the decorrelated dual-judge panel (ui-verify-agent sonnet UI-lens + dev-reviewer opus behavior-lens, with a deterministic structural pre-pass) ONCE on the final cumulative diff (base_ref → working tree); BOTH must return CLEAR. CLEAR → writes .dev/ui-verify-pass.md (Status: CLEAR) → orchestrator advances to commit. BLOCKED → writes repair-context + bumps repair-count → orchestrator routes back to /ui-tweak:apply for an agent UI-only fix (max 3, then engineer card Ce); no standalone C2 card. Internal stage — designers run /ui-tweak."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -11,12 +11,13 @@ description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — th
 > built the change onto a device and proved it compiles; this stage proves it changes **no logic**,
 > ONCE, on the final cumulative diff, right before anything is committed or a PR is opened. It is the
 > first link in the **pre-PR check series** (audit → commit → pr → review). Reached only on the
-> deliver path (`.dev/ui-tweak/deliver` exists, set when the designer picks "Ship it"). Runs while
-> **unarmed**.
+> deliver path (`.dev/ui-tweak/deliver` exists, set when the designer picks "Ship it"). Because the
+> skill has no edit-time hook, this panel is the **only** thing standing between a logic change and a
+> commit — so it always runs BOTH judges.
 
 ## Inputs
 
-The final working-tree diff relative to `base_ref`; the disarmed sentinel's `policy`; the platform.
+The final working-tree diff relative to `base_ref`; the platform.
 
 ## Step 0a — misdirect guard (R5/D11)
 
@@ -33,9 +34,7 @@ grep -q '^Status: PASS' "$WT/.dev/ui-tweak/build-pass" 2>/dev/null || { echo "FA
 BASE=$(cat "$WT/.dev/ui-tweak/base_ref")
 ```
 
-Confirm the sentinel is **disarmed** (audit needs a shell + spawns agents; it must run unarmed).
-Determine the `policy` (read the disarmed sentinel) and whether the diff touches any **MIXED** file
-(`*.kt` / `*.swift` / `*.dart`): `git diff "$BASE" --name-only`.
+Enumerate the changed files for the judges' context: `git diff "$BASE" --name-only`.
 
 ## Step 1 — format FIRST (part of the pre-PR series)
 
@@ -43,26 +42,23 @@ Run `/format --skip-commit`. The formatter may touch the changed files (whitespa
 small non-whitespace hunks; auditing AFTER format means the judges see exactly what will be committed
 — no separate post-format re-audit is needed (the single audit below covers the final tree).
 
-## Step 2 — dual judge, decorrelated (R6) + risk-tiered (R15), on the FINAL cumulative diff
+## Step 2 — dual judge, decorrelated (R6), on the FINAL cumulative diff
 
 Spawn judges with the **Agent tool**, inputs `base=$BASE` (the pre-edit SHA, NOT HEAD) + platform.
 The judges audit the **final cumulative diff** `git diff "$BASE"` (everything from the original
 baseline through every correction and the format pass — this is what actually ships). The judges are
 **read-only by tool grant** (no Write) and **return** their verdict text — this stage persists it.
 
-- **Risk tier (R15)**: if `policy == strict` **and** the diff contains **no MIXED file** (the hook's
-  `value_only_ok` already proved value-only inside PURE_UI files) → run **only `ui-verify-agent`**;
-  skip `dev-reviewer` (the hook is already the stronger guarantee — a second LLM is pure cost).
-- **Otherwise** (any MIXED file in the diff, or `policy == open`) → run **both** judges in parallel
-  (one message, two Agent calls). They are decorrelated by model tier (`ui-verify-agent` = sonnet,
-  `dev-reviewer` = opus) so their misses are not positively correlated; `dev-reviewer` additionally
-  runs a deterministic structural pre-pass (added imports / new call heads / renamed identifiers /
-  changed `@+id`) that BLOCKs non-inert-UI structural edits regardless of how plausible they read.
+**Always run BOTH judges in parallel** (one message, two Agent calls). Since the skill has no
+edit-time hook, there is no upstream proof that the diff is value-only — so neither judge may be
+skipped. They are decorrelated by model tier (`ui-verify-agent` = sonnet, `dev-reviewer` = opus) so
+their misses are not positively correlated; `dev-reviewer` additionally runs a deterministic
+structural pre-pass (added imports / new call heads / renamed identifiers / changed `@+id`) that
+BLOCKs non-inert-UI structural edits regardless of how plausible they read.
 
 **Persist the verdicts** from each judge's returned text:
 - `ui-verify-agent` text → `.dev/ui-verify-pass.md`
-- `dev-reviewer` text → `.dev/dev-reviewer-pass.md` (omit when skipped by the risk tier; record
-  `Status: CLEAR (skipped — strict PURE_UI-only)` so the adjudication is unambiguous).
+- `dev-reviewer` text → `.dev/dev-reviewer-pass.md`
 
 Each persisted file's first line must be `Status: CLEAR | BLOCKED`.
 

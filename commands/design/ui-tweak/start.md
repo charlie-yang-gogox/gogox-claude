@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Stage 1 of the /ui-tweak pipeline (DELIVER path only) — environment prep before a draft PR: resolve the platform profile, fetch+cache the ticket (read-only), and create the ../<ticket-id> worktree via /add-worktree. The default designer path (leave a clean diff) never needs this — there is no worktree. Invoked by the orchestrator only when the deliver marker exists and no worktree is on the ticket yet; designers never type it directly (a misdirect guard routes them back to /ui-tweak). Does NOT touch ticket status/assignee (no /_ticket-init). Spec: §4.1."
+description: "Stage 1 of the /ui-tweak pipeline (DELIVER path only) — environment prep before a draft PR: resolve the platform profile, fetch+cache the ticket (read-only), and create the ../<ticket-id> worktree via /add-worktree. The default designer path (leave a clean diff) never needs this — there is no worktree. Invoked by the orchestrator only when the deliver marker exists and no worktree is on the ticket yet; designers never type it directly (a misdirect guard routes them back to /ui-tweak). Does NOT touch ticket status/assignee (no /_ticket-init)."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->

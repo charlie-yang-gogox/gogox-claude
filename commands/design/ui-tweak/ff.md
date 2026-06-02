@@ -1,6 +1,6 @@
 ---
 name: ff
-description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → pr → review) runs when they pick 'Ship it'. Owns the navigation cards (C0, C1's show-me/looks-good variants, C3, C4, C5, the engineer card Ce); atomic stages render C-MISDIRECT / C6 / C7. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: a draft PR happens only when the designer picks 'Ship it'. --auto shows no cards → reaches neither a device preview nor a PR. Spec: §4.4/§4.5 / §5 / §6."
+description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → pr → review) runs when they pick 'Ship it'. Owns the navigation cards (C0, C1's show-me/looks-good variants, C3, C4, C5, the engineer card Ce); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: a draft PR happens only when the designer picks 'Ship it'. --auto shows no cards → reaches neither a device preview nor a PR."
 ---
 
 <!-- RULE: ALL content, including designer-facing CARD text, is English. No Chinese / non-ASCII. -->
@@ -68,7 +68,7 @@ Failures under `--auto` still print the deterministic stderr line (R13).
   blue" there and it routes to the Correction loop exactly like the old `[4]`. So decision cards no
   longer carry a "Reply with a number" footer, and there is no explicit "adjust" option (Other owns
   it). Always remind them in the question text: *"…or pick **Other** and tell me what to change."*
-- **Info cards (C0 first-contact, C5 done) and stop-only notices (C7 guard-missing, C-MISDIRECT) stay
+- **Info cards (C0 first-contact, C5 done) and the stop-only notice C-MISDIRECT stay
   as plain text** — they present no choice, so a tool prompt would be noise.
 - **`--auto` NEVER calls `AskUserQuestion`** (it is interactive). Under `--auto` all cards are
   suppressed (D7); with no prompt there is no way to pick "wrap up as a proposal", which is the
@@ -165,15 +165,15 @@ the iteration C1 ("I'm done — show me / more changes")**.
 | `audit` | `/ui-tweak:audit [--auto]` — **Phase 2** first check (deliver only): `/format` then the dual-judge on the final cumulative diff. CLEAR → `commit`; BLOCKED → repair-context (→ apply, max 3) |
 | `start` | `/ui-tweak:start <ticket>` (deliver only; `/add-worktree`) |
 | `commit` | `/commit` (NO extra confirm — "Ship it" on C1 already authorized the handoff, R18) — commit ONLY the files in the Step-5 coverage table (R12); formatter-touched extras go in the PR body `### Formatter-only changes` |
-| `pr` | `/pull-request --draft` with the **§6.1 PR body**; title prefixed `[ui-tweak]`; structured read-only ticket comment (`🎨 UI tweak ready for engineer review` + audit verdict + coverage summary) |
+| `pr` | `/pull-request --draft` with the **pre-built PR body** (see "Deliver PR body" below); title prefixed `[ui-tweak]`; structured read-only ticket comment (`🎨 UI tweak ready for engineer review` + audit verdict + coverage summary) |
 | `review` | `/code-review <pr>` → `claude-reports/<ticket>/code-review.md` |
 | `done` | terminal: iteration → **C1 (show-me)**; post-preview → **C1 (looks-good)**; deliver (PR open + code-review) → **C5** |
 
 ## Wayfinding cards (this orchestrator owns the navigation cards C0–C5)
 
-> The stage-stop cards **C-MISDIRECT / C6 / C7** are rendered by the atomic stages themselves
+> The stage-stop cards **C-MISDIRECT / C6** are rendered by the atomic stages themselves
 > (`apply.md` / `preview.md` / `start.md`), since those are the stages that physically stop — see
-> `/ui-tweak:apply` Step 0a / Step 5. C0–C5 + the repair-exhausted **engineer card Ce** (the
+> `/ui-tweak:apply` Step 0a / Step 4. C0–C5 + the repair-exhausted **engineer card Ce** (the
 > flow-navigation cards) live here.
 
 **Ce — couldn't do it (engineer)** (loop card-terminus when `repair-count >= 3`, R18) —
@@ -265,7 +265,7 @@ was already cached in `ticket.json`) — *`AskUserQuestion`, `header: "Work-item
 👉 Your part is finished. Want more changes? Just tell me.
 ```
 
-## Correction loop (designer) + Repair loop (agent) — R8 / R18 / §4.5.1
+## Correction loop (designer) + Repair loop (agent) — R8 / R18
 
 Two distinct re-entries into `apply`, both keeping the original `base_ref` so the diff is always
 **cumulative** (base_ref → working tree):
@@ -310,7 +310,7 @@ re-entering apply. A clean `preview` build resets `repair-count`.
 
 - **Power-user escape**: `/ui-tweak:ff --from apply` deletes apply-and-downstream markers, then resumes.
 
-## Deliver PR body — see §6.1 (R2)
+## Deliver PR body (R2)
 
 The `pr` stage MUST pass a pre-built `## UI Tweak — designer-verifiable summary` body (Source /
 Grounding-provenance / Audit verdict / Coverage table with `shared?` / "No screenshot — eyeball
