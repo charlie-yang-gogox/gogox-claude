@@ -6,3 +6,8 @@ deps_install: ""
 test_cmd: ./gradlew testDebugUnitTest
 format_cmd: ./gradlew detekt detektFormat
 ide_open_hint: "open the worktree in Android Studio (Gradle sync runs automatically), or /list-worktrees to see all active worktrees"
+
+# --- /ui-tweak skill (UI-Designer mode) ---
+# Build-only: /ui-tweak compiles to confirm the change is sound; it does NOT
+# deploy, run, or screenshot the app.
+ui_build_cmd: ./gradlew :app:assembleDebug

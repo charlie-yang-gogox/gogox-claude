@@ -1,0 +1,129 @@
+---
+name: preview
+description: "Phase-1 stage of the /ui-tweak pipeline (R18) — build + install + launch the change onto a device, then STOP and hand the device to the designer to look at and drive THEMSELVES. The agent never screenshots, taps, navigates, or grants permissions — its job ends the moment the app is up. Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (boot an emulator/simulator → else any connected device incl. physical → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators). Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
+---
+
+<!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
+
+# `/ui-tweak:preview`
+
+> **Single responsibility (Phase 1)**: build + install + **launch** the change onto a device, then
+> **hand the device to the designer** — they look at it and drive it themselves. **The agent does NOT
+> screenshot, record, tap, navigate, log in, or grant permissions** (see the HARD BOUNDARY in Step 2);
+> building onto a real screen exists so the *designer* can interact, not the agent. This REPLACES the
+> old "build-only, can't show a screen" terminal (R18). Reached only when
+> `.dev/ui-tweak/preview-requested` exists (designer picked "I'm done — show me" on card C1). It does
+> NOT run the LLM logic audit — that is Phase 2 (`/ui-tweak:audit`), gated behind the designer
+> confirming the look. Build is folded in here — `flutter run` builds + installs + launches in one
+> step.
+
+## Inputs
+
+The working-tree diff relative to `base_ref`; the profile's `ui_preview_cmd` (preferred) and
+`ui_build_cmd` (no-device fallback). `{device}` in `ui_preview_cmd` is substituted after the cascade.
+
+## Step 0a — misdirect guard (R5/D11)
+
+If `UI_TWEAK_FF` is not set, print **C-MISDIRECT** (see `/ui-tweak:apply` Step 0a) and STOP.
+
+## Step 0 — precondition + freeze the audited surface (F3)
+
+```bash
+WT=$(git rev-parse --show-toplevel)
+[ -f "$WT/.dev/ui-tweak/base_ref" ] || { echo "FAIL: no base_ref — run /ui-tweak:apply first." >&2; exit 1; }
+BASE=$(cat "$WT/.dev/ui-tweak/base_ref")
+# FREEZE the audited file set BEFORE building (F3): the build/run will mutate the tree (regenerated
+# registrants, codegen); those side-effects must never widen what Phase-2 audit later judges.
+git diff "$BASE" --name-only > "$WT/.dev/ui-tweak/audit-files"
+```
+
+Resolve `ui_preview_cmd` / `ui_build_cmd`: prefer a repo override in `<repo>/.gogox-claude.yaml`,
+else the platform default.
+
+## Step 1 — device cascade (a → b → c, R18)
+
+Acquire a target device in this order; stop at the first that yields one:
+
+- **(a) boot an emulator / simulator.** `flutter emulators` to list; `flutter emulators --launch <id>`
+  to boot one (Android AVD or iOS simulator). Poll `flutter devices --machine` until it appears
+  (bounded wait, e.g. ~60s).
+- **(b) use an already-connected device — including a physical phone.** If `flutter devices --machine`
+  already lists a usable device (running emulator/simulator OR a physical handset over USB/wifi), use
+  it. (This branch is required because the designer may be looking at a real device, not an emulator.)
+- **(c) no device available → honest fallback.** Do NOT fail. Run the **build-only** `ui_build_cmd`
+  (so we still confirm it compiles), set a `no_device` flag for the orchestrator, and let card C1 be
+  honest ("I couldn't find a phone/emulator to show it on; I did confirm it builds — connect a device
+  to see it, or ship anyway").
+
+Pick ONE device id; substitute it into `ui_preview_cmd`'s `{device}`.
+
+## Step 2 — build INTO the device, then STOP (this is also the build gate)
+
+- **Device path**: run `ui_preview_cmd` (e.g. `flutter run -d <id> --debug [--flavor …]`). This builds,
+  installs, and launches the app on the device. Run it so the app stays up (background the
+  long-running `flutter run` session; do not block the pipeline on its attached console). The moment
+  the app is installed + launched (process is up on the device) the build gate has **passed** — go to
+  Step 3. A **build/compile failure here is the build-fail path** (Step 4).
+- **No-device path (c)**: run `ui_build_cmd` (build-only). Compile failure → Step 4.
+
+> ### ⛔ HARD BOUNDARY — the agent does NOT drive the app (R18, your-job-ends-at-launch)
+> The agent's job is **build + install + launch, then hand the device to the designer.** Once the app
+> process is up, **STOP touching the device.** You must **NOT**, under any circumstance:
+> - take a screenshot or screen recording (no `take_screenshot*`, no screen-record);
+> - tap / swipe / type / `adb shell input` / `am start` to a specific screen;
+> - grant or dismiss permission dialogs;
+> - navigate to "the screen the change affects", log in, fill forms, or re-launch to a deep link.
+>
+> The **designer** looks at the device and drives it themselves — that is the entire point of building
+> onto a real screen. Determining build pass/fail needs only the launch result + the command's
+> **exit code**, NOT a screenshot. Key pass/fail on **exit code / a successful install+launch**, never
+> on log text — some flutter flavored builds print a false `Gradle build failed to produce an .apk
+> file` tail yet exit 0 (confirm via the installed/launched app, not by reading the app's UI).
+>
+> If the app crashes on launch or won't start, treat it like a build failure → Step 4 (do NOT poke at
+> it to "fix" the runtime state).
+
+## Step 3 — quarantine build side-effects (F3) + record success
+
+```bash
+# restore anything the build/run touched outside the frozen audit set
+git diff "$BASE" --name-only | grep -vxF -f "$WT/.dev/ui-tweak/audit-files" | xargs -r git checkout -- 2>/dev/null || true
+printf 'Status: PASS\n' > "$WT/.dev/ui-tweak/build-pass"
+: > "$WT/.dev/ui-tweak/preview-shown"          # signals the orchestrator to render card C1's "looks good?" variant
+rm -f "$WT/.dev/ui-tweak/repair-count"          # reset the repair budget on a clean build
+```
+
+STOP. The orchestrator renders the **"looks good — ship it / more changes"** card (the post-preview
+variant of C1). On the no-device path it appends the honest "no device" note.
+
+## Step 4 — build-fail path → agent repair (R18 / max 3)
+
+A build failure means the apply implementation has a problem — the **agent** fixes it, NOT the
+designer (who can't act on a compile error). Do not revert the designer's intent; instead:
+
+```bash
+git checkout -- $(git diff "$BASE" --name-only)                    # drop the broken edit + build noise
+n=$(cat "$WT/.dev/ui-tweak/repair-count" 2>/dev/null || echo 0); echo $((n+1)) > "$WT/.dev/ui-tweak/repair-count"
+{ echo "kind: build"; echo "error:"; <one-line compile error>; } > "$WT/.dev/ui-tweak/repair-context"
+rm -f "$WT/.dev/ui-tweak/build-pass" "$WT/.dev/ui-tweak/preview-shown"
+```
+
+The orchestrator's loop sees `repair-context` and routes back to `/ui-tweak:apply` (repair mode) when
+`repair-count < 3`; at `>= 3` it renders the **engineer card** instead (see `/ui-tweak:ff`). STOP.
+
+## `--auto` — failures must be LOUD (R13)
+
+`--auto` cannot normally reach preview (it shows no cards, so the designer never picks "show me").
+If reached, a build-fail prints one deterministic stderr line and exits non-zero:
+
+```
+UI-TWEAK BUILD-FAIL (preview): <one-line reason> — repair attempt <n>/3.
+```
+
+## HITL / Stop
+
+preview is mechanical — no card here (the orchestrator owns the wayfinding cards). On success print:
+`App launched on <device> — handed to the designer to look at. Audit deferred to ship.` The
+orchestrator then renders the post-preview C1, whose wording tells the designer **the app is running
+on their device and to go look / navigate to the screen themselves** ("It's running on <device> now —
+take a look. Does it look right?"). The agent does NOT describe what the screen shows (it never looked).
