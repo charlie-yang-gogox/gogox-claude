@@ -1,19 +1,28 @@
 ---
 name: ggx-cloud-onboard
 description: >
-  Semi-automated onboarding for YOUR OWN `ggx-dev-agent` cloud routine (CCR) —
-  the unified, all-lane (port / dev / bug) entry point to the gogox-claude
-  `/ggx-work` pipeline. Run this in YOUR Claude Code session — the
-  `RemoteTrigger` tool uses the CURRENT session's OAuth token, so the routine
-  is created under whoever runs this skill. It automates the mechanical,
-  error-prone parts (correct opus body, namespace overrides, team→repo
-  substitution, a test run) but CANNOT do the two per-account interactive
-  steps (connect Linear, create a CCR environment with GitHub auth) — those
-  are prerequisites you do first. Canonical source of truth for the routine
-  shape + prompt: `cloud-routines/ggx-dev-agent.routine.json` and
-  `cloud-routines/ggx-dev-agent.md`. The body below is embedded inline (kept
-  in sync with that JSON) because install.sh does NOT symlink
-  `cloud-routines/` into `~/.claude`.
+  Semi-automated onboarding for YOUR OWN cloud routine PAIR (CCR):
+  `ticket-analyzer-agent` (judges To-Do tickets, writes `ready-to-*` /
+  `need-*` verdict labels) + `ggx-dev-agent` (the unified all-lane
+  port / dev / bug entry point to the gogox-claude `/ggx-work` pipeline,
+  consuming those labels). The two are deliberately separate routines —
+  the label window between analyze and dispatch is the human review point
+  — but they share every placeholder and a schedule invariant (analyzer
+  fires 30 minutes before each dev-agent slot), so this skill provisions
+  them TOGETHER: gather ids once, derive the analyzer cron from the
+  dev-agent cron, create + test + enable both. Pass `--dev-only` or
+  `--analyzer-only` to provision just one. Run this in YOUR Claude Code
+  session — the `RemoteTrigger` tool uses the CURRENT session's OAuth
+  token, so the routines are created under whoever runs this skill. It
+  automates the mechanical, error-prone parts (correct opus bodies,
+  namespace overrides, team→repo substitution, the cron offset, test runs)
+  but CANNOT do the two per-account interactive steps (connect Linear,
+  create a CCR environment with GitHub auth) — those are prerequisites you
+  do first. Canonical source of truth for the routine shapes + prompts:
+  `cloud-routines/ggx-dev-agent.{md,routine.json}` and
+  `cloud-routines/ticket-analyzer-agent.{md,routine.json}`. The bodies
+  below are embedded inline (kept in sync with those JSONs) because
+  install.sh does NOT symlink `cloud-routines/` into `~/.claude`.
 Prerequisite: >
   - This must be run in YOUR own Claude Code session (research-preview
     Claude Code Routines access) — the routine is account-bound to you.
@@ -25,17 +34,35 @@ Prerequisite: >
     port-target Flutter repo + `gogovan/flutter-core-sdk`.
 ---
 
-# `/ggx-cloud-onboard`
+# `/ggx-cloud-onboard [--dev-only|--analyzer-only]`
 
-> Creates + tests YOUR own `ggx-dev-agent` cloud routine — the unified
-> all-lane worker that drives `/ggx-work` for **port, dev, and bug** tickets.
-> (Supersedes the old `ggx-bug-resolver`, which only handled the bug lane.)
+> Creates + tests YOUR own cloud routine **pair**:
+> - `ticket-analyzer-agent-<team>` — judges your To-Do tickets and writes
+>   the verdict labels (`ready-to-*` / `need-*`). Analysis only; Linear
+>   writes only; no push permission anywhere.
+> - `ggx-dev-agent-<team>` — the unified all-lane worker that drives
+>   `/ggx-work` for **port, dev, and bug** tickets, consuming `ready-to-*`.
+>   (Supersedes the old `ggx-bug-resolver`, which only handled the bug lane.)
+>
+> **The pair contract (why one skill provisions both):** the routines stay
+> separate at runtime — the label window between a verdict and its pickup
+> is the human review point — but they share every placeholder (team, repos,
+> environment, connector) and one schedule invariant: **the analyzer fires
+> 30 minutes before each dev-agent slot** (TW 11:30→12:00 lunch,
+> 17:30→18:00 after-work), so fresh `ready-to-*` labels are consumed by the
+> very next dev fire. This skill gathers ids once, derives the analyzer
+> cron from the dev-agent cron, and creates/tests/enables both — so the
+> offset can never drift apart at provisioning time.
+>
+> **Flags:** `--dev-only` / `--analyzer-only` skip the other routine
+> (e.g. `--analyzer-only` for a verdict-quality observation period before
+> trusting automation end-to-end). Default: both.
 >
 > **Run this in YOUR OWN Claude Code session.** The `RemoteTrigger` tool
-> authenticates with the CURRENT session's OAuth token, so the routine is
-> created under whoever runs this skill. `assignee=me` inside the routine
+> authenticates with the CURRENT session's OAuth token, so the routines are
+> created under whoever runs this skill. `assignee=me` inside each routine
 > then resolves to YOU and discovery finds YOUR tickets. A teammate cannot
-> create this for you — you run it yourself, once.
+> create these for you — you run it yourself, once.
 >
 > **What it does NOT automate** (interactive, per-account — do these first):
 > 1. Connecting your Linear MCP connector in claude.ai.
@@ -45,6 +72,18 @@ Prerequisite: >
 ---
 
 ## Steps
+
+### Step 0: Parse flags
+
+```
+--dev-only      → PROVISION = {dev}
+--analyzer-only → PROVISION = {analyzer}
+(neither)       → PROVISION = {analyzer, dev}
+(both flags)    → STOP: "--dev-only and --analyzer-only are mutually exclusive."
+```
+
+Steps marked **(dev)** or **(analyzer)** below run only when that routine
+is in `PROVISION`. Unmarked steps always run.
 
 ### Step 1: Tool check
 
@@ -162,7 +201,7 @@ If `TEAM_KEY` is neither `CAF` nor `DAF`, STOP and ask the colleague for the
 target + origin repos explicitly (port is Linear-only and CAF/DAF are the
 only known port teams).
 
-### Step 4: Build the create body
+### Step 4 (dev): Build the dev-agent create body
 
 Use the template below VERBATIM. It is the validated shape from
 `cloud-routines/ggx-dev-agent.routine.json` — top-level
@@ -186,7 +225,10 @@ fields — replace every occurrence):
 
 Keep these FIXED — do NOT change them:
 - `model: "claude-opus-4-8"` — see "Why opus" below.
-- `cron_expression: "0 4,10,16,22 * * *"` (Taiwan time 00/06/12/18 = 04/10/16/22 UTC).
+- `cron_expression: "0 4,10 * * *"` (Taiwan time 12:00 lunch / 18:00
+  after-work = 04/10 UTC). If the colleague wants different slots, accept
+  them BUT note the analyzer cron in Step 4b is derived from this one —
+  never set the two independently.
 - `enabled: false` — initial create is disabled; we test before enabling.
 - The `charlie-yang-gogox/gogox-claude` (read) and `gogovan/flutter-core-sdk`
   (write) sources — constant across teams.
@@ -203,7 +245,7 @@ session (so the opus pinning in agent frontmatter is bypassed) and the
 ```json
 {
   "name": "ggx-dev-agent-<TEAM_KEY_LOWER>",
-  "cron_expression": "0 4,10,16,22 * * *",
+  "cron_expression": "0 4,10 * * *",
   "enabled": false,
   "persist_session": false,
   "job_config": {
@@ -268,23 +310,107 @@ session (so the opus pinning in agent frontmatter is bypassed) and the
 }
 ```
 
-### Step 5: Create + test
+### Step 4b (analyzer): Build the analyzer create body
 
-**5a. Create (disabled).**
+**Derive the cron — never ask for it.** The analyzer fires 30 minutes
+before each dev-agent slot. Rule: for every hour `H` in the dev-agent
+cron's hour list, the analyzer gets hour `(H - 1) mod 24` with minute `30`:
+
+```
+dev cron      0 4,10 * * *        (TW 12:00 / 18:00)
+analyzer cron 30 3,9 * * *        (TW 11:30 / 17:30)
+```
+
+(With `--analyzer-only` and no existing dev-agent routine, derive from the
+default dev cron `0 4,10 * * *`. With `--analyzer-only` and an existing
+`ggx-dev-agent-<TEAM_KEY_LOWER>` routine, fetch its live cron via
+`RemoteTrigger action:list` and derive from THAT — the offset must track
+reality, not the default.)
+
+Then build the body from the validated shape in
+`cloud-routines/ticket-analyzer-agent.routine.json` (same top-level
+nesting as Step 4). Substitute the same Step 3 values:
+`<TEAM_KEY>` / `<TEAM_KEY_LOWER>` / `<ENVIRONMENT_ID>` /
+`<LINEAR_CONNECTOR_UUID>` / `<ORG>` / `<TARGET_REPO>`.
+
+Keep these FIXED:
+- `model: "claude-opus-4-8"` — verdicts are judgment work; same reasoning
+  as the dev-agent's opus pin.
+- `enabled: false` on create — test before enabling.
+- **Sources are READ-ONLY** — `gogox-claude` + `<ORG>/<TARGET_REPO>`,
+  NEITHER with `allow_unrestricted_git_push`. The analyzer has no
+  legitimate push; do not copy the dev-agent's source permissions.
+- No `<ORIGIN_REPO>` and no `flutter-core-sdk` source — the analyzer
+  never reads code, it only needs the target repo for profile resolution.
+- The prompt text exactly as in the JSON template (it already remaps
+  `mcp__claude_ai_Linear__*` → `mcp__Linear__*`, mandates
+  `--non-interactive`, and forbids invoking any pipeline).
+
+```json
+{
+  "name": "ticket-analyzer-agent-<TEAM_KEY_LOWER>",
+  "cron_expression": "<derived above>",
+  "enabled": false,
+  "persist_session": false,
+  "job_config": {
+    "ccr": {
+      "environment_id": "<ENVIRONMENT_ID>",
+      "events": [ { "data": { "type": "user", "message": { "role": "user",
+        "content": "<the prompt from cloud-routines/ticket-analyzer-agent.routine.json, with <TEAM_KEY> and <TARGET_REPO> substituted>"
+      } } } ],
+      "session_context": {
+        "allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+        "model": "claude-opus-4-8",
+        "sources": [
+          { "git_repository": { "url": "https://github.com/charlie-yang-gogox/gogox-claude" } },
+          { "git_repository": { "url": "https://github.com/<ORG>/<TARGET_REPO>" } }
+        ]
+      }
+    }
+  },
+  "mcp_connections": [
+    { "connector_uuid": "<LINEAR_CONNECTOR_UUID>", "name": "Linear",
+      "transport_type": "http", "url": "https://mcp.linear.app/mcp" }
+  ]
+}
+```
+
+If this session has the repo checked out, read the canonical prompt from
+`cloud-routines/ticket-analyzer-agent.routine.json` directly (it is NOT
+symlinked into `~/.claude`); otherwise ask the colleague to paste it from
+GitHub. Do NOT improvise the prompt from memory.
+
+### Step 5: Create + test (analyzer first — it is the cheaper, safer probe)
+
+**5a (analyzer). Create disabled, fire a test.**
+```
+RemoteTrigger  action=create  body=<the substituted body from Step 4b>
+RemoteTrigger  action=run     trigger_id=<analyzer trigger_id>
+```
+Hold the returned `trigger_id`. Tell the colleague:
+> Open **claude.ai/code → the `ticket-analyzer-agent-<TEAM_KEY_LOWER>`
+> session** and read the `=== TICKET-ANALYZER OUTCOME ===` block.
+> - **0 candidates** is a clean no-op — it still validates the whole stack
+>   (model accepted, Linear connector resolves `assignee=me`, clean stop
+>   before any install).
+> - With candidates: check the verdicts and the Linear comments it posted.
+>   Wrong verdicts at this stage are FEEDBACK, not failure — fix the ticket
+>   content or labels and note the misjudgment (this is the data the
+>   observation period exists to collect).
+
+The analyzer test doubles as the **Linear-connector probe for the pair**:
+if `assignee=me` resolves wrongly here, fix Step 2a before wasting a
+dev-agent test fire on the same problem.
+
+**5b (dev). Create disabled, fire a test.**
 ```
 RemoteTrigger  action=create  body=<the substituted body from Step 4>
+RemoteTrigger  action=run     trigger_id=<dev trigger_id>
 ```
-Hold the returned `trigger_id`. Relay the appended summary line (server-parsed
-run time + claude.ai URL) to the colleague.
-
 If create fails with a field/shape error (`unknown field`,
 `event_type is required`, etc.) → the body was restructured; re-check the
 nesting against Step 4 and retry. Do NOT enable on a failed create.
 
-**5b. Fire one test run.**
-```
-RemoteTrigger  action=run  trigger_id=<trigger_id from 5a>
-```
 Then tell the colleague:
 > Open **claude.ai/code → the `ggx-dev-agent-<TEAM_KEY_LOWER>` session** and
 > read the `=== HOURLY DEV-AGENT OUTCOME ===` block.
@@ -302,25 +428,39 @@ Then tell the colleague:
 > (no build, no PR), then — after a human `/spec-review` flips the ticket to
 > `ready-to-dev` — the **port wave-2 / dev** path, before enabling the cron.
 
-Wait for the colleague to confirm the test looks right before Step 6.
+Wait for the colleague to confirm the test(s) look right before Step 6.
 
-### Step 6: Enable the 6-hourly cron
+### Step 6: Enable the cron(s)
 
-After the colleague confirms the test outcome looks right:
+After the colleague confirms the test outcomes look right, enable each
+created routine:
 ```
-RemoteTrigger  action=update  trigger_id=<trigger_id>  body={ "enabled": true }
+RemoteTrigger  action=update  trigger_id=<analyzer trigger_id>  body={ "enabled": true }
+RemoteTrigger  action=update  trigger_id=<dev trigger_id>       body={ "enabled": true }
 ```
-Then print:
+Then print (omit the line for a routine not in `PROVISION`):
 ```
-ggx-dev-agent-<TEAM_KEY_LOWER> is LIVE.
-Trigger id  : <trigger_id>
-Cron        : 0 4,10,16,22 * * *  (Taiwan time 00/06/12/18 = 04/10/16/22 UTC)
-Next run    : <server-parsed next run from the update summary line>
-Model       : claude-opus-4-8
-Team        : <TEAM_KEY>
-Target repo : <ORG>/<TARGET_REPO>   (write, draft PRs / port branches)
-Origin repo : <ORG>/<ORIGIN_REPO>   (read, port source)
-Result appears at: <claude.ai/code routine session URL>
+Routine pair for team <TEAM_KEY> is LIVE.
+
+ticket-analyzer-agent-<TEAM_KEY_LOWER>
+  Trigger id  : <analyzer trigger_id>
+  Cron        : 30 3,9 * * *  (TW 11:30 / 17:30 — fires 30 min before each dev slot)
+  Writes      : Linear labels + comments ONLY (no code, no PRs)
+
+ggx-dev-agent-<TEAM_KEY_LOWER>
+  Trigger id  : <dev trigger_id>
+  Cron        : 0 4,10 * * *  (TW 12:00 lunch / 18:00 after-work)
+  Target repo : <ORG>/<TARGET_REPO>   (write, draft PRs / port branches)
+  Origin repo : <ORG>/<ORIGIN_REPO>   (read, port source)
+
+Model    : claude-opus-4-8 (both)
+Next runs: <server-parsed next-run lines from the update summaries>
+Results appear at: <claude.ai/code routine session URLs>
+
+Funnel: analyzer judges To-Do → ready-to-* labels → dev-agent executes.
+The 30-min offset is the pair contract — if you ever change one cron,
+re-run /ggx-cloud-onboard (or re-derive by the Step 4b rule) so they
+move together.
 ```
 
 ---
@@ -334,8 +474,9 @@ Result appears at: <claude.ai/code routine session URL>
   lives in the environment config, never in this skill.
 
 This skill automates the mechanical, error-prone parts: the correct opus
-body, the team→repo substitution, the namespace/inlining overrides baked
-into the prompt, the test fire, and the enable flip.
+bodies, the team→repo substitution, the namespace/inlining overrides baked
+into the prompts, the analyzer-before-dev cron offset, the test fires, and
+the enable flips.
 
 ---
 
@@ -363,7 +504,20 @@ into the prompt, the test fire, and the enable flip.
   `job_config.ccr.session_context.model = "claude-opus-4-8"`. The UI default
   is the usual culprit.
 - **Create rejected (`unknown field` / `event_type is required`)** → the
-  body nesting was changed. Use the Step 4 template verbatim.
+  body nesting was changed. Use the Step 4 / 4b templates verbatim.
+- **Analyzer STOPs at "Cannot resolve gogox project profile"** → the
+  `cd /home/user/<TARGET_REPO>` in its bootstrap didn't happen, or the
+  repo basename has no registry entry. The analyzer resolves the team key
+  from cwd; re-check the Step 3d mapping and that install.sh ran.
+- **Analyzer labels tickets the dev-agent then ignores** → check the
+  classification labels (`bug`/`port`/`feature`): the analyzer writes
+  workflow labels, but `/route` routes by classification. A ticket the
+  analyzer marked ready that lacks classification will dead-end in
+  `/ggx-work` — that's a ticket-content problem, not a routine problem.
+- **Verdicts disagree with your judgment** → expected during the
+  observation period. Note them (the misjudgment rate is the input to the
+  deferred `--analyze-first` dispatcher-integration decision); fix the
+  ticket and let the next fire re-analyze.
 
 ---
 
@@ -386,3 +540,13 @@ into the prompt, the test fire, and the enable flip.
 - **Crash = restart from scratch (v1).** There is no in-flight tracking and
   no auto-recovery: a failed fire orphans the ticket at In Progress with no
   `ready-to-*`; a human re-adds the label to re-run it.
+- **The pair stays a pair, loosely.** The analyzer and dev-agent are
+  separate routines ON PURPOSE — the label window between a verdict and
+  its pickup is the human review point, and one routine failing must not
+  stall the other. The ONLY coupling this skill enforces is the
+  provisioning-time cron offset (analyzer = dev hours − 1, minute 30).
+  Never collapse the two into one routine, and never edit one cron without
+  re-deriving the other.
+- **The analyzer never escalates.** Its sources carry no push permission
+  and its prompt forbids invoking `/ggx-work` / any pipeline. If a future
+  edit adds either, that's the line being crossed — stop and rethink.

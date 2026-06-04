@@ -2,8 +2,9 @@
 name: ticket-analyzer-agent
 description: >
   Cloud routine template that runs `/ticket-analyze --non-interactive` in
-  batch mode four times a day, judging the routine-owner's To-Do tickets
-  for pipeline readiness and writing the verdict labels
+  batch mode twice a day (lunch + after-work slots), judging the
+  routine-owner's To-Do tickets for pipeline readiness and writing the
+  verdict labels
   (`ready-to-port` / `ready-to-dev` / `need-revision` / `need-dependency`)
   + structured comments back to Linear. Pure ANALYSIS — never writes code,
   never opens PRs, never invokes any pipeline. Designed to fire 30 minutes
@@ -43,18 +44,21 @@ An unattended cloud run of `/ticket-analyze` batch mode
    cwd (profile resolution needs it).
 4. Emits a structured outcome report.
 
-### The 30-minute offset (intentional)
+### The slots + 30-minute offset (intentional)
 
 ```
-TW  05:30  11:30  17:30  23:30   ← this routine (analyze, label)
-TW  06:00  12:00  18:00  00:00   ← ggx-dev-agent (pick up ready-to-*, execute)
+TW  11:30  17:30   ← this routine (analyze, label)
+TW  12:00  18:00   ← ggx-dev-agent (pick up ready-to-*, execute)
+    └lunch┘ └after-work┘
 ```
 
-Each analyzer fire completes ~30 minutes before the next dev-agent fire,
-so a verdict's `ready-to-*` label is consumed by the very next execution
-slot. If you change one schedule, keep the offset: analyzer BEFORE
-dev-agent, with enough gap for the batch to finish (a typical batch is
-minutes, not hours — it does no builds).
+Two slots a day, both chosen so the agents work while the human is away:
+the lunch break (TW 12:00) and after work (TW 18:00). Each analyzer fire
+completes ~30 minutes before its dev-agent fire, so a verdict's
+`ready-to-*` label is consumed by the very next execution slot. If you
+change one schedule, keep the offset: analyzer BEFORE dev-agent, with
+enough gap for the batch to finish (a typical batch is minutes, not
+hours — it does no builds).
 
 ### Concurrency safety (validated in the command itself)
 
@@ -99,7 +103,7 @@ Swap these placeholders in `ticket-analyzer-agent.routine.json`:
 | `<TARGET_REPO>` | `gogox-client-flutter` | repo whose profile resolves the team; cloned WITHOUT push permission |
 | `<ENVIRONMENT_ID>` | `env_01WsWtJi19fQNPnJGzww3X7p` (dispatcher-env) | any anthropic_cloud env works |
 | `<LINEAR_CONNECTOR_UUID>` | per-user | your own claude.ai Linear connector |
-| cron | `30 3,9,15,21 * * *` (UTC) = TW 05:30/11:30/17:30/23:30 | keep the 30-min offset before your dev-agent slots |
+| cron | `30 3,9 * * *` (UTC) = TW 11:30 / 17:30 | keep the 30-min offset before your dev-agent slots (`0 4,10` = TW 12:00 / 18:00) |
 
 "assignee=me" resolves through the Linear connector's OAuth identity, so
 each colleague's routine analyzes their own queue automatically — no

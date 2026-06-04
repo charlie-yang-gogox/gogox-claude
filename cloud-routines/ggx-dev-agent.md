@@ -2,8 +2,9 @@
 name: ggx-dev-agent
 description: >
   Anthropic Claude Code cloud routine (CCR) that runs the gogox-claude
-  `/ggx-work` pipeline — ALL lanes (port / dev / bug) — on a 6-hourly cron
-  (Taiwan time 00:00 / 06:00 / 12:00 / 18:00 = 04/10/16/22 UTC)
+  `/ggx-work` pipeline — ALL lanes (port / dev / bug) — twice a day
+  (Taiwan time 12:00 lunch / 18:00 after-work = 04/10 UTC; each slot is
+  fed by a `ticket-analyzer-agent` fire 30 minutes earlier)
   inside Anthropic's cloud sandbox. Self-discovering and label-driven: each
   fire finds the routine owner's actionable tickets (`ready-to-port` OR
   `ready-to-dev`) in a Linear team and drives each one through whatever
@@ -46,7 +47,8 @@ placeholders in §4, and creates their own routine.
 
 ### What it is
 
-`ggx-dev-agent` is an hourly remote Claude Code session. Every fire it:
+`ggx-dev-agent` is a scheduled remote Claude Code session (two fires a
+day: TW 12:00 / 18:00). Every fire it:
 
 1. Asks Linear (via the account's MCP connector) for the routine owner's
    actionable tickets in one team — anything labelled `ready-to-port` OR
@@ -82,7 +84,7 @@ primary batch tool for humans at a workstation. `ggx-dev-agent` is the
 deliberately simpler cloud shape: a **single-ticket-style sequential
 agent** that loops over matches one at a time, one worktree alive at a
 time. It does not re-implement the dispatcher's parallel fan-out — the
-hourly cadence plus the claim-on-lock de-dup is enough for unattended use,
+twice-daily cadence plus the claim-on-lock de-dup is enough for unattended use,
 and sequential processing keeps the 30G sandbox disk under control.
 
 ### Label-driven discovery (NOT status-driven)
@@ -108,7 +110,7 @@ The routine writes **zero** Linear labels of its own. The whole lifecycle
 
 - **Claim = `/ggx-work`'s own ticket-init** (its Step 2.5): on first touch it
   flips status `To-do`→`In Progress` and **removes the `ready-to-*` label**.
-  Because the actionable label is gone, the next hourly fire's label-driven
+  Because the actionable label is gone, the next fire's label-driven
   discovery (`ready-to-port` OR `ready-to-dev`) no longer matches the ticket.
   That IS the de-dup — no separate lock label needed.
 - **Completed work** is doubly guarded by the durable anti-duplicate check
@@ -312,7 +314,8 @@ both the prompt and the JSON before creating your routine:
    - **NEVER inline a token into the routine prompt.**
 
 4. **Model / cron / filter.** Copy `model: "claude-opus-4-8"`,
-   `cron_expression: "0 4,10,16,22 * * *"` (Taiwan time 00/06/12/18 = 04/10/16/22 UTC), and
+   `cron_expression: "0 4,10 * * *"` (Taiwan time 12:00 / 18:00 = 04/10 UTC; keep the
+   paired `ticket-analyzer-agent` 30 minutes ahead — `30 3,9 * * *`), and
    the discovery queries as-is. Change
    `<TEAM_KEY>` / repos for your team.
 
@@ -329,8 +332,8 @@ both the prompt and the JSON before creating your routine:
      Confirm the model id is accepted and Phase 1 → `Matches: 0` → clean stop
      (no toolchain installed).
    - Then a one-off **port wave-1** test, then (after a human `/spec-review`)
-     a **port wave-2** test, then enable the 6-hourly cron
-     (`cron_expression: "0 4,10,16,22 * * *"`).
+     a **port wave-2** test, then enable the twice-daily cron
+     (`cron_expression: "0 4,10 * * *"`).
 
 7. **Team service-account option (and its caveat).** For ONE shared routine
    instead of per-person, run under a **team service account** — but then
