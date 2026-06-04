@@ -238,6 +238,24 @@ explanation each]}`.
         which prompts because it must pick a pipeline *now*).
         Jira: unrecognized `issuetype.name` → same treatment.
 
+  **Lane suggestion (strong signal only)**: when the classification is
+  missing, append a suggested lane to the revision reason — but ONLY when
+  the ticket text carries an unambiguous signal:
+  - repro steps + expected-vs-actual present → suggest `bug`, citing the
+    signal: `Content suggests \`bug\` (has repro steps + expected vs actual)`
+  - explicit port language in the ticket itself ("port from", "same as
+    v1", "align with the native app", etc.) → suggest `port`, quoting the
+    phrase.
+  - **anything else → NO suggestion** — in particular, port-vs-feature is
+    undecidable from ticket text alone (whether the feature exists in the
+    origin codebase is not in the ticket, and this analyzer never reads
+    code). A coin-flip suggestion is worse than none: the ticket author
+    will trust it. Emit the plain base sentence only.
+
+  The suggestion is comment text only. It is NEVER written as a label —
+  classification stays human-owned (§C), and the human applying the label
+  is the confirmation step.
+
 Figma is conditionally required so non-UI tickets are not falsely flagged.
 When in doubt whether UI is implied, do not flag — a missing Figma link
 surfaces again at `/dev:figma` with a better error.
@@ -443,6 +461,8 @@ Schema rules:
 | Ticket in pipeline (`need-spec-review`, `dispatcher-*-in-flight`) | 1.5.5 | Skipped |
 | `need-revision` / `need-dependency` ticket | 1.5.5 | Re-analyzed (the revise → ready loop) |
 | Missing/multiple classification labels | 3 | Revision reason, not a prompt |
+| Missing classification, strong lane signal in text | 3 | Reason carries a suggested lane + evidence (comment text only, never a label write) |
+| Missing classification, weak/ambiguous signal (esp. port vs feature) | 3 | No suggestion — plain base sentence only |
 | Bare ticket-id mention, no ordering language | 4.1 | `related` edge — recorded, never blocking |
 | Inferred edge, `--non-interactive` | 4.2 | Report-only, never blocking |
 | Blocking edge to a Done/canceled ticket | 4.3 | Satisfied — not blocking |
