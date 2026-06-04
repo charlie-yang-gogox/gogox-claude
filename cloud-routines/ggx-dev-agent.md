@@ -36,8 +36,9 @@ placeholders in §4, and creates their own routine.
 > **Supersedes `ggx-bug-resolver`.** `ggx-dev-agent` is a strict superset:
 > bug tickets flow through the `ready-to-dev` discovery bucket and
 > `/route` → `/bug:ff` exactly as before, plus port (`ready-to-port`) and
-> feature lanes. The standalone `ggx-bug-resolver.*` template is retained
-> only for reference; new routines should be created from `ggx-dev-agent.*`.
+> feature lanes. The standalone `ggx-bug-resolver.*` template has been
+> removed (see git history); new routines should be created from
+> `ggx-dev-agent.*`.
 
 ---
 
