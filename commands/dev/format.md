@@ -23,10 +23,13 @@ Run the full formatting pipeline appropriate for the active project, optionally 
 2. Branch on `{platform}` for the rest of the steps.
 3. **{platform} = flutter — resolve the SDK binary (fvm-aware) BEFORE running anything**: if the repo
    pins its SDK with fvm (`.fvmrc` or `.fvm/fvm_config.json` exists at the repo root, or a
-   `.dev/ui-tweak/flutter-bin` marker reads `fvm flutter`), prefix **every** `dart` / `flutter`
-   command below with `fvm ` (`fvm dart format`, `fvm dart fix`, `fvm flutter analyze`). Bare
-   `flutter`/`dart` on an fvm-pinned repo resolves to the wrong SDK (or fails outright) — never
-   discover this by letting the first command fail.
+   `.dev/ui-tweak/flutter-bin` marker carries an fvm path), prefix **every** `dart` / `flutter`
+   command below with the **resolved fvm binary** (`<fvm> dart format`, `<fvm> dart fix`,
+   `<fvm> flutter analyze`). Resolve fvm by absolute path — `command -v fvm`, else
+   `~/.pub-cache/bin/fvm` — because fvm is often NOT on the agent shell's PATH; a literal `fvm`
+   prefix would fail command-not-found. If the repo is pinned but fvm is not installed, fall back to
+   bare `flutter`/`dart` and surface a one-line SDK-drift warning. Never discover any of this by
+   letting the first command fail.
 
 ---
 

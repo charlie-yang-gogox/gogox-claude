@@ -44,8 +44,16 @@ else the platform default.
 
 ```bash
 # /ui-tweak:start writes this marker; inline fallback covers a stale worktree from before the marker.
+# fvm must be resolved by ABSOLUTE PATH — it is often not on the agent shell's PATH
+# (typical install: ~/.pub-cache/bin/fvm); a literal `fvm flutter` would fail command-not-found.
 if [ -f "$WT/.dev/ui-tweak/flutter-bin" ]; then FLUTTER_BIN=$(cat "$WT/.dev/ui-tweak/flutter-bin"); else
-  { [ -f "$WT/.fvmrc" ] || [ -f "$WT/.fvm/fvm_config.json" ]; } && FLUTTER_BIN="fvm flutter" || FLUTTER_BIN="flutter"
+  FVM_BIN=$(command -v fvm 2>/dev/null || true)
+  [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
+  if { [ -f "$WT/.fvmrc" ] || [ -f "$WT/.fvm/fvm_config.json" ]; } && [ -n "$FVM_BIN" ]; then
+    FLUTTER_BIN="$FVM_BIN flutter"
+  else
+    FLUTTER_BIN="flutter"
+  fi
   printf '%s\n' "$FLUTTER_BIN" > "$WT/.dev/ui-tweak/flutter-bin"
 fi
 ```

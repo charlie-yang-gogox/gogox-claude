@@ -53,10 +53,24 @@ designer never types `/ui-tweak:start`.
 5. **Resolved-env block (flutter platform only — skip for android/ios)** — resolve the build tooling
    ONCE here so no later stage rediscovers it per run:
    ```bash
-   # (a) fvm resolution — on an fvm-pinned repo bare `flutter` fails (wrong/no SDK on PATH) and the
-   #     agent wastes a failed run rediscovering `fvm` every time. Detect once, persist; every later
-   #     flutter/dart invocation (preview's devices/run/build, audit's /format) reads this marker.
-   if [ -f .fvmrc ] || [ -f .fvm/fvm_config.json ]; then FLUTTER_BIN="fvm flutter"; else FLUTTER_BIN="flutter"; fi
+   # (a) fvm resolution — on an fvm-pinned repo bare `flutter` silently runs the WRONG SDK (version
+   #     drift vs CI's `fvm flutter analyze`) and the agent wastes a failed run rediscovering `fvm`
+   #     every time. Detect once, persist; every later flutter/dart invocation (preview's
+   #     devices/run/build, audit's /format) reads this marker.
+   #     IMPORTANT: resolve fvm by ABSOLUTE PATH — fvm is often NOT on the agent shell's PATH
+   #     (typical install: ~/.pub-cache/bin/fvm); a literal `fvm flutter` marker would then fail
+   #     with command-not-found, which is worse than the drift it replaces.
+   FVM_BIN=$(command -v fvm 2>/dev/null || true)
+   [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
+   if { [ -f .fvmrc ] || [ -f .fvm/fvm_config.json ]; } && [ -n "$FVM_BIN" ]; then
+     FLUTTER_BIN="$FVM_BIN flutter"
+   else
+     FLUTTER_BIN="flutter"
+     # fvm-pinned but fvm not installed → bare flutter still works; warn ONCE about SDK drift.
+     if [ -f .fvmrc ] || [ -f .fvm/fvm_config.json ]; then
+       echo "WARN: repo pins its SDK via fvm but fvm is not installed — using system flutter (may drift from CI)." >&2
+     fi
+   fi
    printf '%s\n' "$FLUTTER_BIN" > .dev/ui-tweak/flutter-bin
    # (b) iOS simulator pre-warm (macOS only) — NON-BLOCKING + fail-silent: kick the boot off in the
    #     background so the cold boot overlaps ticket analysis + the first apply, and a later "show me"
