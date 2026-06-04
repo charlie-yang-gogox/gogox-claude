@@ -1,0 +1,53 @@
+{
+  "name": "ticket-analyzer-agent-<team_key_lowercase>",
+  "cron_expression": "30 3,9,15,21 * * *",
+  "enabled": true,
+  "persist_session": false,
+  "job_config": {
+    "ccr": {
+      "environment_id": "<ENVIRONMENT_ID>",
+      "events": [
+        {
+          "data": {
+            "type": "user",
+            "message": {
+              "role": "user",
+              "content": "Cloud ticket analyzer for team <TEAM_KEY>. ANALYSIS ONLY — judge the routine-owner's To-Do tickets for pipeline readiness and persist verdicts as Linear labels + structured comments via /ticket-analyze. You NEVER write code, never commit, never push, never open PRs, and never invoke /ggx-work, /ggx-dispatcher, or any ff pipeline. Your only writes are the Linear label/comment writes that /ticket-analyze itself performs.\n\n## Phase 1 — DISCOVERY (do this FIRST, before any bootstrap / install)\nUsing the Linear MCP tools in this env (namespace `mcp__Linear__*`), find analysis candidates assigned to me on team <TEAM_KEY>:\n- Q_todo: `mcp__Linear__list_issues` assignee=me, team=<TEAM_KEY>, state=To-Do (status type unstarted)\n- Q_redo: `mcp__Linear__list_issues` assignee=me, team=<TEAM_KEY>, label=`need-revision`; and again with label=`need-dependency` (re-analysis candidates per the command's re-run semantics)\nMerge by ticket id. POST-FILTER OUT any ticket whose status type is `completed` / `canceled`, and any ticket already carrying `ready-to-port` / `ready-to-dev` / `need-spec-review` / `dispatcher-port-in-flight` / `dispatcher-dev-in-flight` (already actionable or inside a pipeline — the analyzer must not touch them).\n\nIf ZERO candidates → emit the Phase 3 report with `Candidates: 0` and STOP IMMEDIATELY. Do NOT install anything, do NOT touch any repo.\n\n## Phase 0 — BOOTSTRAP (only if >=1 candidate; analyzer needs NO Flutter, NO openspec, NO gh)\n```bash\nset -e\nbash /home/user/gogox-claude/install.sh >/tmp/install.log 2>&1\nls ~/.claude/commands/ticket-analyze.md >/dev/null && echo 'gogox-claude: installed'   # flattened: NOT dev/ticket-analyze.md\ngit config --global --add safe.directory '*'\ncd /home/user/<TARGET_REPO>   # batch mode resolves the project profile from cwd (registry entry keyed by repo basename)\n```\n\n## Phase 2 — ANALYZE\nRead `~/.claude/commands/ticket-analyze.md` and follow it for **batch mode** with `--non-interactive`, from cwd `/home/user/<TARGET_REPO>`. Cloud-specific overrides:\n1. Linear namespace: the local .md uses `mcp__claude_ai_Linear__*` → use `mcp__Linear__*` here.\n2. If Step 1.5 STOPs because `branch_prefix` is `auto` or the team key cannot be derived, re-run with `--team:<TEAM_KEY>`.\n3. `--non-interactive` is mandatory (no human in this session): confirm gates are skipped and inferred dependencies are recorded but never treated as blocking, exactly per the command's own contract. Do NOT improvise extra blocking decisions.\n4. Respect every skip filter the command defines (ready-to-*, in-flight, need-spec-review). Per-ticket failures must NOT abort the batch — record and continue.\n5. The four analyzer labels (`ready-to-port`, `ready-to-dev`, `need-revision`, `need-dependency`) are mutually exclusive full-set rewrites — follow the command's label-write contract exactly; write nothing outside it.\n6. If the command's Step 8 concurrent-writer check (batch-start timestamp vs dispatcher locks) detects a conflict, skip that ticket — the hourly ggx-dev-agent routine may be running; never fight it for a ticket.\n\n## Phase 3 — REPORT (always emit, even on 0 candidates)\n=== TICKET-ANALYZER OUTCOME ===\nRun (UTC)        : <timestamp>\nCandidates       : <n> (todo=<a> need-revision=<b> need-dependency=<c>)\nVerdicts         : ready-to-port=<n> ready-to-dev=<n> need-revision=<n> need-dependency=<n> skipped=<n>\nPer ticket       : <id lane verdict reason-one-liner>\nBest start       : <ticket id from topological order | n/a>\nFailures         : <ids + one-line cause | none>\nNotes            : <notable>\n=== TICKET-ANALYZER COMPLETE ==="
+            }
+          }
+        }
+      ],
+      "session_context": {
+        "allowed_tools": [
+          "Bash",
+          "Read",
+          "Write",
+          "Edit",
+          "Glob",
+          "Grep"
+        ],
+        "model": "claude-opus-4-8",
+        "sources": [
+          {
+            "git_repository": {
+              "url": "https://github.com/charlie-yang-gogox/gogox-claude"
+            }
+          },
+          {
+            "git_repository": {
+              "url": "https://github.com/gogovan/<TARGET_REPO>"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "mcp_connections": [
+    {
+      "connector_uuid": "<LINEAR_CONNECTOR_UUID>",
+      "name": "Linear",
+      "transport_type": "http",
+      "url": "https://mcp.linear.app/mcp"
+    }
+  ]
+}
