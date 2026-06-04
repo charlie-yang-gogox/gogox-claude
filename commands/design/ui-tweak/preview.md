@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline (R18) — build + install + launch the change onto a device, then STOP and hand the device to the designer to look at and drive THEMSELVES. The agent never screenshots, taps, navigates, or grants permissions — its job ends the moment the app is up. Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (boot an emulator/simulator → else any connected device incl. physical → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators). Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it becomes a pure build-only compile gate — no device cascade, no preview-shown, no card; the walker then advances straight to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
+description: "Phase-1 stage of the /ui-tweak pipeline (R18) — build + install + launch the change onto a device, then STOP and hand the device to the designer to look at and drive THEMSELVES. The agent never screenshots, taps, navigates, or grants permissions — its job ends the moment the app is up. Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it becomes a pure build-only compile gate — no device cascade, no preview-shown, no card; the walker then advances straight to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -40,6 +40,36 @@ git diff "$BASE" --name-only > "$WT/.dev/ui-tweak/audit-files"
 Resolve `ui_preview_cmd` / `ui_build_cmd`: prefer a repo override in `<repo>/.gogox-claude.yaml`,
 else the platform default.
 
+**`{platform} = flutter` ONLY — resolve the flutter binary (probe-based, fvm-aware).** On
+`android` / `ios` SKIP this whole block: their profile `ui_build_cmd` (gradlew / xcodebuild) runs
+as-is — no flutter resolution, no flutter tooling, nothing here may fail a native-platform run:
+
+```bash
+# /ui-tweak:start writes this marker; inline fallback covers a stale worktree from before the marker.
+# Probe-based, mirroring start.md: candidates by priority (pinned → fvm first; fvm resolved by
+# absolute path since it is often off the agent shell's PATH, e.g. ~/.pub-cache/bin/fvm), each
+# verified with one `--version` run; the first that WORKS is persisted. Never guess from config
+# alone — some machines have only fvm (no bare flutter), others only bare flutter (fvm off PATH).
+if [ -f "$WT/.dev/ui-tweak/flutter-bin" ]; then FLUTTER_BIN=$(cat "$WT/.dev/ui-tweak/flutter-bin"); else
+  probe() { eval "$1 --version" >/dev/null 2>&1; }
+  FVM_BIN=$(command -v fvm 2>/dev/null || true)
+  [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
+  PINNED=0; { [ -f "$WT/.fvmrc" ] || [ -f "$WT/.fvm/fvm_config.json" ]; } && PINNED=1
+  FLUTTER_BIN=""
+  if [ "$PINNED" = 1 ] && [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then FLUTTER_BIN="$FVM_BIN flutter"
+  elif probe flutter; then FLUTTER_BIN="flutter"
+  elif [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then FLUTTER_BIN="$FVM_BIN flutter"
+  fi
+  [ -z "$FLUTTER_BIN" ] && { echo "FAIL: no working flutter found (tried fvm + bare flutter)." >&2; exit 1; }
+  printf '%s\n' "$FLUTTER_BIN" > "$WT/.dev/ui-tweak/flutter-bin"
+fi
+```
+
+Then rewrite the **leading `flutter` token** of the resolved `ui_preview_cmd` / `ui_build_cmd`
+(including repo overrides) with `$FLUTTER_BIN`, and use `$FLUTTER_BIN` for every `flutter devices` /
+`flutter emulators` call below. Do NOT re-discover fvm by trial-and-error — the marker is
+authoritative.
+
 ## Step 0b — direct-ship mode (R20)
 
 ```bash
@@ -63,14 +93,23 @@ The rest of this file (Steps 1–4) is the normal **device-preview** path used w
 
 ## Step 1 — device cascade (a → b → c, R18) — skipped when `DIRECT_SHIP=1`
 
+> **Platform gate**: the device cascade below is the **flutter** path (`flutter run` covers Android
+> emulators + iOS simulators). When the profile defines **no `ui_preview_cmd`** (the `android` /
+> `ios` build-only profiles), skip the cascade entirely and go straight to **(c) build-only** —
+> exactly the pre-existing behavior for native platforms; never invoke flutter tooling there.
+
 Acquire a target device in this order; stop at the first that yields one:
 
-- **(a) boot an emulator / simulator.** `flutter emulators` to list; `flutter emulators --launch <id>`
-  to boot one (Android AVD or iOS simulator). Poll `flutter devices --machine` until it appears
-  (bounded wait, e.g. ~60s).
-- **(b) use an already-connected device — including a physical phone.** If `flutter devices --machine`
-  already lists a usable device (running emulator/simulator OR a physical handset over USB/wifi), use
-  it. (This branch is required because the designer may be looking at a real device, not an emulator.)
+- **(a) use an already-running device — including a physical phone.** If `$FLUTTER_BIN devices
+  --machine` already lists a usable device (a booted emulator/simulator OR a physical handset over
+  USB/wifi), use it **immediately — no boot, no poll** (this is the fastest path and the common case
+  once `/ui-tweak:start`'s pre-warm has done its job; it is also required because the designer may be
+  looking at a real device, not an emulator). On macOS, if `xcrun simctl list devices booted` shows a
+  `(Booted)` simulator that `flutter devices` doesn't list yet (the pre-warm is still finishing), give
+  it a SHORT grace poll (~10s) before falling through to (b).
+- **(b) boot an emulator / simulator (cold-boot fallback).** `$FLUTTER_BIN emulators` to list;
+  `$FLUTTER_BIN emulators --launch <id>` to boot one (Android AVD or iOS simulator). Poll
+  `$FLUTTER_BIN devices --machine` until it appears (bounded wait, e.g. ~60s).
 - **(c) no device available → honest fallback.** Do NOT fail. Run the **build-only** `ui_build_cmd`
   (so we still confirm it compiles), set a `no_device` flag for the orchestrator, and let card C1 be
   honest ("I couldn't find a phone/emulator to show it on; I did confirm it builds — connect a device
@@ -80,7 +119,8 @@ Pick ONE device id; substitute it into `ui_preview_cmd`'s `{device}`.
 
 ## Step 2 — build INTO the device, then STOP (this is also the build gate)
 
-- **Device path**: run `ui_preview_cmd` (e.g. `flutter run -d <id> --debug [--flavor …]`). This builds,
+- **Device path**: run `ui_preview_cmd` (e.g. `fvm flutter run -d <id> --debug [--flavor …]` — the
+  leading token is the resolved `$FLUTTER_BIN` from Step 0). This builds,
   installs, and launches the app on the device. Run it so the app stays up (background the
   long-running `flutter run` session; do not block the pipeline on its attached console). The moment
   the app is installed + launched (process is up on the device) the build gate has **passed** — go to
@@ -103,6 +143,11 @@ Pick ONE device id; substitute it into `ui_preview_cmd`'s `{device}`.
 >
 > If the app crashes on launch or won't start, treat it like a build failure → Step 4 (do NOT poke at
 > it to "fix" the runtime state).
+>
+> The ONLY sanctioned capture path in the whole pipeline is the opt-in `/ui-tweak:demo` stage
+> (Phase 2, after commit, designer-authorized via `demo-requested`) — and even that stage is
+> capture-only (zero input events) on the screen the designer already approved. Inside preview this
+> boundary is absolute.
 
 ## Step 3 — quarantine build side-effects (F3) + record success
 

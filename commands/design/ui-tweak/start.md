@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Stage 1 of the /ui-tweak pipeline — the up-front worktree split (R19), mirroring /dev:start and /port:start. Resolves the platform profile, fetches+caches the ticket (read-only), creates+enters the ../<ticket-id> worktree via /add-worktree, and writes the worktree-ready marker so the orchestrator never re-splits. Invoked by /ui-tweak:ff Step 0 before the first edit (every run splits up-front — there is no in-place path, B3). Designers never type it directly (a misdirect guard routes them back to /ui-tweak). Does NOT touch ticket status/assignee (no /_ticket-init)."
+description: "Stage 1 of the /ui-tweak pipeline — the up-front worktree split (R19), mirroring /dev:start and /port:start. Resolves the platform profile, fetches+caches the ticket (read-only), creates+enters the ../<ticket-id> worktree via /add-worktree, and writes the worktree-ready marker so the orchestrator never re-splits. On flutter repos it also writes the resolved-env block: the fvm-aware flutter binary marker (.dev/ui-tweak/flutter-bin) + a non-blocking iOS-simulator pre-warm, so preview never rediscovers fvm or cold-boots on the critical path. Invoked by /ui-tweak:ff Step 0 before the first edit (every run splits up-front — there is no in-place path, B3). Designers never type it directly (a misdirect guard routes them back to /ui-tweak). Does NOT touch ticket status/assignee (no /_ticket-init)."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -49,6 +49,39 @@ designer never types `/ui-tweak:start`.
    printf '%s\n' "$TICKET_JSON" > .dev/ui-tweak/ticket.json
    # worktree-ready — Step-0 idempotency marker (ff.md skips re-split when present)
    printf 'ticket=%s\n' "$TICKET_ID" > .dev/ui-tweak/worktree-ready
+   ```
+5. **Resolved-env block (flutter platform only — skip for android/ios)** — resolve the build tooling
+   ONCE here so no later stage rediscovers it per run:
+   ```bash
+   # (a) flutter binary resolution — PROBE, don't guess. Real machines break config-only detection
+   #     in BOTH directions: an engineer's machine may have only bare `flutter` on PATH (fvm hidden
+   #     in ~/.pub-cache/bin), while a designer's machine may have ONLY fvm (bare `flutter` =
+   #     command-not-found). So: build candidates by priority, run each ONCE (`--version`), persist
+   #     the first that actually works. Every later flutter/dart invocation (preview's
+   #     devices/run/build, audit's /format) reads this marker — nothing downstream guesses again.
+   probe() { eval "$1 --version" >/dev/null 2>&1; }
+   FVM_BIN=$(command -v fvm 2>/dev/null || true)
+   [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
+   PINNED=0; { [ -f .fvmrc ] || [ -f .fvm/fvm_config.json ]; } && PINNED=1
+   FLUTTER_BIN=""
+   if [ "$PINNED" = 1 ] && [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then
+     FLUTTER_BIN="$FVM_BIN flutter"                  # pinned repo + working fvm → correct SDK
+   elif probe flutter; then
+     FLUTTER_BIN="flutter"
+     [ "$PINNED" = 1 ] && echo "WARN: repo pins its SDK via fvm but fvm did not run — using system flutter (may drift from CI)." >&2
+   elif [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then
+     FLUTTER_BIN="$FVM_BIN flutter"                  # no bare flutter at all → fvm-managed machine
+   fi
+   [ -z "$FLUTTER_BIN" ] && { echo "FAIL: no working flutter found (tried fvm + bare flutter). Install flutter or fvm, then re-run." >&2; exit 1; }
+   printf '%s\n' "$FLUTTER_BIN" > .dev/ui-tweak/flutter-bin
+   # (b) iOS simulator pre-warm (macOS only) — NON-BLOCKING + fail-silent: kick the boot off in the
+   #     background so the cold boot overlaps ticket analysis + the first apply, and a later "show me"
+   #     finds a warm simulator. NEVER wait on it, NEVER fail or warn because of it (a designer may
+   #     preview on Android or a physical phone instead — the warm sim is a bonus, not a requirement).
+   if [ "$(uname)" = "Darwin" ] && ! xcrun simctl list devices booted 2>/dev/null | grep -q '(Booted)'; then
+     udid=$(xcrun simctl list devices available 2>/dev/null | grep iPhone | grep -m1 -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
+     [ -n "$udid" ] && { (xcrun simctl boot "$udid" >/dev/null 2>&1 &) ; }
+   fi
    ```
 
 ## Not the ticket lifecycle

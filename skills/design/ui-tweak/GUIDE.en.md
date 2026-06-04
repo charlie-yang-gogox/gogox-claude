@@ -11,7 +11,7 @@
 **One-line definition**: you describe a UI change in plain words (or with a Figma link / a ticket),
 and Claude edits the "look-only" parts in the codebase for you. When you want to see it, it **builds
 the app onto a device (an emulator or your connected phone) so you can look at it yourself**. Once
-you're happy, it wraps the change up as a **proposal for an engineer (a draft PR)**.
+you're happy, it wraps the change up as a **draft PR for an engineer to review**.
 
 **Can do (visual / layout / structural UI changes):**
 - Values: spacing, padding, margin, corner radius, font size/weight, color, opacity, shadow, element
@@ -32,6 +32,9 @@ ticket status.**
 > ⚠️ About "seeing it": it only **builds and launches** the app on the device, then **hands the
 > device to you**. It will **not** screenshot for you, tap around for you, grant permissions, or
 > navigate to a specific screen. You look and drive to the page you want to check, yourself.
+> One opt-in exception: at ship time you can pick "**Ship it — and record a short demo**" — after
+> you've approved the look, it records what's already on the screen for the PR (still zero taps,
+> zero navigation; you never wait for it).
 
 ---
 
@@ -71,8 +74,9 @@ names the screen, the component, the target value, and may attach a Figma link.
 /ui-tweak CAF-1234
 ```
 > The ticket is **read-only**: the skill only *reads* it — it never changes status, assigns, or
-> comments. The one exception is that, after you choose to ship, it posts a **draft-PR link** on the
-> ticket (a read-only notice; it does not change status).
+> comments. The exceptions: after you choose to ship, it posts a **draft-PR link** on the ticket, and
+> if you handed over a screenshot/recording (or asked it to record a demo) it **attaches that file**
+> to the ticket (so the PR can show it). Neither touches status or assignee.
 
 **C. Figma link** (match the design)
 ```
@@ -116,17 +120,25 @@ scenes there are two phases:
    runs).
 
 **Phase 1: show you (runs only when you pick "I'm done — show me")**
-3. It **compiles + installs + launches** the change onto a device (emulator/simulator, or your
-   connected physical phone; if none, it falls back to "just confirm it compiles" and tells you
-   honestly).
+3. It **compiles + installs + launches** the change onto a device (your connected physical phone or
+   an already-running emulator/simulator is used first; otherwise it boots one; if none exists, it
+   falls back to "just confirm it compiles" and tells you honestly). A simulator is quietly warmed up
+   in the background from the moment your run starts, so this step usually skips the slow cold boot.
 4. The moment the app is up, **it stops and hands the device to you** — you look and tap to the page
    you want yourself. It does not screenshot or drive the app.
-5. Then it asks: "**Does it look right? → Ship it / more changes**".
+5. Then it asks: "**Does it look right? → Ship it / Ship it — and record a short demo / more
+   changes**". Pick the **record a short demo** variant and it will record what's on the screen right
+   now (the exact screen you just approved — it still never taps or navigates) and include it in the
+   PR; the recording happens **after** you're done here, so you never wait for it. And if you took a
+   screenshot or recording yourself, you can hand the file over right here (paste/drag it) — it gets
+   attached to the PR so the engineer sees the actual result.
 
 **Phase 2: ship (runs only when you pick "Ship it")**
 6. It runs the **full logic check** (an independent AI audit confirming only the look changed, nothing
    about how the program runs), and on pass **commits and opens a draft PR**, leaving a link on the
-   ticket.
+   ticket. The PR carries whatever visuals exist — the ticket's design images / Figma link, your own
+   screenshot if you handed one over, and the short demo if you asked for one — so the engineer sees
+   what to compare (outside that opt-in demo, the skill never captures anything itself).
 7. Done — your part is finished. The draft PR won't go live automatically; an engineer does the final
    review.
 
@@ -195,10 +207,12 @@ These are blocked; the skill stops and tells you why:
 ## 8. Troubleshooting
 
 **"Show me" can't open a device / no device found**
-- It tries, in order: boot an emulator/simulator → use an already-connected device (incl. physical) →
-  fall back to "just confirm it compiles".
+- It tries, in order: use an already-connected/running device (incl. physical) → boot an
+  emulator/simulator → fall back to "just confirm it compiles".
 - To view on a physical device, connect the phone first (USB / wifi, visible in `flutter devices`),
   then run "show me".
+- The fastest path is keeping your simulator/emulator open between runs — an already-running device
+  is picked up immediately, with no boot wait (a fresh run also pre-warms one in the background).
 
 **The skill's description looks wrong / the skill isn't recognized**
 - Usually the `SKILL.md` frontmatter (the `---`-delimited block at the top) isn't on the **first line**.
@@ -211,7 +225,8 @@ These are blocked; the skill stops and tells you why:
 `/ui-tweak`'s terminal is a **draft PR**, and it only gets there **when you personally pick "Ship it"**:
 
 - Iterating, or picking "show me" → nothing is shipped; the change just stays in your working tree.
-- Picking "Ship it" → logic check → commit → open a **draft PR** + leave a link on the ticket.
+- Picking "Ship it" → logic check → commit → open a **draft PR** (its Demo section carries the
+  ticket's design images and your screenshot, if you gave one) + leave a link on the ticket.
 - **It never auto-merges, never flips draft → ready, never changes ticket status.** The human review
   step is kept on purpose — with no edit-time guard, "no logic changes" is only best-effort (pre-ship
   dual audit + compile), so a human must do the final check on the PR.

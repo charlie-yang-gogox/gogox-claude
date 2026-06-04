@@ -27,7 +27,7 @@ only ever types `/ui-tweak`; everything else is internal.
   (`CAF-1234` / a ticket URL — the richest source; often already names the screen, target value, and
   Figma frame), or implicitly carries a trailing `[figma-url]` to ground the exact target.
 - The pipeline, stages, markers, judges, and every wayfinding card are implemented in
-  `commands/design/ui-tweak/{ff,start,apply,preview,audit}.md`.
+  `commands/design/ui-tweak/{ff,start,apply,preview,audit,demo}.md`.
 
 ## What to do when invoked
 
@@ -51,8 +51,9 @@ only ever types `/ui-tweak`; everything else is internal.
      phone* (→ Phase 1 `preview`: build onto a device), *It already looks right — ship it* (R20 — the
      designer already saw it on their own device; skip the device preview, run a build-only compile
      gate, then go straight to Phase 2), or *more changes*;
-   - after preview → **card C1 (looks-good)** — *Ship it* (→ Phase 2 `audit` → commit → draft PR) or
-     *more changes*;
+   - after preview → **card C1 (looks-good)** — *Ship it* (→ Phase 2 `audit` → commit → draft PR),
+     *Ship it — and record a short demo* (same, plus a zero-input capture of the screen they just
+     approved is embedded in the PR — recorded after they leave, no waiting), or *more changes*;
    - the designer picks an option, or just describes another change in words (a correction via the
      `AskUserQuestion` **Other** field) — the orchestrator re-navigates automatically.
 
@@ -83,10 +84,17 @@ build and the panel catch anything that isn't, before it ships."
 
 **Two phases, two designer decisions (R18).** Iteration is build-free — adjust as often as you like
 for free. **Phase 1**: pick "I'm done — show me" and the change is **built + launched onto a real
-device** (`flutter run` covers Android emulators + iOS simulators; cascade boots one, else uses a
-connected device incl. a physical phone, else honestly falls back to build-only) so **you** can look
+device** (`flutter run` covers Android emulators + iOS simulators; cascade uses an already-running /
+connected device first — incl. a physical phone — else boots one, else honestly falls back to
+build-only; a simulator is pre-warmed in the background when the run starts, so this is usually fast)
+so **you** can look
 at it. The skill only gets the app running, then **hands you the device — it never screenshots, taps,
-navigates, or grants permissions; you look and drive it yourself**. **Phase 2**: once it looks right, pick "Ship it" — the full logic audit runs, then it
-**commits and opens a draft PR** with a designer-verifiable summary + a link on the work item. It
-**never** auto-merges, flips draft→ready, or mutates ticket status (the only ticket write is the
-read-only PR-link comment).
+navigates, or grants permissions; you look and drive it yourself**. The one exception is the opt-in
+*"Ship it — and record a short demo"*: AFTER you approve the look, it passively captures what is
+already on the screen (still zero taps / zero navigation) so the PR can show it — best-effort, and
+never delays the PR. **Phase 2**: once it looks right, pick "Ship it" — the full logic audit runs, then it
+**commits and opens a draft PR** with a designer-verifiable summary + a link on the work item; the
+PR's Demo section embeds the ticket's design visuals and — if you handed one over at the
+"looks good?" card — your own screenshot/recording (the skill itself still never captures any). It
+**never** auto-merges, flips draft→ready, or mutates ticket status (the only ticket writes are the
+read-only PR-link comment and attaching your supplied capture, if any).

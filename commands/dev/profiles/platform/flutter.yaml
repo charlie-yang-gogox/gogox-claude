@@ -16,8 +16,13 @@ ui_build_cmd: flutter build apk --debug   # or `flutter build ios --debug --simu
 
 # Phase-1 preview (R18): build the change INTO a device so the designer can SEE it on a real screen
 # (NOT build-only anymore). `{device}` is substituted by /ui-tweak:preview after the device cascade
-# (boot an emulator/simulator → else any connected device incl. physical → else honest skip).
-# `flutter run` covers BOTH Android emulators and iOS simulators, so one template serves both.
-# Device discovery uses `flutter devices` / boot uses `flutter emulators --launch <id>`.
+# (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator →
+# else honest skip). `flutter run` covers BOTH Android emulators and iOS simulators, so one template
+# serves both. Device discovery uses `flutter devices` / boot uses `flutter emulators --launch <id>`.
 # Repo override (e.g. flavor) lives in <repo>/.gogox-claude.yaml.
+#
+# fvm rewrite: on fvm-pinned repos (.fvmrc / .fvm/fvm_config.json present) the /ui-tweak stages
+# rewrite the LEADING `flutter` token of ui_build_cmd / ui_preview_cmd (incl. repo overrides) with
+# the resolved binary from .dev/ui-tweak/flutter-bin (e.g. `fvm flutter`). Keep templates written
+# with the bare `flutter` token so the rewrite stays mechanical.
 ui_preview_cmd: flutter run -d {device} --debug   # repos add their flavor, e.g. `--flavor stag`

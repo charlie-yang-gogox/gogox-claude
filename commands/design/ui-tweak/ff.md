@@ -1,6 +1,6 @@
 ---
 name: ff
-description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → pr → review) runs when they pick 'Ship it'. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate still runs before the audit. Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce; C3/C4 removed); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: a draft PR happens only when the designer picks 'Ship it'. --auto shows no cards → reaches neither a device preview nor a PR."
+description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → [demo] → pr → review) runs when they pick 'Ship it' — demo is the opt-in Tier-1 passive capture ('Ship it — and record a short demo' on C1 looks-good): zero-input screenshot+recording of the approved screen, after commit, fail-silent. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate still runs before the audit. Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce; C3/C4 removed); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: a draft PR happens only when the designer picks 'Ship it'. --auto shows no cards → reaches neither a device preview nor a PR."
 ---
 
 <!-- RULE: ALL content, including designer-facing CARD text, is English. No Chinese / non-ASCII. -->
@@ -50,7 +50,6 @@ Failures under `--auto` still print the deterministic stderr line (R13).
 
 | BANNED (dev jargon) | Plain wording |
 |---|---|
-| review / PR / draft PR | hand to an engineer / a proposal |
 | branch / commit / merge | (don't surface; handled internally) |
 | build / compile | confirm it still works |
 | emulator / /run | see it on a phone screen |
@@ -58,6 +57,10 @@ Failures under `--auto` still print the deterministic stderr line (R13).
 | ticket | work-item number |
 | revert | take the change back / put it back |
 | judge / logic / behavior | check / the part about how the program runs |
+
+**"PR" / "draft PR" is ALLOWED vocabulary** — designers know what a PR is; say it directly, never
+euphemize it as "a proposal". ("review" as an engineer activity is fine too: "an engineer will
+review the PR".)
 
 - **Translate, never forward**: a judge's `Status`/findings are translated into ONE plain sentence;
   never paste `ui-verify-agent` / `dev-reviewer` raw text to the designer.
@@ -77,7 +80,7 @@ Failures under `--auto` still print the deterministic stderr line (R13).
 - **Info cards (C0 first-contact, C5 done) and the stop-only notice C-MISDIRECT stay
   as plain text** — they present no choice, so a tool prompt would be noise.
 - **`--auto` NEVER calls `AskUserQuestion`** (it is interactive). Under `--auto` all cards are
-  suppressed (D7); with no prompt there is no way to pick "wrap up as a proposal", which is the
+  suppressed (D7); with no prompt there is no way to pick "Ship it", which is the
   structural guarantee that `--auto` can never reach a PR. Only verify's deterministic stderr line
   survives (R13).
 - **Routing keys on the returned selection** (the chosen option's `label`, or the Other free-text),
@@ -176,7 +179,12 @@ infer_ui_stage() {
       trunk=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
       trunk=${trunk:-$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | sed 's@^origin/@@')}
       ahead=$(git rev-list --count "origin/${trunk:-main}..HEAD" 2>/dev/null || echo 0)
-      [ "${ahead:-0}" -gt 0 ] && { echo pr; return; }  # already committed → open PR
+      if [ "${ahead:-0}" -gt 0 ]; then                 # already committed
+        # opt-in demo capture (Tier 1): runs AFTER commit (diff frozen) and BEFORE pr, so the PR
+        # embeds it. demo consumes demo-requested on completion OR failure (fail-silent).
+        [ -f "$wt/.dev/ui-tweak/demo-requested" ] && { echo demo; return; }
+        echo pr; return                                # → open PR
+      fi
       echo commit; return                              # audit CLEAR, not committed → commit
     fi
     echo audit; return                                 # deliver set, not yet audited → Phase-2 audit
@@ -200,7 +208,7 @@ infer_ui_stage() {
 }
 ```
 
-Output whitelist: `start | apply | preview | audit | commit | pr | review | done`. Guard the output
+Output whitelist: `start | apply | preview | audit | commit | demo | pr | review | done`. Guard the output
 against this set (mirror `infer_bug_stage_safe`). There is no standalone `verify` stage — the build is
 folded into `preview` (`flutter run` = build + deploy); `format` is folded into `audit`.
 
@@ -229,11 +237,12 @@ the iteration C1 ("I'm done — show me / more changes")**.
 | stage | action |
 |---|---|
 | `apply` | `/ui-tweak:apply <source> [figma] [--auto]` — iteration edit (no build). In **repair mode** (`repair-context` present) it reads the error and fixes the edit UI-only (see Correction/Repair loop) |
-| `preview` | `/ui-tweak:preview [--auto]` — **Phase 1**: build INTO a device (cascade: boot emulator/sim → connected device incl. physical → honest no-device build-only) so the designer SEES it. Writes `build-pass` + `preview-shown`. In **direct-ship mode** (`direct-ship` present, R20): build-only compile gate — no device, no `preview-shown`, no card; walker then advances to `audit`. Build-fail → repair-context (→ apply, max 3) |
+| `preview` | `/ui-tweak:preview [--auto]` — **Phase 1**: build INTO a device (cascade: already-running/connected device incl. physical FIRST → boot emulator/sim → honest no-device build-only) so the designer SEES it. Writes `build-pass` + `preview-shown`. In **direct-ship mode** (`direct-ship` present, R20): build-only compile gate — no device, no `preview-shown`, no card; walker then advances to `audit`. Build-fail → repair-context (→ apply, max 3) |
 | `audit` | `/ui-tweak:audit [--auto]` — **Phase 2** first check (deliver only): `/format` then the dual-judge on the final cumulative diff. CLEAR → `commit`; BLOCKED → repair-context (→ apply, max 3) |
 | `start` | `/ui-tweak:start <ticket> [--auto]` — split+enter the `../<ticket>` worktree via `/add-worktree`. Run up-front by **Step 0 (R19)** before the first `apply`. (Under B3 every run splits up-front, so the walker's deliver-path `start` branch is defensive only.) |
 | `commit` | `/commit` (NO extra confirm — "Ship it" on C1 already authorized the handoff, R18) — commit ONLY the files in the Step-5 coverage table (R12); formatter-touched extras go in the PR body `### Formatter-only changes` |
-| `pr` | `/pull-request --draft` with the **pre-built PR body** (see "Deliver PR body" below); title prefixed `[ui-tweak]`; structured read-only ticket comment (`🎨 UI tweak ready for engineer review` + audit verdict + coverage summary) |
+| `demo` | `/ui-tweak:demo` — opt-in **Tier-1 passive capture** (`demo-requested` present): screenshot + short recording of what is CURRENTLY on the previewed device's screen — **zero input events** (never taps/launches/navigates; the screen is the one the designer just approved). Appends output paths to `demo-files`, consumes `demo-requested`. Best-effort + fail-silent: ANY failure also consumes `demo-requested` and the walker proceeds to `pr` with the normal Demo fallback chain |
+| `pr` | `/pull-request --draft` with the **pre-built PR body** (see "Deliver PR body" below — its `## Demo` embeds ticket visuals and any designer-supplied capture from `.dev/ui-tweak/demo-files`); title prefixed `[ui-tweak]`; structured read-only ticket comment (`🎨 UI tweak ready for engineer review` + audit verdict + coverage summary) |
 | `review` | `/code-review <pr>` → `claude-reports/<ticket>/code-review.md` |
 | `done` | terminal: iteration → **C1 (show-me)**; post-preview → **C1 (looks-good)**; deliver (PR open + code-review) → **C5** |
 
@@ -294,13 +303,14 @@ compiles or that logic was checked:
   [source: Figma-confirmed / from the work-item description / ⚠ estimated]
   Want to see it on a phone, ship it as-is (if you've already seen it), or make more changes first?
   (Show me = I build it onto a device so you can look. Ship it = I skip the phone preview, confirm it
-  still works, run the full check, and wrap it up. Or pick Other and tell me what to change.)
+  still works, run the full check, and open a draft PR. Or pick Other and tell me what to change.)
   ```
   When `.not-deliverable` is present, append the "⚠ N spot(s) weren't changed …" note. After a
   correction, first line becomes *"I adjusted it once more. In total I've changed: <cumulative>."*
 - **options**: `I'm done — show me on a phone` *(recommended)* — "I'll build it onto a phone/emulator
   so you can see it." / `It already looks right — ship it` — "You've already seen it on your own
-  device — skip the phone preview; I'll confirm it still works, run the full check, and wrap it up."
+  device — skip the phone preview; I'll confirm it still works, run the full check, and open a
+  draft PR."
   *(BOTH the "show me" AND "ship it" options are OMITTED when `.not-deliverable` exists — you can
   neither preview nor ship a partial; tell them to adjust.)* / `I want more changes` — "Tell me what to
   adjust (e.g. 'move it down one')."
@@ -319,17 +329,31 @@ compiles or that logic was checked:
 - **question**:
   ```
   It's running on <device> now — take a look.  (What changed: <plain summary>.)
-  Does it look right? If so I'll do the full check and wrap it up as a proposal for an engineer.
+  Does it look right? If so I'll do the full check and open a draft PR for engineer review.
+  (Took a screenshot or recording you'd like to include? Pick Other and paste/drag the file here —
+  I'll attach it to the PR.)
   ```
   **No-device fallback (R18)**: if preview ran build-only (no device found), replace line 1 with
-  *"I couldn't find a phone/emulator to show it on, but I confirmed it builds."* and keep the rest.
-- **options**: `Ship it` *(recommended)* — "Looks right — run the full check + open a proposal with a
-  link on the work item." / `I want more changes` — "Tell me what to adjust; I'll redo and re-show it."
+  *"I couldn't find a phone/emulator to show it on, but I confirmed it builds."* and keep the rest —
+  and OMIT the `Ship it — and record a short demo` option (there is no screen to record).
+- **options**: `Ship it` *(recommended)* — "Looks right — run the full check + open a draft PR with a
+  link on the work item." / `Ship it — and record a short demo` — "Same as Ship it, plus I'll record
+  what's on the screen right now and include it in the PR. You don't wait — it happens after you're
+  done here." / `I want more changes` — "Tell me what to adjust; I'll redo and re-show it."
 - **routing**: `Ship it` → resolve ticket id from `.dev/ui-tweak/ticket.json` (always present under B3
   — Step 0 split the worktree with a ticket, so the id is never missing here): write
   `.dev/ui-tweak/deliver` → walker (→ audit/commit/pr/review/C5). **DO NOT re-ask for a number.**
-  `I want more changes` / **Other** → Correction loop (which clears the preview markers so it
-  re-iterates).
+  `Ship it — and record a short demo` → same as `Ship it`, plus write
+  `.dev/ui-tweak/demo-requested` — the walker runs the `demo` stage (passive capture of the screen
+  the designer just approved) after `commit`, before `pr`. Recording is best-effort: if it fails the
+  PR still opens with the normal Demo fallback chain, silently.
+  **Other text that is ONLY existing local image/video file path(s)** (e.g. dragged into the prompt;
+  verify each file exists and is an image/video) → that is a **demo attachment, NOT a correction**:
+  append each absolute path to `.dev/ui-tweak/demo-files` (one per line), reply in plain words
+  ("Got it — I'll include it when I wrap this up."), and re-render C1 (looks-good). The `pr` stage
+  uploads + embeds them (see "Deliver PR body").
+  `I want more changes` / any other **Other** text → Correction loop (which clears the preview
+  markers so it re-iterates).
 - **Doing nothing is fine**: walking away leaves the reviewed diff in the tree; no extra "leave it"
   button. Shipping (→ draft PR) is the only explicit terminal action.
 
@@ -350,10 +374,13 @@ compiles or that logic was checked:
 
 **C5 — done** — *plain text (info card, no choice)*
 ```
-📍 Done! I've wrapped it up as a proposal for an engineer and left a link on the work item.
-📦 Link: <url>  (draft state — an engineer will look it over; it won't go live automatically.)
+📍 Done! I've opened a draft PR for engineer review and left a link on the work item.
+📦 Link: <url>  (draft — an engineer reviews it; it won't go live automatically.)
 👉 Your part is finished. Want more changes? Just tell me.
 ```
+When the `demo` stage captured successfully, append to the `📦` line: *"Includes a short demo of the
+screen you approved."* On a silent demo failure say **nothing** (fail-silent — the Demo fallback
+chain already covered the PR).
 
 ## Correction loop (designer) + Repair loop (agent) — R8 / R18
 
@@ -375,7 +402,8 @@ The designer just types the change they want (no dedicated "adjust" option — O
   ```bash
   rm -f "$wt/.dev/ui-tweak/build-pass"  "$wt/.dev/ui-tweak/preview-shown" \
         "$wt/.dev/ui-tweak/preview-requested" "$wt/.dev/ui-tweak/deliver" \
-        "$wt/.dev/ui-tweak/direct-ship" \
+        "$wt/.dev/ui-tweak/direct-ship" "$wt/.dev/ui-tweak/demo-files" \
+        "$wt/.dev/ui-tweak/demo-requested" \
         "$wt/.dev/ui-verify-pass.md" "$wt/.dev/dev-reviewer-pass.md" \
         "$wt/.dev/ui-tweak/repair-context" "$wt/.dev/ui-tweak/repair-count"
   ```
@@ -394,7 +422,8 @@ re-validates from Phase 1:
 ```bash
 rm -f "$wt/.dev/ui-tweak/repair-context" "$wt/.dev/ui-tweak/build-pass" \
       "$wt/.dev/ui-tweak/preview-shown" "$wt/.dev/ui-tweak/deliver" \
-      "$wt/.dev/ui-tweak/direct-ship" \
+      "$wt/.dev/ui-tweak/direct-ship" "$wt/.dev/ui-tweak/demo-files" \
+      "$wt/.dev/ui-tweak/demo-requested" \
       "$wt/.dev/ui-verify-pass.md" "$wt/.dev/dev-reviewer-pass.md"
 # keep preview-requested (still wants the preview) and repair-count (accumulates toward the cap of 3).
 # direct-ship IS cleared: after a fix the designer re-decides at C1 (show-me) — "show me" gives a real
@@ -408,12 +437,35 @@ re-entering apply. A clean `preview` build resets `repair-count`.
 ## Deliver PR body (R2)
 
 The `pr` stage MUST pass a pre-built `## UI Tweak — designer-verifiable summary` body (Source /
-Grounding-provenance / Audit verdict / Coverage table with `shared?` / "No screenshot — eyeball
-before→after against the Figma node or ticket") — build-only means this body is the reviewer's only
-way to judge visual correctness. Never reuse `/pull-request`'s empty placeholder.
+Grounding-provenance / Audit verdict / Coverage table with `shared?`) — this body is the reviewer's
+primary way to judge visual correctness, so the stage also populates the body's `## Demo` section
+with whatever visuals **already exist**. The agent still NEVER captures anything itself — the
+preview HARD BOUNDARY is untouched; it only surfaces and uploads visuals a human or the ticket
+already produced:
+
+1. **Captured demo** (preferred — shows the *actual* result): if `.dev/ui-tweak/demo-files` exists
+   (designer-supplied via C1 Other, and/or written by the `demo` stage's passive capture), upload
+   each listed file to the ticket via the Linear 3-call flow — `prepare_attachment_upload` → PUT the
+   raw bytes to the signed URL with its headers verbatim → `create_attachment_from_upload` — and
+   embed each returned `assetUrl` in `## Demo` as `![demo](<assetUrl>)`. (This upload is the one
+   extra ticket write the deliver path is allowed — see Constraints.)
+2. **Ticket visuals** (shows the *target* design): read `.dev/ui-tweak/ticket.json` (cached by
+   `start`) for image attachments and embed their URLs as markdown images. Add the grounded Figma
+   node URL (from apply's figma grounding, when present) as a plain
+   `Target design (Figma): <url>` link — a Figma URL is a page, not an image asset; never wrap it in
+   `![]()`.
+3. **Verify before embedding**: GitHub only renders an image URL it can fetch without auth. For each
+   candidate, check it is publicly fetchable (e.g. `curl -fsI <url>` → 200); an auth-gated URL goes
+   in as a plain link instead of an embedded image (an honest link beats a broken image box).
+4. **Fallback**: only when 1–3 yield nothing, keep the line "No screenshot — eyeball before→after
+   against the Figma node or ticket".
+
+Never reuse `/pull-request`'s empty placeholder.
 
 ## Constraints (carry-over)
 
 Terminal is a **draft PR** — never `draft→ready`, never merge, never mutate ticket status (the only
-ticket write is the read-only PR-link comment). No `--pr` flag; deliver only via a human picking C1
+ticket writes are the read-only PR-link comment and — when the designer supplied a capture —
+attaching that capture file to the ticket so the PR can embed its `assetUrl`; status/assignee are
+never touched). No `--pr` flag; deliver only via a human picking C1
 `[3]`. Not wired into `/route` / `/ggx-work` / `/ggx-dispatcher`.

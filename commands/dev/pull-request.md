@@ -125,6 +125,12 @@ Generate a **Summary** section by reading the commit messages and writing a plai
 - Write the Summary as narrative paragraphs — use bullet points
 - Add a `Linear:` or `Jira:` link outside the Ticket section
 
+**Caller-supplied body**: an invoking command may pass a fully pre-built body (e.g. `/ui-tweak:ff`'s
+`pr` stage passes its designer-verifiable summary, including a populated `## Demo` with image links).
+Use it verbatim — skip body generation, but still verify the required sections are present. Demo
+content must be image **URLs** (GitHub cannot render local file paths in a PR body); uploading local
+captures to get a URL is the caller's job, not this command's.
+
 **If `--dry-run`**: print the PR title, body, and implementation notes (Step 6), then stop. Do not push, create, or post.
 
 ### 6. Generate Implementation Notes
@@ -217,7 +223,9 @@ Build the updated body by:
 2. Taking the **Summary** section from the new body
 3. Taking the **What Changes** section from the new body
 4. Taking the **Test Plan** section from the new body (always regenerated on update)
-5. Taking the **Demo** section **from the existing PR body** (if it has real content), otherwise use the default template
+5. Taking the **Demo** section **from the existing PR body** if it has real content; **otherwise from
+   the new body** if that one has real content (a caller-supplied Demo with image links counts —
+   never downgrade it back to the placeholder); otherwise use the default template
 
 ```bash
 gh pr edit <number> --body "<MERGED_PR_BODY>"
