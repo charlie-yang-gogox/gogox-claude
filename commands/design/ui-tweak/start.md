@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Stage 1 of the /ui-tweak pipeline — the up-front worktree split (R19), mirroring /dev:start and /port:start. Resolves the platform profile, fetches+caches the ticket (read-only), creates+enters the ../<ticket-id> worktree via /add-worktree, and writes the worktree-ready marker so the orchestrator never re-splits. Invoked by /ui-tweak:ff Step 0 before the first edit (every run splits up-front — there is no in-place path, B3). Designers never type it directly (a misdirect guard routes them back to /ui-tweak). Does NOT touch ticket status/assignee (no /_ticket-init)."
+description: "Stage 1 of the /ui-tweak pipeline — the up-front worktree split (R19), mirroring /dev:start and /port:start. Resolves the platform profile, fetches+caches the ticket (read-only), creates+enters the ../<ticket-id> worktree via /add-worktree, and writes the worktree-ready marker so the orchestrator never re-splits. On flutter repos it also writes the resolved-env block: the fvm-aware flutter binary marker (.dev/ui-tweak/flutter-bin) + a non-blocking iOS-simulator pre-warm, so preview never rediscovers fvm or cold-boots on the critical path. Invoked by /ui-tweak:ff Step 0 before the first edit (every run splits up-front — there is no in-place path, B3). Designers never type it directly (a misdirect guard routes them back to /ui-tweak). Does NOT touch ticket status/assignee (no /_ticket-init)."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -49,6 +49,23 @@ designer never types `/ui-tweak:start`.
    printf '%s\n' "$TICKET_JSON" > .dev/ui-tweak/ticket.json
    # worktree-ready — Step-0 idempotency marker (ff.md skips re-split when present)
    printf 'ticket=%s\n' "$TICKET_ID" > .dev/ui-tweak/worktree-ready
+   ```
+5. **Resolved-env block (flutter platform only — skip for android/ios)** — resolve the build tooling
+   ONCE here so no later stage rediscovers it per run:
+   ```bash
+   # (a) fvm resolution — on an fvm-pinned repo bare `flutter` fails (wrong/no SDK on PATH) and the
+   #     agent wastes a failed run rediscovering `fvm` every time. Detect once, persist; every later
+   #     flutter/dart invocation (preview's devices/run/build, audit's /format) reads this marker.
+   if [ -f .fvmrc ] || [ -f .fvm/fvm_config.json ]; then FLUTTER_BIN="fvm flutter"; else FLUTTER_BIN="flutter"; fi
+   printf '%s\n' "$FLUTTER_BIN" > .dev/ui-tweak/flutter-bin
+   # (b) iOS simulator pre-warm (macOS only) — NON-BLOCKING + fail-silent: kick the boot off in the
+   #     background so the cold boot overlaps ticket analysis + the first apply, and a later "show me"
+   #     finds a warm simulator. NEVER wait on it, NEVER fail or warn because of it (a designer may
+   #     preview on Android or a physical phone instead — the warm sim is a bonus, not a requirement).
+   if [ "$(uname)" = "Darwin" ] && ! xcrun simctl list devices booted 2>/dev/null | grep -q '(Booted)'; then
+     udid=$(xcrun simctl list devices available 2>/dev/null | grep iPhone | grep -m1 -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
+     [ -n "$udid" ] && { (xcrun simctl boot "$udid" >/dev/null 2>&1 &) ; }
+   fi
    ```
 
 ## Not the ticket lifecycle
