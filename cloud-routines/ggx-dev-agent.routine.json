@@ -1,6 +1,6 @@
 {
   "name": "ggx-dev-agent",
-  "cron_expression": "0 4,10,16,22 * * *",
+  "cron_expression": "0 4,10 * * *",
   "enabled": true,
   "persist_session": false,
   "job_config": {

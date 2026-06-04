@@ -1,6 +1,6 @@
 {
   "name": "ticket-analyzer-agent-<team_key_lowercase>",
-  "cron_expression": "30 3,9,15,21 * * *",
+  "cron_expression": "30 3,9 * * *",
   "enabled": true,
   "persist_session": false,
   "job_config": {
