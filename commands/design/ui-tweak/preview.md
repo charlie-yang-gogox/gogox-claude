@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline (R18) — build + install + launch the change onto a device, then STOP and hand the device to the designer to look at and drive THEMSELVES. The agent never screenshots, taps, navigates, or grants permissions — its job ends the moment the app is up. Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (boot an emulator/simulator → else any connected device incl. physical → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators). Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
+description: "Phase-1 stage of the /ui-tweak pipeline (R18) — build + install + launch the change onto a device, then STOP and hand the device to the designer to look at and drive THEMSELVES. The agent never screenshots, taps, navigates, or grants permissions — its job ends the moment the app is up. Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (boot an emulator/simulator → else any connected device incl. physical → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators). Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it becomes a pure build-only compile gate — no device cascade, no preview-shown, no card; the walker then advances straight to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -40,7 +40,28 @@ git diff "$BASE" --name-only > "$WT/.dev/ui-tweak/audit-files"
 Resolve `ui_preview_cmd` / `ui_build_cmd`: prefer a repo override in `<repo>/.gogox-claude.yaml`,
 else the platform default.
 
-## Step 1 — device cascade (a → b → c, R18)
+## Step 0b — direct-ship mode (R20)
+
+```bash
+DIRECT_SHIP=0; [ -f "$WT/.dev/ui-tweak/direct-ship" ] && DIRECT_SHIP=1
+```
+
+When `DIRECT_SHIP=1` the designer picked **"It already looks right — ship it"** on card C1 (show-me):
+they have already looked at it on their own device, so this stage runs as a **build-only compile gate**
+— NOT a device preview. Concretely:
+
+- **Skip Step 1 entirely** (no device cascade — do not boot/launch anything). Go straight to the
+  **no-device build-only path**: run `ui_build_cmd`.
+- **Do NOT write `preview-shown`** in Step 3 (there is no "looks good?" stop — the designer already
+  decided to ship). On build PASS the orchestrator's walker (`deliver=1` + `direct-ship` + build PASS)
+  proceeds directly to `audit` with no card.
+- The build-fail path (Step 4) is **unchanged** — a compile failure still routes to the agent repair
+  loop (max 3, then Ce). This gate exists precisely because the designer's hand-build may predate the
+  latest tweak.
+
+The rest of this file (Steps 1–4) is the normal **device-preview** path used when `DIRECT_SHIP=0`.
+
+## Step 1 — device cascade (a → b → c, R18) — skipped when `DIRECT_SHIP=1`
 
 Acquire a target device in this order; stop at the first that yields one:
 
@@ -89,12 +110,15 @@ Pick ONE device id; substitute it into `ui_preview_cmd`'s `{device}`.
 # restore anything the build/run touched outside the frozen audit set
 git diff "$BASE" --name-only | grep -vxF -f "$WT/.dev/ui-tweak/audit-files" | xargs -r git checkout -- 2>/dev/null || true
 printf 'Status: PASS\n' > "$WT/.dev/ui-tweak/build-pass"
-: > "$WT/.dev/ui-tweak/preview-shown"          # signals the orchestrator to render card C1's "looks good?" variant
+# preview-shown signals the orchestrator to render card C1's "looks good?" variant. SKIP it in
+# direct-ship mode — the designer already decided to ship, so the walker continues straight to audit.
+[ "$DIRECT_SHIP" = "1" ] || : > "$WT/.dev/ui-tweak/preview-shown"
 rm -f "$WT/.dev/ui-tweak/repair-count"          # reset the repair budget on a clean build
 ```
 
-STOP. The orchestrator renders the **"looks good — ship it / more changes"** card (the post-preview
-variant of C1). On the no-device path it appends the honest "no device" note.
+STOP. **Normal path**: the orchestrator renders the **"looks good — ship it / more changes"** card (the
+post-preview variant of C1); on the no-device path it appends the honest "no device" note.
+**Direct-ship path (`DIRECT_SHIP=1`)**: no card — the walker advances to `audit`.
 
 ## Step 4 — build-fail path → agent repair (R18 / max 3)
 
@@ -123,7 +147,8 @@ UI-TWEAK BUILD-FAIL (preview): <one-line reason> — repair attempt <n>/3.
 ## HITL / Stop
 
 preview is mechanical — no card here (the orchestrator owns the wayfinding cards). On success print:
-`App launched on <device> — handed to the designer to look at. Audit deferred to ship.` The
+`App launched on <device> — handed to the designer to look at. Audit deferred to ship.` — or, in
+direct-ship mode: `Build gate PASS (direct-ship — no device preview). Next: audit.` The
 orchestrator then renders the post-preview C1, whose wording tells the designer **the app is running
 on their device and to go look / navigate to the screen themselves** ("It's running on <device> now —
 take a look. Does it look right?"). The agent does NOT describe what the screen shows (it never looked).

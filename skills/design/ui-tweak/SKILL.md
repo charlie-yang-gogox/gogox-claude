@@ -41,9 +41,16 @@ only ever types `/ui-tweak`; everything else is internal.
    ```
    (C0 is a plain-text info card — no choice — so no footer / no `AskUserQuestion`.)
 2. **Otherwise** → dispatch `/ui-tweak:ff $ARGUMENTS` (NO `--pr` — that flag does not exist). The
-   orchestrator runs `apply` only (iteration is build-free), then:
-   - iteration terminal → presents **card C1 (show-me)** — two choices: *I'm done — show me on a phone*
-     (→ Phase 1 `preview`: build onto a device) or *more changes*;
+   orchestrator **first silently splits a ticket-named worktree** (R19 / Step 0 → `/ui-tweak:start` →
+   `/add-worktree`, exactly like `/dev:ff` and `/port:ff`, so designer edits never touch the
+   engineer's checkout). A work-item number is **required** — like `/dev:ff` and `/port:ff`, a UI
+   change is always tracked under a work item; if the input carries none, the orchestrator asks for it
+   up-front (card C-WT) and does not start until it has one (no in-place editing, B3). Then it runs
+   `apply` only (iteration is build-free), then:
+   - iteration terminal → presents **card C1 (show-me)** — three choices: *I'm done — show me on a
+     phone* (→ Phase 1 `preview`: build onto a device), *It already looks right — ship it* (R20 — the
+     designer already saw it on their own device; skip the device preview, run a build-only compile
+     gate, then go straight to Phase 2), or *more changes*;
    - after preview → **card C1 (looks-good)** — *Ship it* (→ Phase 2 `audit` → commit → draft PR) or
      *more changes*;
    - the designer picks an option, or just describes another change in words (a correction via the
