@@ -123,6 +123,11 @@ Pick ONE device id; substitute it into `ui_preview_cmd`'s `{device}`.
 >
 > If the app crashes on launch or won't start, treat it like a build failure → Step 4 (do NOT poke at
 > it to "fix" the runtime state).
+>
+> The ONLY sanctioned capture path in the whole pipeline is the opt-in `/ui-tweak:demo` stage
+> (Phase 2, after commit, designer-authorized via `demo-requested`) — and even that stage is
+> capture-only (zero input events) on the screen the designer already approved. Inside preview this
+> boundary is absolute.
 
 ## Step 3 — quarantine build side-effects (F3) + record success
 
