@@ -122,6 +122,19 @@ For Jira, the current-user accountId can be discovered via
 `mcp__claude_ai_Atlassian_Rovo__atlassianUserInfo` (cache it; the value
 is stable per session).
 
+### get_relations — read inter-ticket links
+
+| ticket_system | Source field                                      | Notes                                                                          |
+|---------------|---------------------------------------------------|--------------------------------------------------------------------------------|
+| `linear`      | `.relations[]` on the `get_issue` response        | `type ∈ {blocks, blocked_by, related, duplicate}` + related issue id           |
+| `jira`        | `.fields.issuelinks[]` on the `getJiraIssue` response | `type.name` (e.g. `Blocks`) + `inwardIssue`/`outwardIssue` key; normalize the inward/outward phrasing ("is blocked by" / "blocks") onto the Linear kind names |
+
+Normalize both into `{from, to, kind: blocks|blocked-by|related}` records.
+Only `blocks`/`blocked-by` kinds carry ordering semantics; treat
+`related`/`duplicate` as informational. Currently read by
+`/ticket-analyze` only — relations are never *written* by automation
+(humans create them in the tracker UI).
+
 ### labels (write)
 
 - **Linear**: `save_issue --labels <json-array>` (rewrites the full label set).
@@ -152,9 +165,10 @@ the dispatcher / port-ship handoff. Their Jira equivalents:
 
 | Linear label                       | Jira equivalent                                                                                   |
 |------------------------------------|---------------------------------------------------------------------------------------------------|
-| `ready-to-port`, `ready-to-dev`    | none — Jira repos do not use the dispatcher's actionable-label sweep. Skip the drop in `/_ticket-init`. |
+| `ready-to-port`, `ready-to-dev`    | none — Jira repos do not use the dispatcher's actionable-label sweep. Skip the drop in `/_ticket-init`. `/ticket-analyze` records its pass verdict via the `ticket-analysis-ready` string label in `fields.labels` + comment instead. |
 | `need-spec-review`                 | none — spec-review gate is a port-pipeline concept; Jira has no port lane.                        |
 | `dispatcher-*-in-flight`           | none — dispatcher is Linear-only (`/ggx-dispatcher` Step 1 validates `ticket_system == linear`).  |
+| `need-revision`, `need-dependency` | none — analyzer verdicts degrade to `fields.labels` string labels (`ticket-analysis-need-revision` / `ticket-analysis-need-dependency`) + the `ticket-analysis:v1` comment as primary record. |
 | classification labels (`bug` / `port` / `feature`) | replaced by `fields.issuetype.name` — read-only, never written.                       |
 | `estimate` field                   | Jira has story-point fields but project-specific. Skip the auto-set; rely on human estimation.    |
 
@@ -182,6 +196,7 @@ Every MCP call wrapped by this abstraction:
 - `/dev:start` — ownership check, ticket fetch, spec-review comment capture (Jira: always Status: NONE)
 - `/dev:apply` Step 0-bug — ticket re-fetch
 - `/dev:ship` — status transition + summary comment
+- `/ticket-analyze` — batch sweep (To-Do + assignee=me), relations read, verdict comment + label writes (Jira: string labels in `fields.labels`)
 
 Adding a new caller? Cite this file and replicate the resolution block.
 Do NOT re-derive the abstraction.

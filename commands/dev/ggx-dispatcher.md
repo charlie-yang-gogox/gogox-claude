@@ -36,8 +36,9 @@ single most common reason for incorrect routing. They are **orthogonal**.
 
 | Namespace                  | Examples                                                       | Owned by                                                                                       | Read by                                                                                       |
 |----------------------------|----------------------------------------------------------------|------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
-| **Workflow labels**        | `ready-to-port`, `ready-to-dev`, `dispatcher-port-in-flight`, `dispatcher-dev-in-flight`, `need-spec-review` | dispatcher + `/port:ship` + `/dev:ship` + `/ggx-work` (scoped — see below)                     | dispatcher (Q1–Q4 discovery, §4.1 lock, §6.2 fallback); `/ggx-work` Step 2.5 + Step 4.4a; `/spec-review` batch fetch |
-| **Classification labels**  | `bug`, `port`, `feature`                                       | humans (PM/eng)                                                                                | `/route`; `/ggx-work` Step 2.5 (read-only, lane derivation)                                   |
+| **Workflow labels**        | `ready-to-port`, `ready-to-dev`, `dispatcher-port-in-flight`, `dispatcher-dev-in-flight`, `need-spec-review` | dispatcher + `/port:ship` + `/dev:ship` + `/ggx-work` (scoped — see below) + `/ticket-analyze` (writes `ready-to-*` only) | dispatcher (Q1–Q4 discovery, §4.1 lock, §6.2 fallback); `/ggx-work` Step 2.5 + Step 4.4a; `/spec-review` batch fetch; `/ticket-analyze` Step 1.5 skip filter |
+| **Analyzer labels**        | `need-revision`, `need-dependency`                             | `/ticket-analyze` exclusively                                                                  | humans (revision checklist / blocker visibility); `/ticket-analyze` re-run filter. The dispatcher ignores them — a ticket carrying one is by definition not `ready-to-*`. |
+| **Classification labels**  | `bug`, `port`, `feature`                                       | humans (PM/eng)                                                                                | `/route`; `/ggx-work` Step 2.5 (read-only, lane derivation); `/ticket-analyze` Step 2 (read-only, lane derivation) |
 
 `/ggx-work`'s write scope inside the workflow namespace is deliberately
 narrow:
@@ -86,6 +87,18 @@ The dispatcher is the boundary process. Inside the dispatcher we speak
 "classification"; the only shared signal is the in-flight label, which
 `/ggx-work` never writes and `/port:ship` / `/dev:ship` are the
 authoritative removers of.
+
+**Upstream of the dispatcher**: `/ticket-analyze` is the automated
+replacement for the manual "human marks ready" step. It sweeps To-Do
+tickets assigned to me, judges content completeness + dependency state,
+and writes `ready-to-port` / `ready-to-dev` for tickets that pass —
+feeding Q1/Q3 discovery directly. Tickets that don't pass get
+`need-revision` or `need-dependency` instead (analyzer-owned, mutually
+exclusive with `ready-to-*`), which the dispatcher never matches. The
+analyzer skips anything already `ready-to-*` or `dispatcher-*-in-flight`,
+and re-checks `dispatcher-*-in-flight` immediately before each write, so
+the two commands can run concurrently without racing. Manual `ready-to-*`
+labeling still works — the analyzer is additive, not mandatory.
 
 ## Execution rules
 

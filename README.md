@@ -122,6 +122,26 @@ Each stage is independently re-runnable. Use them when you want to pause / itera
 
 `/port:explore --simple` is also valid as a standalone — exploration only, no worktree, no spec.
 
+### Upstream analyzer — `/ticket-analyze`
+
+Before the dispatcher can sweep, tickets need `ready-to-*` labels. `/ticket-analyze` automates that step: it sweeps every **To-Do** ticket assigned to you on the active team, judges content completeness per lane (port / feature / bug), builds a dependency graph (explicit Linear relations + inferred references from ticket text), computes an implementation order with a recommended starting ticket, and writes the verdict back:
+
+- complete + unblocked → `ready-to-port` / `ready-to-dev` (dispatcher picks it up)
+- incomplete → `need-revision` + a comment listing exactly what to add
+- complete but blocked → `need-dependency` + a comment naming the blockers
+
+Re-running is the loop: enrich a `need-revision` ticket or close a blocker, run again, and the label flips to `ready-to-*` automatically.
+
+```
+/ticket-analyze                              # batch: To-Do + assigned to me
+/ticket-analyze CAF-370                      # single ticket
+/ticket-analyze --dry-run                    # report only, no writes
+/ticket-analyze --non-interactive            # no prompts; inferred deps report-only
+/ticket-analyze --team:CET                   # required for branch_prefix: auto repos
+```
+
+Jira tickets run in degraded mode (comment + `fields.labels` string labels; no dispatcher integration). State writes only — it never invokes pipelines.
+
 ### Batch worker — `/ggx-dispatcher`
 
 For days when you want to clear an inbox of actionable tickets in one go, open a Claude session in the target repo (main worktree, default branch, clean tree) and run:
