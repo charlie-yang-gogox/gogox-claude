@@ -40,7 +40,9 @@ git diff "$BASE" --name-only > "$WT/.dev/ui-tweak/audit-files"
 Resolve `ui_preview_cmd` / `ui_build_cmd`: prefer a repo override in `<repo>/.gogox-claude.yaml`,
 else the platform default.
 
-**Resolve the flutter binary (fvm-aware — never run bare `flutter` on an fvm-pinned repo):**
+**`{platform} = flutter` ONLY — resolve the flutter binary (probe-based, fvm-aware).** On
+`android` / `ios` SKIP this whole block: their profile `ui_build_cmd` (gradlew / xcodebuild) runs
+as-is — no flutter resolution, no flutter tooling, nothing here may fail a native-platform run:
 
 ```bash
 # /ui-tweak:start writes this marker; inline fallback covers a stale worktree from before the marker.
@@ -90,6 +92,11 @@ they have already looked at it on their own device, so this stage runs as a **bu
 The rest of this file (Steps 1–4) is the normal **device-preview** path used when `DIRECT_SHIP=0`.
 
 ## Step 1 — device cascade (a → b → c, R18) — skipped when `DIRECT_SHIP=1`
+
+> **Platform gate**: the device cascade below is the **flutter** path (`flutter run` covers Android
+> emulators + iOS simulators). When the profile defines **no `ui_preview_cmd`** (the `android` /
+> `ios` build-only profiles), skip the cascade entirely and go straight to **(c) build-only** —
+> exactly the pre-existing behavior for native platforms; never invoke flutter tooling there.
 
 Acquire a target device in this order; stop at the first that yields one:
 

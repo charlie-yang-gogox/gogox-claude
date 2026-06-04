@@ -30,7 +30,8 @@ WT=$(git rev-parse --show-toplevel)
 ## Step 1 — find the previewed device (READ-ONLY — never boot or launch anything here)
 
 Re-detect the device preview used: `$FLUTTER_BIN devices --machine` (resolved binary from
-`.dev/ui-tweak/flutter-bin`), or directly `xcrun simctl list devices booted` (iOS) /
+`.dev/ui-tweak/flutter-bin` — flutter platform only; the marker may legitimately be absent on
+native android/ios platforms), or directly `xcrun simctl list devices booted` (iOS) /
 `adb devices` (Android). Take the booted/connected device — it is the one the designer just looked
 at. **If no device is found, or the app process is no longer running → FAIL-SILENT (Step 3).**
 Do NOT re-boot a device or re-launch the app to "fix" this — the moment is gone; the fallback chain
