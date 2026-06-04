@@ -21,6 +21,12 @@ Run the full formatting pipeline appropriate for the active project, optionally 
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
    - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
 2. Branch on `{platform}` for the rest of the steps.
+3. **{platform} = flutter — resolve the SDK binary (fvm-aware) BEFORE running anything**: if the repo
+   pins its SDK with fvm (`.fvmrc` or `.fvm/fvm_config.json` exists at the repo root, or a
+   `.dev/ui-tweak/flutter-bin` marker reads `fvm flutter`), prefix **every** `dart` / `flutter`
+   command below with `fvm ` (`fvm dart format`, `fvm dart fix`, `fvm flutter analyze`). Bare
+   `flutter`/`dart` on an fvm-pinned repo resolves to the wrong SDK (or fails outright) — never
+   discover this by letting the first command fail.
 
 ---
 
