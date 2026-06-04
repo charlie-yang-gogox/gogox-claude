@@ -65,18 +65,21 @@ clear the downstream so the change re-validates from Phase 1:
 ```bash
 rm -f "$REPO_ROOT/.dev/ui-tweak/repair-context" "$REPO_ROOT/.dev/ui-tweak/build-pass" \
       "$REPO_ROOT/.dev/ui-tweak/preview-shown" "$REPO_ROOT/.dev/ui-tweak/deliver" \
+      "$REPO_ROOT/.dev/ui-tweak/direct-ship" \
       "$REPO_ROOT/.dev/ui-verify-pass.md" "$REPO_ROOT/.dev/dev-reviewer-pass.md"
-# keep preview-requested (still heading to preview) and repair-count (caps at 3 → engineer card Ce)
+# keep preview-requested (still heading to preview) and repair-count (caps at 3 → engineer card Ce).
+# direct-ship is cleared: after a fix the designer re-decides at C1 (show-me) — see /ui-tweak:ff R20.
 ```
 Then Stop. (The cap is enforced by the orchestrator: at `repair-count >= 3` it renders Ce instead of
 re-entering apply.) The rest of this file is the normal first-pass path.
 
 ## Step 3 — parse source (read-only; cache the ticket) [O1]
 
-- Ticket (ID/URL): fetch via `mcp__claude_ai_Linear__get_issue` or Jira (`_ticket-lib.md`),
-  **read-only** (never change status/assignee, never comment). Derive the requirement from
-  title+description+comments. Cache the fetched ticket to `.dev/ui-tweak/ticket.json` so the deliver
-  path does not re-fetch.
+- Ticket (ID/URL): **reuse `.dev/ui-tweak/ticket.json` if `/ui-tweak:start` already cached it**
+  (Step 0 / R19 splits the worktree up-front and snapshots the ticket there — no re-fetch). Otherwise
+  fetch via `mcp__claude_ai_Linear__get_issue` or Jira (`_ticket-lib.md`), **read-only** (never change
+  status/assignee, never comment), and cache it to `.dev/ui-tweak/ticket.json` so the deliver path does
+  not re-fetch. Derive the requirement from title+description+comments.
 - Free text: use it verbatim as the requirement.
 
 ## Step 3a — ground: inline Figma → structured target checklist (D2)

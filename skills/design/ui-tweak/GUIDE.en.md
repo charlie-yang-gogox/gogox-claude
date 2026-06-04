@@ -82,6 +82,11 @@ names the screen, the component, the target value, and may attach a Figma link.
 The trailing `[figma-url]` is optional: add it when you want the skill to read exact values from
 Figma; omit it for plain text, or when the ticket already contains the right Figma link.
 
+> **A work-item number is always required.** Forms A and C still work, but if your input doesn't carry
+> a number (like `CAF-1234`) the skill asks for one up-front before it starts — every change is tracked
+> under a work item and handed to an engineer that way. The quickest path is form B (start from the
+> ticket), or include the number in your text.
+
 ---
 
 ## 4. What happens when it runs (plain-language flow — two phases)
@@ -89,13 +94,26 @@ Figma; omit it for plain text, or when the ticket already contains the right Fig
 You only ever see **plain-language cards**; just pick a number or reply in one sentence. Behind the
 scenes there are two phases:
 
+**Set up (automatic, silent)**
+0. Before touching anything, it puts your change in **its own private space**, separate from everyone
+   else's work, so nothing you do here disturbs the team's current code. If your request already names
+   a work-item number (like `CAF-1234`) it uses that automatically; if you started from plain text with
+   no number, it asks once up-front: *"what's the work-item number for this?"* — **a number is
+   required** (every change is tracked under a work item, so it can later be handed to an engineer). If
+   you don't have one, create it first or ask your PM/engineer, then run `/ui-tweak` again with it. You
+   never deal with any of the setup yourself.
+
 **Iterate (free, fast)**
 1. **Parse the source + edit code**: works out "what to change" from your text / ticket / Figma, shows
    you a table ("which files, current value → target value") to confirm direction, then edits only the
    look-related parts. **This phase does NOT compile**, so you can adjust as many times as you like,
    fast.
-2. **Asks you**: "I made the change → **show me / more changes**". To adjust, just say it (e.g.
-   "a bit bigger", "move it down one") and it stacks the change on top — no compile wait.
+2. **Asks you**: "I made the change → **show me / ship it as-is / more changes**". To adjust, just say
+   it (e.g. "a bit bigger", "move it down one") and it stacks the change on top — no compile wait.
+   **Already looked at it on your own device?** Pick "**It already looks right — ship it**": it skips
+   the phone preview, quickly confirms the latest change still works, and goes straight to the final
+   check + handoff (your own build might be from before the latest tweak, so that quick confirm always
+   runs).
 
 **Phase 1: show you (runs only when you pick "I'm done — show me")**
 3. It **compiles + installs + launches** the change onto a device (emulator/simulator, or your

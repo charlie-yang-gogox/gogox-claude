@@ -1,6 +1,6 @@
 ---
 name: ff
-description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → pr → review) runs when they pick 'Ship it'. Owns the navigation cards (C0, C1's show-me/looks-good variants, C3, C4, C5, the engineer card Ce); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: a draft PR happens only when the designer picks 'Ship it'. --auto shows no cards → reaches neither a device preview nor a PR."
+description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → pr → review) runs when they pick 'Ship it'. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate still runs before the audit. Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce; C3/C4 removed); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: a draft PR happens only when the designer picks 'Ship it'. --auto shows no cards → reaches neither a device preview nor a PR."
 ---
 
 <!-- RULE: ALL content, including designer-facing CARD text, is English. No Chinese / non-ASCII. -->
@@ -19,10 +19,13 @@ misdirect guard (Step 0a) knows it was reached legitimately.
 
 - `<source>` **empty / whitespace / a help token** (`help`, `?`, `how`) → print **card C0**, do
   not dispatch.
-- `<source>` carries a **requirement string** → (re)run `apply`:
-  - fresh tree → start a new run;
-  - `base_ref` already exists (in-flight) → treat as a **correction** (see Correction loop).
-- **no argument** → pure resume: run `infer_ui_stage` and dispatch that stage.
+- `<source>` carries a **requirement string** → **first run Step 0 (split the worktree, R19)**, then
+  (re)run `apply` from inside that worktree:
+  - fresh tree → split+enter the worktree (Step 0), then start a new run;
+  - `worktree-ready` already present (in-flight, already inside the worktree) → skip Step 0; if
+    `base_ref` also exists treat the new requirement as a **correction** (see Correction loop).
+- **no argument** → pure resume: skip Step 0 (already inside the worktree), run `infer_ui_stage` and
+  dispatch that stage.
 
 Mirrors `/dev:ff` (arg = fresh/act, no arg = resume); the difference is `/ui-tweak` EXPECTS repeated
 corrections on the same tree, so "`base_ref` exists + new requirement" is a correction, not an error.
@@ -32,7 +35,10 @@ many times as they like for free. Building happens once, in **Phase 1 (`preview`
 "I'm done — show me": the change is built INTO a device (`flutter run` covers Android emulators + iOS
 simulators) so they can **see it on a real screen**, then confirm the look. **Phase 2** (the real
 verify + ship) runs only after that confirmation: `audit` (dual-judge logic check) → `commit` → draft
-PR → review. A build or audit failure is the agent's implementation problem, not the designer's — the
+PR → review. **Direct-ship shortcut (R20)**: a designer who already saw the change on their own device
+can pick "It already looks right — ship it" on C1 (show-me) — the device preview and its "looks good?"
+stop are skipped, but a **build-only compile gate still runs** before the audit (their hand-build may
+predate the latest tweak; the "cannot ship broken code" guarantee never relaxes). A build or audit failure is the agent's implementation problem, not the designer's — the
 orchestrator routes back to `apply` for an **agent fix (max 3 attempts)**, then surfaces the engineer
 card. `--auto`: suppress ALL cards, walk silently; with no card the designer can never pick "show me"
 or "ship it", so `--auto` reaches neither a device-preview nor a PR (structural guarantee, D7).
@@ -77,6 +83,56 @@ Failures under `--auto` still print the deterministic stderr line (R13).
 - **Routing keys on the returned selection** (the chosen option's `label`, or the Other free-text),
   not on a parsed `[N]`. The branch logic below names the option by its label.
 
+## Step 0 — split the worktree up-front (R19)
+
+Before the dispatch loop runs `apply` for the first time, the orchestrator moves the session into a
+dedicated, ticket-named worktree — the same `../<ticket-id>` (off latest trunk) that `/dev:ff` and
+`/port:ff` create via `/add-worktree`. This keeps every designer edit off the engineer's current
+checkout, lets parallel work coexist, and gives `base_ref` a clean trunk baseline. The split is
+**silent** (per the language table, `branch` / `worktree` are never surfaced); the only
+designer-visible consequence is the up-front work-item ask (**card C-WT**) when `<source>` carries no
+number.
+
+Run this **once per run**, gated on the `worktree-ready` marker so resumes and corrections (already
+inside the worktree) never re-split:
+
+```bash
+wt=$(git rev-parse --show-toplevel)
+[ -f "$wt/.dev/ui-tweak/worktree-ready" ] && SPLIT_DONE=1 || SPLIT_DONE=0
+```
+
+- `SPLIT_DONE=1` (resume / in-flight correction — already inside the worktree) → **skip Step 0**, go
+  straight to the dispatch loop.
+- `SPLIT_DONE=0` → parse a work-item id from `<source>`:
+  - id pattern: `[A-Z]+-[0-9]+`, or a Linear issue URL (`linear.app/<org>/issue/<ID>/...`). Take the
+    first match.
+  - **id found** → dispatch `/ui-tweak:start <id> [--auto]`. It creates+enters `../<id>` (off trunk),
+    writes `.dev/ui-tweak/worktree-ready`, and read-only-caches `.dev/ui-tweak/ticket.json`. After it
+    returns the session is inside the worktree; re-derive `wt` and continue to the loop.
+  - **no id (pure free text)** — the workspace can't be ticket-named, and there is **no in-place
+    fallback** (B3): a UI change is always tracked under a work item, exactly like `/dev:ff` and
+    `/port:ff` (which hard-require a ticket). We never fabricate a Linear ticket and we never edit the
+    engineer's checkout directly.
+    - interactive → render **card C-WT**. A number → `/ui-tweak:start <id>` (split as above) and
+      continue. **No number → STOP, no edit** (the card explains a number is needed first); nothing is
+      changed, no marker is written, so re-running `/ui-tweak` later with a number starts cleanly.
+    - `--auto` → no card is allowed; print
+      `FAIL: /ui-tweak:ff --auto needs a work-item id in <source> to name the worktree.` to stderr and
+      STOP (R13). (`--auto` is non-interactive and reaches neither preview nor PR anyway, D7.)
+
+> **Why no in-place fallback (B3).** An earlier draft let "I don't have one" edit the current tree
+> with no worktree. That re-introduced two defects: (1) a later "Ship it" routed through `start` →
+> `/add-worktree` off trunk, **orphaning the uncommitted in-place edits** in the old tree (empty PR);
+> (2) because no `worktree-ready` marker is written, every correction re-entered Step 0 and **re-asked
+> C-WT**. Requiring a work-item number up-front removes both: a run either splits a worktree (marker
+> written → asked once) or never starts (nothing to lose).
+
+Because the split runs through `/ui-tweak:start` → `/add-worktree`, it inherits `/add-worktree`'s
+own pre-flight (dirty-tree warning, existing-branch / existing-worktree prompts). Under `--auto` those
+pass through non-interactively; in the interactive designer flow they surface as `/add-worktree`'s
+prompts (the one place git wording can leak — acceptable, same trade-off `/dev:ff` and `/port:ff`
+accept).
+
 ## Walker — `infer_ui_stage`
 
 All markers live in the worktree under `.dev/`; no `state.json`. Consume-on-existence order.
@@ -93,6 +149,9 @@ infer_ui_stage() {
   preview_req=0;   [ -f "$wt/.dev/ui-tweak/preview-requested" ] && preview_req=1
   preview_shown=0; [ -f "$wt/.dev/ui-tweak/preview-shown" ]     && preview_shown=1
   deliver=0;       [ -f "$wt/.dev/ui-tweak/deliver" ]           && deliver=1
+  # DIRECT-SHIP (R20): designer picked "It already looks right — ship it" on C1 (show-me), skipping the
+  # device preview. Still gated by a build-only compile check before audit (see the deliver branch).
+  direct_ship=0;   [ -f "$wt/.dev/ui-tweak/direct-ship" ]       && direct_ship=1
 
   # UNIFIED REPAIR (R18): any failed stage (preview build-fail / audit BLOCKED) writes
   # repair-context + bumps repair-count, then the AGENT fixes it in apply — not the designer.
@@ -102,7 +161,14 @@ infer_ui_stage() {
 
   # ---- Phase 2 — ship (deliver set) ----
   if [ "$deliver" = "1" ]; then
-    [ -z "$id" ] && { echo start; return; }            # deliver but no worktree yet
+    [ -z "$id" ] && { echo start; return; }            # defensive only: under R19/B3 deliver always
+                                                       # implies a worktree (id from branch); not expected
+    # DIRECT-SHIP build gate (R20): if the designer skipped the device preview, still prove the
+    # cumulative diff compiles before the audit. Normal deliver runs already have build-pass=PASS
+    # (preview built it), so this only fires for direct-ship. preview reads `direct-ship` → build-only.
+    if [ "$direct_ship" = "1" ] && ! grep -q '^Status: PASS' "$wt/.dev/ui-tweak/build-pass" 2>/dev/null; then
+      echo preview; return
+    fi
     pr_state=$(gh pr view "$id" --json state -q .state 2>/dev/null)
     [ "$pr_state" = "OPEN" ] && [ -f "claude-reports/$id/code-review.md" ] && { echo done; return; }
     [ "$pr_state" = "OPEN" ] && { echo review; return; }
@@ -140,10 +206,12 @@ folded into `preview` (`flutter run` = build + deploy); `format` is folded into 
 
 ## Dispatch loop
 
-`export UI_TWEAK_FF=1`, then loop. **Each iteration first checks the repair-exhausted card-terminus**;
-only if it does not fire does it call the walker and dispatch:
+`export UI_TWEAK_FF=1`, **run Step 0 (split the worktree up-front, R19)**, then loop. **Each iteration
+first checks the repair-exhausted card-terminus**; only if it does not fire does it call the walker and
+dispatch:
 
 ```
+Step 0   → split+enter ../<ticket-id> (skip if worktree-ready exists; no id → card C-WT, else STOP)
 loop:
   # --- card-terminus (checked BEFORE the walker) ---
   repair-count >= 3  → render the engineer card (couldn't do it as a pure look change) and STOP
@@ -161,20 +229,37 @@ the iteration C1 ("I'm done — show me / more changes")**.
 | stage | action |
 |---|---|
 | `apply` | `/ui-tweak:apply <source> [figma] [--auto]` — iteration edit (no build). In **repair mode** (`repair-context` present) it reads the error and fixes the edit UI-only (see Correction/Repair loop) |
-| `preview` | `/ui-tweak:preview [--auto]` — **Phase 1**: build INTO a device (cascade: boot emulator/sim → connected device incl. physical → honest no-device build-only) so the designer SEES it. Writes `build-pass` + `preview-shown`. Build-fail → repair-context (→ apply, max 3) |
+| `preview` | `/ui-tweak:preview [--auto]` — **Phase 1**: build INTO a device (cascade: boot emulator/sim → connected device incl. physical → honest no-device build-only) so the designer SEES it. Writes `build-pass` + `preview-shown`. In **direct-ship mode** (`direct-ship` present, R20): build-only compile gate — no device, no `preview-shown`, no card; walker then advances to `audit`. Build-fail → repair-context (→ apply, max 3) |
 | `audit` | `/ui-tweak:audit [--auto]` — **Phase 2** first check (deliver only): `/format` then the dual-judge on the final cumulative diff. CLEAR → `commit`; BLOCKED → repair-context (→ apply, max 3) |
-| `start` | `/ui-tweak:start <ticket>` (deliver only; `/add-worktree`) |
+| `start` | `/ui-tweak:start <ticket> [--auto]` — split+enter the `../<ticket>` worktree via `/add-worktree`. Run up-front by **Step 0 (R19)** before the first `apply`. (Under B3 every run splits up-front, so the walker's deliver-path `start` branch is defensive only.) |
 | `commit` | `/commit` (NO extra confirm — "Ship it" on C1 already authorized the handoff, R18) — commit ONLY the files in the Step-5 coverage table (R12); formatter-touched extras go in the PR body `### Formatter-only changes` |
 | `pr` | `/pull-request --draft` with the **pre-built PR body** (see "Deliver PR body" below); title prefixed `[ui-tweak]`; structured read-only ticket comment (`🎨 UI tweak ready for engineer review` + audit verdict + coverage summary) |
 | `review` | `/code-review <pr>` → `claude-reports/<ticket>/code-review.md` |
 | `done` | terminal: iteration → **C1 (show-me)**; post-preview → **C1 (looks-good)**; deliver (PR open + code-review) → **C5** |
 
-## Wayfinding cards (this orchestrator owns the navigation cards C0–C5)
+## Wayfinding cards (this orchestrator owns the navigation cards C-WT, C0–C5)
 
 > The stage-stop cards **C-MISDIRECT / C6** are rendered by the atomic stages themselves
 > (`apply.md` / `preview.md` / `start.md`), since those are the stages that physically stop — see
-> `/ui-tweak:apply` Step 0a / Step 4. C0–C5 + the repair-exhausted **engineer card Ce** (the
+> `/ui-tweak:apply` Step 0a / Step 4. C-WT + C0–C5 + the repair-exhausted **engineer card Ce** (the
 > flow-navigation cards) live here.
+
+**C-WT — work-item number (split the workspace)** (Step 0, free-text run with no work-item id; R19) —
+*`AskUserQuestion`, `header: "Work-item no."`*. Asked **once, up-front**, before any edit — it's how
+the workspace gets named. A run that already carried an id never sees this card.
+- **question**:
+  ```
+  Before I start, what's the work-item number for this (like CAF-1234)?
+  I use it to keep your change in its own space and to hand it over later.
+  Pick Other and paste the number to begin.
+  ```
+- **options**: `I'll paste the number` — "I have a number — I'll type it next." / `I don't have one yet`
+  — "I don't have a number yet."
+- **routing**: a number via **Other** (or the follow-up after `I'll paste the number`) →
+  `/ui-tweak:start <id>` → worktree split, then the loop. `I don't have one yet` → **STOP without
+  changing anything** and reply in plain words: *"No problem — every change needs a work-item number so
+  it can be tracked and handed to an engineer. Create one (or ask your PM/engineer for it), then run
+  `/ui-tweak` again with that number and I'll start."* (No edit, no marker — B3.)
 
 **Ce — couldn't do it (engineer)** (loop card-terminus when `repair-count >= 3`, R18) —
 *`AskUserQuestion`, `header: "Needs an engineer"`*. After 3 agent fix attempts the change still won't
@@ -207,16 +292,28 @@ compiles or that logic was checked:
   I made the change (look-and-feel values only).
   What changed: order-page primary button — height 44→48dp, corner 4→8dp.
   [source: Figma-confirmed / from the work-item description / ⚠ estimated]
-  Want to see it on a phone, or make more changes first?
-  (When you're ready, I build it onto a device so you can look, then a full check before anyone sees it.)
+  Want to see it on a phone, ship it as-is (if you've already seen it), or make more changes first?
+  (Show me = I build it onto a device so you can look. Ship it = I skip the phone preview, confirm it
+  still works, run the full check, and wrap it up. Or pick Other and tell me what to change.)
   ```
   When `.not-deliverable` is present, append the "⚠ N spot(s) weren't changed …" note. After a
   correction, first line becomes *"I adjusted it once more. In total I've changed: <cumulative>."*
 - **options**: `I'm done — show me on a phone` *(recommended)* — "I'll build it onto a phone/emulator
-  so you can see it." *(OMIT when `.not-deliverable` exists — can't preview a partial; tell them to
-  adjust.)* / `I want more changes` — "Tell me what to adjust (e.g. 'move it down one')."
-- **routing**: `I'm done — show me` → write `.dev/ui-tweak/preview-requested` → walker → `preview`
-  (Phase 1). `I want more changes` / **Other** → Correction loop.
+  so you can see it." / `It already looks right — ship it` — "You've already seen it on your own
+  device — skip the phone preview; I'll confirm it still works, run the full check, and wrap it up."
+  *(BOTH the "show me" AND "ship it" options are OMITTED when `.not-deliverable` exists — you can
+  neither preview nor ship a partial; tell them to adjust.)* / `I want more changes` — "Tell me what to
+  adjust (e.g. 'move it down one')."
+- **routing**:
+  - `I'm done — show me` → write `.dev/ui-tweak/preview-requested` → walker → `preview` (Phase 1).
+  - `It already looks right — ship it` (R20) → resolve the ticket id from `.dev/ui-tweak/ticket.json`
+    (always present under B3) → write **`.dev/ui-tweak/deliver`** AND **`.dev/ui-tweak/direct-ship`** →
+    walker. The deliver branch first runs a **build-only gate** (preview in build-only mode — no device,
+    no look, no C1 looks-good stop) so the cumulative diff is proven to compile, then proceeds to
+    `audit` → `commit` → `pr` → `review` → C5. A build fail here routes to the normal agent repair loop
+    (max 3, then Ce) exactly like a device-preview build fail — the designer's earlier hand-build may
+    predate the latest tweak, so this gate is never skipped.
+  - `I want more changes` / **Other** → Correction loop.
 
 **C1 (looks-good) — preview is live on a device** (`preview-requested` + `preview-shown` present):
 - **question**:
@@ -228,10 +325,11 @@ compiles or that logic was checked:
   *"I couldn't find a phone/emulator to show it on, but I confirmed it builds."* and keep the rest.
 - **options**: `Ship it` *(recommended)* — "Looks right — run the full check + open a proposal with a
   link on the work item." / `I want more changes` — "Tell me what to adjust; I'll redo and re-show it."
-- **routing**: `Ship it` → resolve ticket id from `.dev/ui-tweak/ticket.json`. **Known id → DO NOT ask
-  again**: write `.dev/ui-tweak/deliver` → walker (→ start?/audit/commit/pr/review/C5). **No cached
-  ticket** → C3 to request one. `I want more changes` / **Other** → Correction loop (which clears the
-  preview markers so it re-iterates).
+- **routing**: `Ship it` → resolve ticket id from `.dev/ui-tweak/ticket.json` (always present under B3
+  — Step 0 split the worktree with a ticket, so the id is never missing here): write
+  `.dev/ui-tweak/deliver` → walker (→ audit/commit/pr/review/C5). **DO NOT re-ask for a number.**
+  `I want more changes` / **Other** → Correction loop (which clears the preview markers so it
+  re-iterates).
 - **Doing nothing is fine**: walking away leaves the reviewed diff in the tree; no extra "leave it"
   button. Shipping (→ draft PR) is the only explicit terminal action.
 
@@ -240,18 +338,10 @@ compiles or that logic was checked:
 > **agent repair loop** (`apply` repair mode) silently, and only after 3 failed attempts surface as the
 > **engineer card Ce**. Designers never see a raw "blocked" card mid-flow.
 
-**C3 — chose "Ship it", free-text-started run with NO ticket** (ticket-started runs SKIP this — the id
-was already cached in `ticket.json`) — *`AskUserQuestion`, `header: "Work-item no."`*
-- **question**:
-  ```
-  To wrap this up as a proposal for an engineer, I need a work-item number (like CAF-1234).
-  You started with a plain-text description, so there's no number yet.
-  If you have one, pick Other and paste it.
-  ```
-- **options**: `I'll paste the number` — "I have a number — I'll type it next." / `Never mind, skip it`
-  — "Go back; keep it as a clean change without a proposal."
-- **routing**: a number via **Other** (or the follow-up after `I'll paste the number`) → write
-  `.dev/ui-tweak/deliver` with that id, continue the walker; `Never mind, skip it` → back to C1.
+> **C3 removed (B3).** There is no longer a ship-time "no work-item number" card. Because the run
+> **always** acquires a number up-front at card C-WT (no in-place fallback), by the time the designer
+> picks "Ship it" the id is already cached in `ticket.json` — the question can never reappear. The old
+> C3 only existed to backfill a number for the in-place path, which no longer exists.
 
 > **C4 removed (R18).** No separate commit-confirm card. Picking **"Ship it"** on C1 (looks-good) is
 > the single authorization for the whole pre-PR series (audit → commit → draft PR) — a second confirm
@@ -285,12 +375,14 @@ The designer just types the change they want (no dedicated "adjust" option — O
   ```bash
   rm -f "$wt/.dev/ui-tweak/build-pass"  "$wt/.dev/ui-tweak/preview-shown" \
         "$wt/.dev/ui-tweak/preview-requested" "$wt/.dev/ui-tweak/deliver" \
+        "$wt/.dev/ui-tweak/direct-ship" \
         "$wt/.dev/ui-verify-pass.md" "$wt/.dev/dev-reviewer-pass.md" \
         "$wt/.dev/ui-tweak/repair-context" "$wt/.dev/ui-tweak/repair-count"
   ```
-  A designer correction is a fresh intent → it also **resets the repair budget** (`repair-count`). The
-  designer then iterates from C1 (show-me) again; building only re-happens when they next pick "show
-  me", and the dual-judge only when they next "Ship it".
+  A designer correction is a fresh intent → it also **resets the repair budget** (`repair-count`) and
+  the **direct-ship** flag (a new edit must be re-decided, not silently re-shipped). The designer then
+  iterates from C1 (show-me) again; building only re-happens when they next pick "show me" or
+  "ship it", and the dual-judge only when they next ship.
 
 ### B. Agent repair — a build-fail or audit-block wrote `repair-context` (R18, max 3)
 
@@ -302,8 +394,11 @@ re-validates from Phase 1:
 ```bash
 rm -f "$wt/.dev/ui-tweak/repair-context" "$wt/.dev/ui-tweak/build-pass" \
       "$wt/.dev/ui-tweak/preview-shown" "$wt/.dev/ui-tweak/deliver" \
+      "$wt/.dev/ui-tweak/direct-ship" \
       "$wt/.dev/ui-verify-pass.md" "$wt/.dev/dev-reviewer-pass.md"
-# keep preview-requested (still wants the preview) and repair-count (accumulates toward the cap of 3)
+# keep preview-requested (still wants the preview) and repair-count (accumulates toward the cap of 3).
+# direct-ship IS cleared: after a fix the designer re-decides at C1 (show-me) — "show me" gives a real
+# device preview (not build-only), "ship it" re-arms direct-ship. Avoids a stale build-only preview.
 ```
 After 3 attempts (`repair-count >= 3`) the dispatch loop renders the **engineer card Ce** instead of
 re-entering apply. A clean `preview` build resets `repair-count`.
