@@ -21,15 +21,15 @@ Run the full formatting pipeline appropriate for the active project, optionally 
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
    - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
 2. Branch on `{platform}` for the rest of the steps.
-3. **{platform} = flutter — resolve the SDK binary (fvm-aware) BEFORE running anything**: if the repo
-   pins its SDK with fvm (`.fvmrc` or `.fvm/fvm_config.json` exists at the repo root, or a
-   `.dev/ui-tweak/flutter-bin` marker carries an fvm path), prefix **every** `dart` / `flutter`
-   command below with the **resolved fvm binary** (`<fvm> dart format`, `<fvm> dart fix`,
-   `<fvm> flutter analyze`). Resolve fvm by absolute path — `command -v fvm`, else
-   `~/.pub-cache/bin/fvm` — because fvm is often NOT on the agent shell's PATH; a literal `fvm`
-   prefix would fail command-not-found. If the repo is pinned but fvm is not installed, fall back to
-   bare `flutter`/`dart` and surface a one-line SDK-drift warning. Never discover any of this by
-   letting the first command fail.
+3. **{platform} = flutter — resolve the SDK binary (probe-based) BEFORE running anything**: if a
+   `.dev/ui-tweak/flutter-bin` marker exists it is authoritative — use its command as the
+   `flutter` prefix (and the matching `<fvm> dart` form for dart commands). Otherwise probe, never
+   guess: on a pinned repo (`.fvmrc` / `.fvm/fvm_config.json`) try the fvm binary first — resolved
+   by absolute path (`command -v fvm`, else `~/.pub-cache/bin/fvm`; fvm is often NOT on the agent
+   shell's PATH) and verified with one `--version` run; fall back to bare `flutter`/`dart` (with a
+   one-line SDK-drift warning when pinned); some machines have ONLY fvm (no bare flutter), others
+   ONLY bare flutter — the probe handles both. Never discover any of this by letting the first
+   format command fail.
 
 ---
 

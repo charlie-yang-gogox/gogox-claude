@@ -44,16 +44,21 @@ else the platform default.
 
 ```bash
 # /ui-tweak:start writes this marker; inline fallback covers a stale worktree from before the marker.
-# fvm must be resolved by ABSOLUTE PATH — it is often not on the agent shell's PATH
-# (typical install: ~/.pub-cache/bin/fvm); a literal `fvm flutter` would fail command-not-found.
+# Probe-based, mirroring start.md: candidates by priority (pinned → fvm first; fvm resolved by
+# absolute path since it is often off the agent shell's PATH, e.g. ~/.pub-cache/bin/fvm), each
+# verified with one `--version` run; the first that WORKS is persisted. Never guess from config
+# alone — some machines have only fvm (no bare flutter), others only bare flutter (fvm off PATH).
 if [ -f "$WT/.dev/ui-tweak/flutter-bin" ]; then FLUTTER_BIN=$(cat "$WT/.dev/ui-tweak/flutter-bin"); else
+  probe() { eval "$1 --version" >/dev/null 2>&1; }
   FVM_BIN=$(command -v fvm 2>/dev/null || true)
   [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
-  if { [ -f "$WT/.fvmrc" ] || [ -f "$WT/.fvm/fvm_config.json" ]; } && [ -n "$FVM_BIN" ]; then
-    FLUTTER_BIN="$FVM_BIN flutter"
-  else
-    FLUTTER_BIN="flutter"
+  PINNED=0; { [ -f "$WT/.fvmrc" ] || [ -f "$WT/.fvm/fvm_config.json" ]; } && PINNED=1
+  FLUTTER_BIN=""
+  if [ "$PINNED" = 1 ] && [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then FLUTTER_BIN="$FVM_BIN flutter"
+  elif probe flutter; then FLUTTER_BIN="flutter"
+  elif [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then FLUTTER_BIN="$FVM_BIN flutter"
   fi
+  [ -z "$FLUTTER_BIN" ] && { echo "FAIL: no working flutter found (tried fvm + bare flutter)." >&2; exit 1; }
   printf '%s\n' "$FLUTTER_BIN" > "$WT/.dev/ui-tweak/flutter-bin"
 fi
 ```
