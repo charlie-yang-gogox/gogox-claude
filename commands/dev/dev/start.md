@@ -127,13 +127,25 @@ When `--no-ticket-init` is set, log a single line `ticket-init: skipped (--no-ti
 ```bash
 mkdir -p .dev
 # system-aware fetch — Linear vs Jira (see _ticket-lib.md "Field mapping").
+# COMMENTS_FETCH_OK distinguishes "fetched, genuinely no Figma URL" from
+# "comments fetch failed" — only a CONFIRMED-empty scan may write the
+# SKIPPED terminal state. SKIPPED is never retried downstream, so writing
+# it off a transient MCP failure silently strips the design context from
+# the whole pipeline (apply/align/verify all build without it).
+COMMENTS_FETCH_OK=1
 if [ "$TICKET_SYSTEM" = "linear" ]; then
-  TICKET_BODY=$(mcp__claude_ai_Linear__get_issue --id "$TICKET_ID" | jq -r '.description // ""')
-  TICKET_COMMENTS=$(mcp__claude_ai_Linear__list_comments --issueId "$TICKET_ID" | jq -r '.comments[].body // ""' | tr '\n' ' ')
-else  # jira
+  # Body fetch failure is FATAL — abort like Step 2's description-fetch
+  # failure path (no ticket content means nothing downstream can run).
+  TICKET_BODY=$(mcp__claude_ai_Linear__get_issue --id "$TICKET_ID" | jq -r '.description // ""') \
+    || { echo "abort: get_issue failed for $TICKET_ID" >&2; exit 1; }
+  # Comments fetch failure is fail-soft: scan is inconclusive, see below.
+  TICKET_COMMENTS=$(mcp__claude_ai_Linear__list_comments --issueId "$TICKET_ID" | jq -r '.comments[].body // ""' | tr '\n' ' ') \
+    || { COMMENTS_FETCH_OK=0; TICKET_COMMENTS=""; }
+else  # jira — single call returns body + comments; failure is fatal (no body either)
   JIRA_ISSUE=$(mcp__claude_ai_Atlassian_Rovo__getJiraIssue \
                  --cloudId "$JIRA_CLOUD_ID" --issueIdOrKey "$TICKET_ID" \
-                 --responseContentFormat markdown)
+                 --responseContentFormat markdown) \
+    || { echo "abort: getJiraIssue failed for $TICKET_ID" >&2; exit 1; }
   TICKET_BODY=$(jq -r '.fields.description // ""' <<<"$JIRA_ISSUE")
   TICKET_COMMENTS=$(jq -r '.fields.comment.comments[]?.body // ""' <<<"$JIRA_ISSUE" | tr '\n' ' ')
 fi
@@ -147,14 +159,28 @@ HAS_FIGMA_URL=$(printf '%s\n%s\n' "$TICKET_BODY" "$TICKET_COMMENTS" \
   | grep -cE 'figma\.com/(design|file|board|slides|make)/')
 NO_FIGMA_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--no-figma' && echo 1 || echo 0)
 
-if [ "$NO_FIGMA_FLAG" = "1" ] || [ "$HAS_FIGMA_URL" -eq 0 ]; then
-  REASON=$([ "$NO_FIGMA_FLAG" = "1" ] && echo "--no-figma flag at /dev:start" || echo "no Figma URL in ticket description or comments")
-  printf 'Fetched: SKIPPED — %s\n' "$REASON" > .dev/figma-context.md.tmp
+if [ "$NO_FIGMA_FLAG" = "1" ]; then
+  # Explicit human override — always honored, comments scan irrelevant.
+  printf 'Fetched: SKIPPED — %s\n' "--no-figma flag at /dev:start" > .dev/figma-context.md.tmp
   mv .dev/figma-context.md.tmp .dev/figma-context.md   # atomic
+elif [ "$HAS_FIGMA_URL" -eq 0 ] && [ "$COMMENTS_FETCH_OK" = "1" ]; then
+  # Both surfaces fetched and confirmed empty — safe to short-circuit.
+  printf 'Fetched: SKIPPED — %s\n' "no Figma URL in ticket description or comments" > .dev/figma-context.md.tmp
+  mv .dev/figma-context.md.tmp .dev/figma-context.md   # atomic
+elif [ "$HAS_FIGMA_URL" -eq 0 ] && [ "$COMMENTS_FETCH_OK" = "0" ]; then
+  # Inconclusive: description has no URL but the comments scan failed —
+  # a comment-only Figma ticket would be indistinguishable from a no-Figma
+  # ticket here. Write NO marker: the walker advances to the figma stage,
+  # where figma-subagent re-fetches the ticket itself and either finds the
+  # URL or fails loudly with `Fetched: FAILED` (visible, retryable) instead
+  # of this stage failing silently (invisible, terminal).
+  echo "warn: list_comments failed — cannot confirm Figma absence; deferring to figma-subagent" >&2
 fi
+# (HAS_FIGMA_URL > 0 needs no marker regardless of COMMENTS_FETCH_OK —
+#  the URL was found, the pipeline proceeds to /dev:figma normally.)
 ```
 
-`/dev:start` is the SOLE writer of the `Fetched: SKIPPED` first-line variant. figma-subagent only writes `Fetched: <ISO>` (success) or `Fetched: FAILED` (MCP fail). If the SKIPPED first line is missing on a no-Figma ticket, `infer_dev_stage` advances to `figma`; figma-subagent then receives an empty URL list and refuses with FAILED. Recovery: re-run `/dev:start`.
+`/dev:start` is the SOLE writer of the `Fetched: SKIPPED` first-line variant. figma-subagent only writes `Fetched: <ISO>` (success) or `Fetched: FAILED` (MCP fail). If the SKIPPED first line is missing on a no-Figma ticket, `infer_dev_stage` advances to `figma`; figma-subagent then receives an empty URL list and refuses with FAILED. Recovery: re-run `/dev:start`. The fail-soft branch above leans on exactly this recovery path on purpose: a transient comments-fetch failure costs one loud figma-stage retry, never a silent design-context drop.
 
 **Comment scan is intentional.** Designers and reviewers frequently drop Figma links into a follow-up comment rather than editing the ticket description. Looking only at the description silently routed those tickets into the SKIPPED short-circuit, which then forced callers like `/ggx-dispatcher` to maintain a parallel `--no-figma` pre-detection. Scanning both surfaces here means `/dev:start` is the single authority on "does this ticket have Figma source?"; the explicit `--no-figma` flag is preserved as the manual override.
 
