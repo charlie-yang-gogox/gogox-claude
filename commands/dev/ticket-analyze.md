@@ -412,6 +412,43 @@ Summary: <X> analyzed, <Y> skipped, <Z> errored.
 Exit zero even when `<Z> > 0` — errored tickets carry their own recovery
 hints; the batch itself did not fail.
 
+#### Step 10.1: Slack digest (best-effort, opt-in)
+
+<!-- SYNC: the status mapping, message grammar, config gates, and send
+     block live in commands/dev/_slack-notify.md. Do not re-inline. -->
+
+After the `Summary:` line, post ONE run-level Slack digest via
+`/_slack-notify digest ticket-analyzer`. Gates (skip with a one-line
+audit, in order):
+
+1. `--dry-run` → skip (`slack-notify: skipped (dry-run)`). Dry-run is
+   100% read-only end-to-end; it also short-circuits at Step 7, so this
+   gate is belt-and-suspenders.
+2. `X + Z == 0` (empty sweep or everything skipped) → skip
+   (`slack-notify: skipped (no-op sweep)`). Zero-candidate fires stay
+   silent by design.
+
+Otherwise build the inputs from data already in memory (Step 9 report —
+no extra MCP calls):
+
+- Header stats: `team=<KEY>`, `analyzed=<X>`, `ready=<C>`,
+  `need_revision=<I>`, `blocked=<B>`, `errored=<Z>`, and
+  `best_start=<id>` when Step 9 has a recommended start.
+- One raw-signal line per analyzed/errored ticket, format per
+  `_slack-notify.md` Inputs (`title` = the ticket title, already in
+  memory from the analysis loop — the helper truncates to 60 chars):
+  `<ticket-id> <url> <lane> ready title="<title>"` /
+  `... need-revision reasons=<comma-list> title="<title>"` /
+  `... need-dependency blockers=<comma-list> title="<title>"` /
+  `... cycle ids=<id1↔id2> title="<title>"` /
+  `... errored detail=<what failed> title="<title>"`.
+
+The helper owns the emoji/token mapping, `#needs-human` tagging, and the
+fail-soft send — invoke it and continue regardless of its outcome (it
+always exits 0). Re-announcing tickets that were already `need-revision`
+/ `need-dependency` last sweep is **deliberate** (standing reminder —
+see `_slack-notify.md` Guardrails); do not add change-detection here.
+
 ---
 
 ## §A — Output comment schema

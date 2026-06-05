@@ -4,3 +4,8 @@
 .idea/
 .vscode/
 __pycache__/
+
+# Per-user Slack notifier config (contains bot token — never commit).
+# Lives in-repo alongside org.yaml, symlinked by install.sh to
+# ~/.claude/commands/profiles/ggx-slack.json. Schema: see commands/dev/_slack-notify.md.
+commands/dev/profiles/ggx-slack.json
