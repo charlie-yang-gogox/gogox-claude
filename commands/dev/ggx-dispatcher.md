@@ -167,12 +167,32 @@ labeling still works — the analyzer is additive, not mandatory.
 3. **Branch + clean checks** (skipped when `--test`):
    - On default branch? `[ "$(git branch --show-current)" = "$default_branch" ]` else STOP with:
      > `Switch to <default_branch> first: git checkout <default_branch> && git pull`
-   - Clean tree? Block on **tracked modifications only** — untracked files
-     warn but proceed:
+   - Clean tree? Tracked modifications are triaged against a **residue
+     allowlist** — known machine-regenerated files are auto-stashed (labeled,
+     recoverable) so they cannot waste a batch; anything else is a human's
+     in-progress work and still aborts. Untracked files warn but proceed:
      ```bash
-     # Tracked changes (staged or unstaged) are a human's in-progress work — STOP.
-     [ -z "$(git status --porcelain --untracked-files=no)" ] || abort \
-       "Working tree has tracked modifications. Stash or commit first: git stash"
+     # Residue allowlist: files dependency tooling rewrites on its own (a
+     # regenerated pubspec.lock aborted the 2026-06-05 scheduled run for
+     # nothing). Deliberately narrow — extend only for files that are
+     # (a) machine-written and (b) reproducible from a clean checkout.
+     RESIDUE_RE='^(pubspec\.lock|ios/Podfile\.lock|Gemfile\.lock)$'
+     CHANGED=$(git diff --name-only HEAD)
+     if [ -n "$CHANGED" ]; then
+       NON_RESIDUE=$(printf '%s\n' "$CHANGED" | grep -Ev "$RESIDUE_RE" || true)
+       # Anything outside the allowlist = a human's in-progress work — STOP.
+       # The dispatcher must never sweep real edits into a stash the user
+       # didn't ask for ("if I stopped, it stays stopped").
+       [ -z "$NON_RESIDUE" ] || abort \
+         "Working tree has tracked modifications outside the residue allowlist: $NON_RESIDUE. Stash or commit first: git stash"
+       STASH_MSG="ggx-dispatcher residue auto-stash $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+       git stash push --message "$STASH_MSG" -- $CHANGED >/dev/null \
+         || abort "Auto-stash of residue files failed. Stash manually: git stash"
+       # Belt-and-braces: nothing tracked may survive the stash.
+       [ -z "$(git status --porcelain --untracked-files=no)" ] || abort \
+         "Tracked modifications survived the residue auto-stash. Fix manually: git stash"
+       echo "note: residue file(s) auto-stashed as \"$STASH_MSG\" ($(echo $CHANGED)) — recover with: git stash pop (usually unwanted; these files regenerate)"
+     fi
      # Untracked files cannot be clobbered by the dispatcher (it never edits the
      # main worktree; agents work in their own worktrees) — note and continue.
      # Known shape: harness runtime residue like .claude/scheduled_tasks.lock
@@ -181,6 +201,11 @@ labeling still works — the analyzer is additive, not mandatory.
      UNTRACKED=$(git status --porcelain | grep -c '^??')
      [ "$UNTRACKED" -gt 0 ] && echo "note: $UNTRACKED untracked file(s) present — proceeding (agents work in separate worktrees)"
      ```
+     The dispatcher does NOT auto-pop the stash at end-of-run — popping onto a
+     trunk that moved during the batch could conflict, and a regenerable
+     lockfile is rarely wanted back; the stdout note is the handoff. `git
+     stash push` without `-u` leaves untracked files in place, so the
+     untracked count below is computed after the stash.
 
 4. **Worktree prune.** `git worktree prune` (silent).
 
@@ -826,7 +851,7 @@ the data).
 - **Never spawn an agent before Step 4 lock completes.** A second invocation triggered seconds after the first must see locked tickets, not race-pickable ones.
 - **Never use `mode != "bypassPermissions"` on the spawned Agents** — interactive permission prompts inside background agents stall the whole batch.
 - **Never use `isolation: "worktree"` on the spawned Agents** — `/port:ff` and `/dev:ff` create their own worktrees; nesting collides.
-- **Never auto-stash, auto-checkout, or auto-clean the user's tree.** Pre-flight aborts are explicit; the user fixes their own state.
+- **Never auto-checkout or auto-clean (discard) the user's tree.** The ONE permitted mutation is the Step 1.3 labeled auto-stash of **residue-allowlisted files only** (`pubspec.lock`-class machine-regenerated lockfiles) — non-destructive, announced on stdout, recoverable via `git stash pop`, never auto-popped. Tracked modifications OUTSIDE the allowlist are a human's in-progress work and still abort — the dispatcher never sweeps real edits into a stash the user didn't ask for. Checkout, reset, and clean stay forbidden; remaining pre-flight aborts are explicit and the user fixes their own state.
 - **Never proceed past Step 4.0 dry-run gate.** `--dry-run` must be 100% read-only end-to-end.
 - **Q1/Q3 omit the `state` filter — never re-add one.** The label is the dispatch signal; status is filtered post-fetch (§2.0). Re-adding `state: unstarted` to Q3 silently drops every post-port dev handoff (port leaves the ticket at `In Progress` and the human reviewer relabels without touching status). Q2/Q4 deliberately use the state name `In Progress` for recovery — that's the only path where a state-name filter is used.
 - **Never write to a registered repo's `claude-reports/` from outside that repo.** Only the spawned ff agents touch their own worktree's reports; dispatcher's own writes stay in `<main>/claude-reports/dispatcher/`.
