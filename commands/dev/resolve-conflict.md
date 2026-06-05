@@ -4,9 +4,10 @@ description: >
   Merge/Rebase current branch onto trunk, resolve any merge conflicts,
   run tests until green, format, and commit. Single mode does NOT push.
   Platform-aware: uses the right test and format commands per project. With
-  --batch, sweeps open GitHub PRs (optionally filtered by --user), resolves
-  each that is behind its base branch, and pushes only the ones that came
-  through cleanly (no conflicts, tests green).
+  --batch, sweeps open GitHub PRs (optionally filtered by --user) and fans out
+  one parallel subagent per PR — each works in the PR's worktree, merges onto
+  its base, tests, and pushes only if clean (conflicted PRs are flagged for a
+  human).
 ---
 
 # Resolve Conflict — Rebase onto Trunk & Fix Conflicts
@@ -20,17 +21,18 @@ Pull latest trunk via merge/rebase, resolve conflicts, verify tests pass, format
 | Mode | Trigger | Scope |
 |------|---------|-------|
 | **Single** (default) | no `--batch` | Resolves the **current branch** against `origin/trunk`. Runs Steps 0–8 below. |
-| **Batch** | `--batch` | Sweeps open GitHub PRs (optionally filtered by `--user`), and for each PR that is behind its base branch, runs the per-branch core (Steps 2–6) against **that PR's own base branch**. Batch-level pre-flight and reporting replace Steps 0–1 and 7–8. See the **Batch Mode** section near the end. |
+| **Batch** | `--batch` | Sweeps open GitHub PRs (optionally filtered by `--user`) and fans out **one parallel subagent per PR**. Each subagent works in that PR's own git worktree (reused if it exists, created otherwise), merges/rebases onto the PR's base branch, runs tests, and **pushes only if the merge was clean**. Conflicted PRs are aborted and flagged for human review. See the **Batch Mode** section near the end. |
 
 **Usage**:
 
 ```
 /resolve-conflict [--rebase | --merge]
-/resolve-conflict --batch [--user=<login> | --user=@me] [--rebase | --merge] [--dry-run]
+/resolve-conflict --batch [--user=<login> | --user=@me] [--limit=<N>] [--rebase | --merge] [--dry-run]
 ```
 
 - `--rebase` (default) / `--merge` — strategy, passed through to every PR in batch mode.
 - `--user=<login>` — batch only; restrict to PRs **created by** that GitHub login. `@me` resolves to the authenticated user. Omit to sweep all PRs (bots excluded).
+- `--limit=<N>` — batch only; **concurrency cap** — at most **N** subagents run at once. **All** eligible PRs are still processed; they are worked through in waves of N. Omit for no explicit cap (the harness's own concurrency cap still applies).
 - `--dry-run` — batch only; **read-only preview**. Lists every matching PR and probes mergeability **locally with git** (`git merge-tree`, an in-memory merge that reports conflicts without touching the working tree, index, or any branch). Performs **no** checkout, real merge/rebase, conflict resolution, test run, commit, or push — nothing is mutated, locally or remotely (a read-only `git fetch` of the refs is the only network call).
 
 **Base branch.** Throughout Steps 2–8, `{base_branch}` is the remote ref the branch is rebased/merged onto:
@@ -164,34 +166,32 @@ Report the result:
 ## Rules
 
 - **Single mode: never force-push** or run `git push` automatically.
-- **Never run `git rebase --abort`, `git merge --abort` nor `git cherry-pick --abort`** without asking the user first.
-- If the merge/rebase hits more than 5 conflict rounds, pause and ask the user if they want to continue or abort.
+- **Single mode: never run `git rebase --abort`, `git merge --abort` nor `git cherry-pick --abort`** without asking the user first.
+- If the merge/rebase hits more than 5 conflict rounds (single mode), pause and ask the user if they want to continue or abort.
 - Do not modify files unrelated to the conflict resolution or test fixes.
 - All conflict markers must be verified removed before continuing the merge/rebase.
-- **Batch mode push policy:** push a PR branch **only** when it came through **clean** — the rebase/merge applied with **zero conflicts** and tests are green. PRs whose conflicts had to be resolved (or whose tests failed) are **never** auto-pushed; they stay local for human review. Always return to the original branch/worktree at the end, even on failure.
+- **Batch mode push policy:** push a PR branch **only** when it came through **clean** — the rebase/merge applied with **zero conflicts** and `{test_cmd}` is green. PRs that hit conflicts, or whose tests failed, are **never** pushed; they are flagged for human review.
+- **Batch mode conflict handling:** the parallel subagents are non-interactive, so they do **not** attempt HITL conflict resolution. On the first conflict a subagent **aborts** its own merge/rebase (`--abort`) to leave the PR's worktree clean, then reports `conflicts`. This per-worktree auto-abort is the one sanctioned exception to the "never abort without asking" rule — it touches only that PR's isolated worktree, never the user's main worktree. Conflicted PRs are routed back to single-mode `/resolve-conflict` for a human.
 
 ---
 
 ## Batch Mode (`--batch`)
 
-When `--batch` is present, **do not** run the single-branch flow against the current branch. Instead orchestrate a sweep over open GitHub PRs. Each selected PR is resolved by running the per-branch core (Steps 0–8) against that PR's own `{base_branch}`.
+When `--batch` is present, **do not** run the single-branch flow against the current branch. Instead the **orchestrator** (this session) sweeps open GitHub PRs and fans out **one subagent per PR, in parallel**. Each subagent does its work inside that PR's own git worktree, so the orchestrator never switches the current branch and the subagents never collide (distinct branches → distinct worktrees).
 
-### Step B0: Pre-flight
+### Step B0: Pre-flight (orchestrator)
 
-1. Resolve the project profile exactly as in **Step 0** (needed for `{test_cmd}` / `{format_cmd}` per PR). **Dry-run:** skip — no tests are run.
+1. Resolve the project profile exactly as in **Step 0** — capture `{test_cmd}` to hand to each subagent. **Dry-run:** skip — no tests are run.
 2. Resolve the repo: `REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)`. If this fails (not a GitHub-backed repo), stop and tell the user.
-3. Invoke `/check-clean`. If the working tree is dirty, stop and ask the user to commit or stash — batch mode switches branches and must start clean. **Dry-run:** skip — dry-run never checks out a branch, so a dirty tree is harmless.
-4. Record the current branch so it can be restored at the end:
-   ```bash
-   ORIG_REF=$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)
-   ```
-   **Dry-run:** skip — the current branch is never left.
+3. Capture the repo root for worktree paths: `ROOT=$(git rev-parse --show-toplevel)`.
+
+> No `/check-clean` and no branch-restore are needed: the orchestrator stays put on the current branch and never checks anything out — all mutation happens inside per-PR worktrees.
 
 ### Step B1: List & filter PRs
 
 ```bash
 gh pr list --repo "$REPO" --state open \
-  --json number,headRefName,baseRefName,author,isDraft,title,mergeable,mergeStateStatus \
+  --json number,headRefName,baseRefName,author,isDraft,title,mergeable,mergeStateStatus,updatedAt \
   --limit 100
 ```
 
@@ -204,25 +204,25 @@ Filter the list:
 
 If the filtered list is empty, print `No matching open PRs in $REPO.` and stop.
 
-### Step B2: Determine which PRs are behind their base
+### Step B2: Pre-filter behind PRs (orchestrator)
 
-For each surviving PR, decide whether it needs resolution (it is **not** up to date with its base branch):
+To avoid spawning a subagent for a PR that is already current, the orchestrator does a cheap read-only behind-check per surviving PR (updates only remote-tracking refs — no working-tree/branch mutation):
 
 ```bash
 git fetch origin <baseRefName> <headRefName>
 BEHIND=$(git rev-list --count "origin/<headRefName>..origin/<baseRefName>")
 ```
 
-- `BEHIND == 0` → the PR is already up to date with its base → **skip**, mark `up-to-date` in the batch summary.
-- `BEHIND > 0` → the PR is behind → queue it for resolution. Also note `mergeable` (`CONFLICTING` vs `MERGEABLE`) for the summary, but resolve regardless — a clean fast-forwardable rebase still brings the branch current.
+- `BEHIND == 0` → already up to date → **skip**, mark `up-to-date`. No subagent spawned.
+- `BEHIND > 0` → **queue** the PR for the fan-out in Step B3.
 
-> Note on fork PRs: `headRefName` may not exist on `origin`. If the fetch of `<headRefName>` fails, fall back to `gh pr checkout` in Step B3 (it handles forks) and compute `BEHIND` after checkout as `git rev-list --count "HEAD..origin/<baseRefName>"`.
+> Note on fork PRs: `headRefName` may not exist on `origin`. If the fetch of `<headRefName>` fails, do not pre-filter — queue the PR and let its subagent resolve the head via `gh pr checkout` (it handles forks).
 
-> **Dry-run:** still run the read-only `git fetch` + `git rev-list` above to get `BEHIND` (this only updates remote-tracking refs — no working-tree or branch mutation). The mergeability check itself is done in Step B3 with `git merge-tree`.
+> **Dry-run:** still run the read-only `git fetch` + `git rev-list` to get `BEHIND`. The mergeability check is done in Step B3 with `git merge-tree`; **no subagents are spawned in dry-run**.
 
-### Step B3: Resolve each queued PR (sequential)
+### Step B3: Fan out one subagent per PR (parallel)
 
-> **Dry-run short-circuit.** If `--dry-run` was passed, do **not** check out, run a real merge/rebase, resolve, test, commit, or push anything. Instead probe each PR's mergeability locally and print the read-only preview table below, then stop. Nothing is mutated.
+> **Dry-run short-circuit.** If `--dry-run` was passed, do **not** spawn subagents, check out, run a real merge/rebase, resolve, test, commit, or push anything. Instead probe each PR's mergeability locally and print the read-only preview table below, then stop. Nothing is mutated.
 >
 > For each PR, run an **in-memory merge** of base and head — no checkout, no working-tree/index/branch change:
 >
@@ -246,59 +246,69 @@ BEHIND=$(git rev-list --count "origin/<headRefName>..origin/<baseRefName>")
 >
 > | # | PR | Branch ← Base | Behind | git merge-tree | Conflicted files | Would do |
 > |---|----|--------------|--------|----------------|-------------------|----------|
-> | 1 | #123 Add foo | feat/foo ← main | 7 | conflicts | lib/a.dart, lib/b.dart | resolve conflicts, leave local for review |
-> | 2 | #124 Fix bar | fix/bar ← trunk | 5 | clean | — | rebase clean, push (--force-with-lease) |
+> | 1 | #123 Add foo | feat/foo ← main | 7 | conflicts | lib/a.dart, lib/b.dart | flag for human — no auto-resolve |
+> | 2 | #124 Fix bar | fix/bar ← trunk | 5 | clean | — | merge + test, push if green (--force-with-lease) |
 > | 3 | #125 Tidy    | tidy ← main | 0 | — | — | skip (already current) |
 > ```
 >
-> The **Would do** column follows directly from the probe: `behind 0` ⇒ skip; clean merge-tree ⇒ would resolve cleanly and push; conflicts ⇒ would resolve then leave local for review. List the conflicted paths so the user sees the blast radius before committing to a live run.
+> The **Would do** column follows directly from the probe: `behind 0` ⇒ skip; clean merge-tree ⇒ would merge, test, and push if green; conflicts ⇒ would abort and flag for a human (the live run does not auto-resolve in batch). List the conflicted paths so the user sees the blast radius before committing to a live run.
 >
 > Caveat to note in the output: `git merge-tree` models a **merge**; with `--rebase` the exact conflict set can differ, but it is a reliable mergeability signal.
 
-Process queued PRs **one at a time** (conflict resolution needs focused, sequential attention). For each PR:
+**Spawn one subagent per queued PR, in parallel**, passing each the PR number, `headRefName`, `baseRefName`, the strategy (`rebase`/`merge`, default rebase), `{test_cmd}`, `REPO`, and `ROOT`. Each subagent is self-contained and **must return a structured result** (outcome + details) for the summary.
 
-1. Announce: `[batch i/N] PR #<number> "<title>" — <headRefName> ← <baseRefName> (behind <BEHIND>)`.
-2. Check out the PR branch robustly (handles forks, creates/updates the local tracking branch):
+**Concurrency.** Process **all** queued PRs, but run at most `--limit=<N>` subagents at a time (default: no explicit cap — issue all `Agent` calls in one message and let the harness's own cap queue the overflow). When `--limit` is set, dispatch in **waves**: issue N `Agent` calls in a single message, wait for that wave to finish, then issue the next N, until every queued PR has been processed. Never drop a PR for being over the limit — the cap throttles *how many run at once*, not *how many run*.
+
+Give each subagent these instructions:
+
+1. **Find or create the PR's worktree.**
+   - List worktrees: `git -C "$ROOT" worktree list --porcelain`. If an entry's `branch` is `refs/heads/<headRefName>`, use that worktree's path. Work there.
+   - Otherwise create one. Derive a path from the ticket id in the branch (`[A-Z]+-[0-9]+`, e.g. `CAF-668`) → `<ROOT>/../<TICKET-ID>`; fall back to a sanitized branch name if there is no ticket id. Then:
+     ```bash
+     git -C "$ROOT" fetch origin <headRefName> <baseRefName>
+     git -C "$ROOT" worktree add <path> <headRefName>   # creates a local branch tracking origin/<headRefName>
+     ```
+     For a **fork** PR (head not on `origin`), instead `git worktree add <path> --detach` then `gh pr checkout <number> --repo "$REPO"` inside `<path>`.
+   - If the chosen worktree has **uncommitted changes** (`git -C <path> status --porcelain` non-empty), do not touch it — return `worktree-dirty` and stop.
+2. **Perform the merge/rebase** inside the worktree, against `origin/<baseRefName>`, using the passed strategy:
    ```bash
-   gh pr checkout <number> --repo "$REPO"
+   git -C <path> fetch origin <baseRefName>
+   git -C <path> <rebase|merge> origin/<baseRefName>
    ```
-   If the local branch has **unpushed commits that differ from the PR's remote head**, do not clobber them — skip the PR, mark `local-diverged`, and tell the user to reconcile manually.
-3. Set `{base_branch}` = `origin/<baseRefName>` for this PR.
-4. Run the per-branch core — **Steps 2 → 6** (Fetch & rebase/merge → Resolve conflicts → Verify tests → Format → Commit) — using this PR's `{base_branch}` and the strategy from `--merge`/`--rebase` (default rebase). The Step 3 conflict rules and the 5-round gate apply per PR.
-5. Capture the per-PR outcome for the summary:
-   - `resolved` — conflicts were resolved, tests green. **Not pushed** (had conflicts → human review).
-   - `clean` — rebase/merge applied with **no conflicts** and tests green.
-   - `tests-failed` — rebase applied but `{test_cmd}` is red after fix attempts (leave the branch as-is; flag it; **not pushed**).
-   - `skipped` — `up-to-date`, `local-diverged`, or user chose to skip at a gate.
-   - `aborted` — user aborted this PR's rebase/merge (only after confirming, per Rules).
-6. **Push clean PRs only.** If — and only if — the outcome is `clean`, push the branch now (we are already checked out on it):
-   - **rebase** strategy → history was rewritten: `git push --force-with-lease origin <headRefName>`. `--force-with-lease` (never `--force`) so a concurrent push by someone else aborts the push instead of clobbering it.
-   - **merge** strategy → fast-forward, no rewrite: `git push origin <headRefName>`.
-   - Record `pushed` (or `push-failed` with the error) in the summary Notes. A failed push does **not** stop the batch.
-   - Any outcome other than `clean` is **never** pushed.
-7. **Isolation between PRs:** before moving to the next PR, ensure no rebase/merge is mid-flight (`git status`); if the user aborted, the working tree must be clean. Never carry an in-progress rebase across PRs.
+3. **On conflict:** do **not** attempt to resolve (non-interactive). Abort to leave the worktree clean and return `conflicts` with the conflicted file list (`git -C <path> diff --name-only --diff-filter=U` captured before aborting):
+   ```bash
+   git -C <path> <rebase|merge> --abort
+   ```
+4. **On clean merge:** run `{test_cmd}` in the worktree.
+   - Tests **red** → return `tests-failed` (leave the worktree as-is for inspection; do not push).
+   - Tests **green** → push, since clean + green is the push criterion:
+     - **rebase** → `git -C <path> push --force-with-lease origin <headRefName>` (history rewritten; `--force-with-lease`, never `--force`).
+     - **merge** → `git -C <path> push origin <headRefName>` (fast-forward).
+     - Return `pushed` on success, or `push-failed` with the error.
+5. Return a structured result: `{ pr, branch, base, outcome, conflicted_files?, test_summary?, push_error?, worktree_path, worktree_created: bool }`.
 
-**Failure isolation:** a failure on one PR (tests red, abort, diverged) must not stop the batch — record it and continue to the next PR.
+**Failure isolation:** a subagent that errors or returns a failure outcome must not affect the others — the orchestrator records its result and moves on.
 
-### Step B4: Restore & report
+### Step B4: Collect & report (orchestrator)
 
-1. Return to the starting point: `git checkout "$ORIG_REF"`.
-2. Print the **Batch Summary** table:
+Wait for all subagents to finish, then print the **Batch Summary** table:
 
 ```
-## Batch Conflict Resolution Summary
+## Batch Summary
 
 Repo: <owner/repo>   Strategy: <rebase|merge>   Filter: <--user value or "all (bots excluded)">
 
-| # | PR | Branch ← Base | Behind | Outcome | Conflicts resolved | Pushed | Notes |
-|---|----|--------------|--------|---------|--------------------|--------|-------|
-| 1 | #123 Add foo | feat/foo ← main | 7 | resolved | 3 files | no | had conflicts — left local for review |
-| 2 | #124 Fix bar | fix/bar ← trunk | 5 | clean | — | yes | force-with-lease pushed |
-| 3 | #125 Forky    | pr-125 ← master | 4 | tests-failed | 1 file | no | 2 tests red — left as-is |
-| 4 | #126 Tidy     | tidy ← main | 0 | up-to-date (skipped) | — | — | — |
+| # | PR | Branch ← Base | Behind | Outcome | Pushed | Worktree | Notes |
+|---|----|--------------|--------|---------|--------|----------|-------|
+| 1 | #123 Add foo | feat/foo ← main | 7 | conflicts | no | ../CAF-123 (reused) | 3 files conflict — run /resolve-conflict there |
+| 2 | #124 Fix bar | fix/bar ← trunk | 5 | pushed | yes | ../CAF-124 (created) | clean + tests green, force-with-lease |
+| 3 | #125 Forky    | pr-125 ← master | 4 | tests-failed | no | ../pr-125 (created) | 2 tests red — left as-is |
+| 4 | #126 Tidy     | tidy ← main | 0 | up-to-date | — | — | skipped (orchestrator pre-filter) |
 ```
 
-3. For every PR with outcome `resolved` or `clean`, include the per-PR **Conflict Resolution Summary** (Step 7 format) beneath the batch table.
-4. **Push report:**
-   - List the branches that **were pushed** (outcome `clean`) — these are now current with their base on the remote.
-   - List the branches **left local** (`resolved` / `tests-failed`) that the user must review and push manually — rebased ones need `git push --force-with-lease`, merged ones can fast-forward push.
+Outcome values: `pushed`, `tests-failed`, `conflicts`, `worktree-dirty`, `up-to-date`, `push-failed`, `error`.
+
+Then print:
+- **Pushed:** branches now current with their base on the remote (outcome `pushed`).
+- **Needs a human:** `conflicts` / `tests-failed` / `worktree-dirty` PRs, with the worktree path and the suggested next step — for conflicts, `cd <path> && /resolve-conflict` (single mode) to resolve interactively.
+- **Worktrees created:** list the worktrees this run created (vs reused) so the user can `/remove-worktree` them when done.
