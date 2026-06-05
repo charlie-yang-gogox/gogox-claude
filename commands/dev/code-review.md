@@ -21,6 +21,8 @@ Batch mode (auto-scans all open PRs of the cwd repo, mirrors the `ca/da-flutter-
 - `/code-review --batch --dry-run` — list candidates, do not review
 - `/code-review --batch --force` — bypass the already-reviewed dedup check
 - `/code-review --batch --limit=N` — cap the number of PRs reviewed this run
+- `/code-review --batch --exclude-user=<user>` — skip all PRs authored by `<user>`. Accepts a comma-separated list (`--exclude-user=alice,bob`) to exclude several authors. Matched against `author.login` (GitHub username), case-insensitively.
+- `/code-review --batch --exclude-draft` — skip PRs that are not ready for review (GitHub draft status). Default batch behavior **keeps** drafts; this flag drops them.
 
 ## Step 1: Parse argument and pick mode
 
@@ -112,7 +114,17 @@ gh pr list --repo "$REPO" --state open \
   --limit 50
 ```
 
-Drop PRs whose `author.login` is `dependabot`, `renovate`, `github-actions`, or ends in `[bot]`. **Drafts are kept** (same policy as the routines).
+Drop PRs whose `author.login` is `dependabot`, `renovate`, `github-actions`, or ends in `[bot]`. **Drafts are kept by default** (same policy as the routines).
+
+**`--exclude-draft` filter.** If `--exclude-draft` was passed, additionally drop every PR whose `isDraft` is `true` (already fetched in the `gh pr list` JSON above — no extra API call). Mark each dropped PR as `excluded-draft` in the Step B7 summary table. Apply this filter here, before CI/dedup checks, so draft PRs never trigger `gh pr checks` / `gh api` calls.
+
+**`--exclude-user=<user>` filter.** If `--exclude-user=<value>` was passed, additionally drop every PR whose `author.login` matches any entry in `<value>`:
+
+- Split `<value>` on commas into a list of usernames.
+- Match against `author.login` **case-insensitively** (GitHub usernames are case-insensitive), trimming surrounding whitespace on each entry.
+- Mark each dropped PR as `excluded-user` in the Step B7 summary table (distinct from `bot author`) so the user can see which PRs were skipped by the filter.
+
+Apply this filter here, before CI/dedup checks, so excluded PRs never trigger `gh pr checks` / `gh api` calls.
 
 If the filtered list is empty, print `No reviewable open PRs in $REPO.` and stop.
 
@@ -198,7 +210,7 @@ Write `$REPORT_DIR/summary.md` with one row per PR seen in Step B1 (including th
 # Batch code review — <REPO> @ <TS>
 
 Platform: <PLATFORM>
-Mode: <force? / limit=N? / dry-run? — note any applied flag>
+Mode: <force? / limit=N? / dry-run? / exclude-user=<value>? / exclude-draft? — note any applied flag>
 
 | PR | Title | Ticket | CI | Status | Critical | Report |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -207,6 +219,8 @@ Mode: <force? / limit=N? / dry-run? — note any applied flag>
 | 231 | chore: ... | —       | red     | skipped (ci-red)        | — | — |
 | 232 | feat: ...  | DAF-22  | green   | skipped (already reviewed) | — | — |
 | 240 | bump deps  | —       | green   | skipped (bot author)       | — | — |
+| 241 | feat: ...  | CAF-150 | green   | skipped (excluded-user)    | — | — |
+| 242 | wip: ...   | CAF-151 | green   | skipped (excluded-draft)   | — | — |
 ```
 
 Ticket column: extract `[A-Z]+-\d+` from the PR title or `headRefName`; `—` if no match.
@@ -217,6 +231,8 @@ Then print to the user a one-screen summary:
 Batch review complete — <REPO>
   Open PRs found:        N
   Bot filtered:          A
+  Excluded by user:      X   (--exclude-user=<value>; omit this line if the flag was not passed)
+  Excluded drafts:       Y   (--exclude-draft; omit this line if the flag was not passed)
   CI red skipped:        B
   Already reviewed:      C   (use --force to redo)
   Newly reviewed:        D
