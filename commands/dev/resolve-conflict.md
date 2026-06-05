@@ -26,11 +26,12 @@ Pull latest trunk via merge/rebase, resolve conflicts, verify tests pass, format
 
 ```
 /resolve-conflict [--rebase | --merge]
-/resolve-conflict --batch [--user=<login> | --user=@me] [--rebase | --merge]
+/resolve-conflict --batch [--user=<login> | --user=@me] [--rebase | --merge] [--dry-run]
 ```
 
 - `--rebase` (default) / `--merge` — strategy, passed through to every PR in batch mode.
 - `--user=<login>` — batch only; restrict to PRs **created by** that GitHub login. `@me` resolves to the authenticated user. Omit to sweep all PRs (bots excluded).
+- `--dry-run` — batch only; **read-only preview**. Lists every matching PR and reports GitHub's own merge status (`mergeable` / `mergeStateStatus`) for each. Performs **no** checkout, fetch-merge, rebase, conflict resolution, test run, commit, or push — nothing is mutated, locally or remotely.
 
 **Base branch.** Throughout Steps 2–8, `{base_branch}` is the remote ref the branch is rebased/merged onto:
 
@@ -177,21 +178,24 @@ When `--batch` is present, **do not** run the single-branch flow against the cur
 
 ### Step B0: Pre-flight
 
-1. Resolve the project profile exactly as in **Step 0** (needed for `{test_cmd}` / `{format_cmd}` per PR).
+1. Resolve the project profile exactly as in **Step 0** (needed for `{test_cmd}` / `{format_cmd}` per PR). **Dry-run:** skip — no tests are run.
 2. Resolve the repo: `REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)`. If this fails (not a GitHub-backed repo), stop and tell the user.
-3. Invoke `/check-clean`. If the working tree is dirty, stop and ask the user to commit or stash — batch mode switches branches and must start clean.
+3. Invoke `/check-clean`. If the working tree is dirty, stop and ask the user to commit or stash — batch mode switches branches and must start clean. **Dry-run:** skip — dry-run never checks out a branch, so a dirty tree is harmless.
 4. Record the current branch so it can be restored at the end:
    ```bash
    ORIG_REF=$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)
    ```
+   **Dry-run:** skip — the current branch is never left.
 
 ### Step B1: List & filter PRs
 
 ```bash
 gh pr list --repo "$REPO" --state open \
-  --json number,headRefName,baseRefName,author,isDraft,title,mergeable \
+  --json number,headRefName,baseRefName,author,isDraft,title,mergeable,mergeStateStatus \
   --limit 100
 ```
+
+`mergeable` is `MERGEABLE` / `CONFLICTING` / `UNKNOWN`; `mergeStateStatus` is `CLEAN` / `BEHIND` / `DIRTY` / `BLOCKED` / `UNSTABLE` / `UNKNOWN`. These are GitHub's authoritative merge-status fields — used directly by `--dry-run` (Step B3) and as the conflict hint in the summary. If a value is `UNKNOWN`, GitHub is still computing it; re-running the command shortly resolves it.
 
 Filter the list:
 
@@ -214,7 +218,26 @@ BEHIND=$(git rev-list --count "origin/<headRefName>..origin/<baseRefName>")
 
 > Note on fork PRs: `headRefName` may not exist on `origin`. If the fetch of `<headRefName>` fails, fall back to `gh pr checkout` in Step B3 (it handles forks) and compute `BEHIND` after checkout as `git rev-list --count "HEAD..origin/<baseRefName>"`.
 
+> **Dry-run:** skip the local `git fetch` / `git rev-list` entirely — use GitHub's `mergeStateStatus` (`BEHIND` ⇒ behind base, `CLEAN` ⇒ up to date) as the behind/up-to-date signal. Dry-run touches no local refs.
+
 ### Step B3: Resolve each queued PR (sequential)
+
+> **Dry-run short-circuit.** If `--dry-run` was passed, do **not** check out, resolve, test, commit, or push anything. Instead print the read-only preview table below — using the `mergeable` / `mergeStateStatus` values already fetched in Step B1 — and stop. Nothing is mutated.
+>
+> ```
+> ## Batch Dry-Run — open PRs in <owner/repo>
+>
+> Strategy if run: <rebase|merge>   Filter: <--user value or "all (bots excluded)">
+>
+> | # | PR | Branch ← Base | Merge status (GitHub) | Up to date? | Would do |
+> |---|----|--------------|------------------------|-------------|----------|
+> | 1 | #123 Add foo | feat/foo ← main | CONFLICTING / BEHIND | no | resolve conflicts, leave local for review |
+> | 2 | #124 Fix bar | fix/bar ← trunk | MERGEABLE / BEHIND | no | rebase clean, push (--force-with-lease) |
+> | 3 | #125 Tidy    | tidy ← main | MERGEABLE / CLEAN | yes | skip (already current) |
+> | 4 | #126 WIP     | wip ← main | UNKNOWN / UNKNOWN | ? | re-run shortly — GitHub still computing |
+> ```
+>
+> The **Would do** column is derived purely from GitHub's reported status — `CONFLICTING` ⇒ would resolve then leave local; `MERGEABLE` + `BEHIND` ⇒ would resolve cleanly and push; `CLEAN` ⇒ would skip. No local git operations are performed to produce this.
 
 Process queued PRs **one at a time** (conflict resolution needs focused, sequential attention). For each PR:
 
