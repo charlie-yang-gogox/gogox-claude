@@ -111,13 +111,19 @@ or Atlassian Rovo) is authenticated.`
 
 ### Step 3: Determine lane
 
-**Linear path** — match `<labels>` against `{bug, port, feature}`:
+**Linear path** — match `<labels>` against `{bug, port, feature}`
+(**case-insensitive**: lowercase each label name before comparison, so the
+workspace's actual capitalized labels `Bug` / `Port` / `Feature` map to the
+canonical lanes — mirrors the Jira path's case-insensitive treatment below):
 
 | Match shape                    | `<lane>`  |
 |--------------------------------|-----------|
 | exactly one of `{bug,port,feature}` | that one |
 | zero of the three              | `unknown` |
 | two or three of the three      | `unknown` |
+
+Note: a label like `Design bug` does NOT match — matching is against the
+whole lowercased label name equalling `bug`/`port`/`feature`, not a substring.
 
 **Jira path** — derive from `<issue-type>` (case-insensitive):
 
