@@ -98,3 +98,12 @@ PR's Demo section embeds the ticket's design visuals and — if you handed one o
 "looks good?" card — your own screenshot/recording (the skill itself still never captures any). It
 **never** auto-merges, flips draft→ready, or mutates ticket status (the only ticket writes are the
 read-only PR-link comment and attaching your supplied capture, if any).
+
+**Unattended lane (`--auto` — dispatcher/orchestrator use, not for designers).** Linear tickets
+labeled `design bug` are routed here by `/route` / `/ggx-work` / `/ggx-dispatcher` as
+`/ui-tweak:ff <ID> --auto`. In that mode no cards render and **no device preview ever happens**;
+the run auto-takes the direct-ship path after a single apply — build-only compile gate → the SAME
+decorrelated 2-judge panel (**both judges always run, sonnet + opus, neither skipped**) → commit →
+**draft PR** (terminal; never draft→ready, never merge). The engineer reviewing that draft PR is
+the human gate that replaces the cards. Interactive `/ui-tweak` is unchanged — this lane is purely
+additive.

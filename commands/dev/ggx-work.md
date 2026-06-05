@@ -2,8 +2,9 @@
 name: ggx-work
 description: >
   Single-ticket orchestrator. Drives one ticket (Linear or Jira) through
-  every pipeline it needs (port → spec-review → dev, or just dev, or bug)
-  by repeatedly calling `/route --non-interactive` (in --auto mode)
+  every pipeline it needs (port → spec-review → dev, or just dev, or bug,
+  or ui-tweak for `design bug` tickets) by repeatedly calling
+  `/route --non-interactive` (in --auto mode)
   for decisions and executing the recommended command. Stops cleanly
   at HITL gates (spec-review via Step 4.4a short-circuit — Linear only;
   missing classification via Step 4.3) so a human can take over, then
@@ -12,12 +13,14 @@ description: >
   ONE place (`/route`) instead of being re-implemented in every caller.
   Ticket-system support: Linear (CAF/DAF) and Jira (CET/DET) via the
   abstraction documented in `_ticket-lib.md`. Jira tickets have no
-  port lane, so the port→spec-review handoff path is Linear-exclusive.
+  port lane, so the port→spec-review handoff path is Linear-exclusive;
+  the ui-tweak lane (`design bug` label) is likewise Linear-only.
 Prerequisite: >
   - Linear MCP authenticated for CAF/DAF tickets; Atlassian Rovo MCP
     authenticated for CET/DET tickets.
   - `<ticket-id>` references a real ticket with a derivable lane:
-      - Linear: exactly one classification label ∈ {`bug`,`port`,`feature`}.
+      - Linear: `design bug` label present (→ ui-tweak lane, precedence),
+        OR exactly one classification label ∈ {`bug`,`port`,`feature`}.
       - Jira: `fields.issuetype.name` ∈ {`Bug`,`Story`,`Task`,`Sub-task`,
         `Improvement`,`New Feature`}.
     Anything else halts at the first `/route` call.
@@ -38,9 +41,9 @@ Prerequisite: >
 > is a thin loop driver. If routing seems wrong, fix `/route`, not here.
 >
 > **It does NOT retry failed pipelines.** A non-zero exit from `/port:ff` /
-> `/dev:ff` / `/bug:ff` terminates the loop immediately. The user fixes the
-> root cause and re-invokes `/ggx-work` (re-entry is idempotent — `/route`
-> re-derives the next step from current state).
+> `/dev:ff` / `/bug:ff` / `/ui-tweak:ff` terminates the loop immediately.
+> The user fixes the root cause and re-invokes `/ggx-work` (re-entry is
+> idempotent — `/route` re-derives the next step from current state).
 >
 > **It does NOT write state files.** Cross-invocation resume is entirely
 > derived by `/route` reading Linear + worktree filesystem.
@@ -55,7 +58,8 @@ Prerequisite: >
   spawn paths.
 - `/ggx-work <ticket-id> --no-ticket-init` — skip Step 2.5's Linear lifecycle
   init AND pass `--no-ticket-init` through to every spawned `/port:ff` /
-  `/dev:ff` / `/bug:ff` so the downstream `:start` stage also short-circuits.
+  `/dev:ff` / `/bug:ff` / `/ui-tweak:ff` (the last accepts-and-ignores it)
+  so the downstream `:start` stage also short-circuits.
   Use when running the orchestrator locally for inspection / debugging
   without flipping the ticket on Linear. Combinable with `--auto`. Does NOT
   affect `/ggx-dispatcher` (the dispatcher always inits regardless).
@@ -65,11 +69,12 @@ Notes:
 - `<ticket-id>` — Linear ticket ID (e.g. `CAF-370`). **Required** — unlike
   `/route`, `/ggx-work` does not infer from cwd because the orchestration
   span outlives any single worktree.
-- `--auto` propagates: each spawned `/port:ff` / `/dev:ff` is invoked with
-  its own `--auto` flag.
+- `--auto` propagates: each spawned `/port:ff` / `/dev:ff` / `/ui-tweak:ff`
+  is invoked with its own `--auto` flag.
 - `--no-ticket-init` propagates the same way — passed verbatim into every
   spawned FF wrapper so the chain (`/ggx-work` → `/<port|dev>:ff` →
-  `/<port|dev>:start`) honors the opt-out uniformly.
+  `/<port|dev>:start`) honors the opt-out uniformly. `/ui-tweak:ff`
+  accepts-and-ignores it (ui-tweak never calls `/_ticket-init`).
 
 ---
 
@@ -81,7 +86,8 @@ Notes:
 2. Detect `--auto` flag → `<auto-mode> = True/False`.
 3. Detect `--no-ticket-init` flag → `<no-ticket-init> = True/False`. When True,
    Step 2.5 short-circuits and `--no-ticket-init` is propagated verbatim into
-   every spawned `/port:ff` / `/dev:ff` / `/bug:ff` invocation in Step 3.
+   every spawned `/port:ff` / `/dev:ff` / `/bug:ff` / `/ui-tweak:ff`
+   invocation in Step 3.
 4. Missing `<ticket-id>`:
    - `<auto-mode> == True` → STOP with `/ggx-work requires <ticket-id> in --auto mode.`
    - `<auto-mode> == False` → `AskUserQuestion`:
@@ -123,7 +129,17 @@ The flag is still propagated to spawned FF wrappers in Step 3 so the downstream
 whole chain consistent for the manual / debugging workflow.
 
 1. **Derive `<lane>` from the classification** held by Step 2 — system-aware:
-   - **Linear**: exactly one of `{bug, port, feature}` ∈ `<labels>` → that one.
+   - **Linear**: first apply the **`design bug` precedence rule**
+     (canonical statement in `_ticket-lib.md` § Lane derivation, mirrored
+     in `/route` Step 3): if `design bug` ∈ `<labels>` (whole-string,
+     case-insensitive) → `<lane> = ui-tweak`, regardless of which other
+     canonical labels co-occur — and do NOT skip Step 2.5. This matters
+     for `design bug`-only tickets: they carry zero canonical labels, so
+     without the precedence check they would skip Step 2.5 entirely and
+     the ticket would never be moved to In Progress / never drop
+     `ready-to-dev`, breaking the dispatcher state machine.
+     Only if `design bug` is absent: exactly one of `{bug, port, feature}`
+     ∈ `<labels>` → that one.
      Zero or multiple → **skip the entire Step 2.5**. Step 3's `/route`
      call will surface the missing-classification error via its own
      UNKNOWN_LANE path; duplicating the check here would just produce a
@@ -138,6 +154,11 @@ whole chain consistent for the manual / debugging workflow.
 2. **Map `<lane>` to the `/_ticket-init` lane argument**:
    - `port` → `port`
    - `bug` / `feature` → `dev` (both flow through the `/dev:ff` pipeline)
+   - `ui-tweak` → `dev` (ui-tweak maps to `dev` for init — `/_ticket-init`
+     only accepts `port`/`dev`, and a ui-tweak ticket carries the same
+     `ready-to-dev` workflow label as dev/bug tickets. Note `/ui-tweak:start`
+     itself is deliberately read-only on the ticket — the lifecycle write
+     belongs here, one level up, exactly as for dev/bug.)
 
 3. Invoke `/_ticket-init <ticket-id> <lane-arg>` (idempotent; safe to re-call). The skill drives status → `In Progress`, drops `ready-to-<lane-arg>`, sets assignee to self, sets estimate=1 if null, and posts a `<!-- ticket-init:v1 lane=<lane-arg> -->` starting comment if absent. Every write is short-circuited by a per-field skip condition, so dispatcher-spawned runs (where §4.1 already invoked the same skill) and re-entries (after a crash) collapse to no-ops naturally — no separate idempotency guard needed here.
 
@@ -219,6 +240,7 @@ Invoke `<route-cmd>` inline. Parse its output for:
 | matches `^/port:ff `                  | **Pipeline** (Step 4.4) |
 | matches `^/dev:ff `                   | **Pipeline** (Step 4.4) |
 | matches `^/bug:ff `                   | **Pipeline** (Step 4.4) |
+| matches `^/ui-tweak:ff `              | **Pipeline** (Step 4.4) |
 | anything else                         | **Unknown** — Step 4.3 with reason `unrecognized-recommendation: <cmd>` |
 
 ---
@@ -342,7 +364,7 @@ agent's return message:
 
 Exit non-zero.
 
-#### Step 4.4: Pipeline (recommended_command is `/port:ff`, `/dev:ff`, `/bug:ff`)
+#### Step 4.4: Pipeline (recommended_command is `/port:ff`, `/dev:ff`, `/bug:ff`, `/ui-tweak:ff`)
 
 Build the command to execute:
 
@@ -353,6 +375,11 @@ if <auto-mode>:
 if <no-ticket-init>:
     <spawn-cmd> += " --no-ticket-init"
 ```
+
+(`/ui-tweak:ff` accepts-and-ignores `--no-ticket-init` — the ui-tweak
+pipeline never calls `/_ticket-init` anyway, so the flag is semantically a
+no-op there; it is still appended uniformly so this builder stays
+lane-agnostic.)
 
 Execute `<spawn-cmd>` inline (LLM continues the current session, walking
 the slash command's pseudocode just like `/dev:ff` and `/port:ff` do for
@@ -449,10 +476,11 @@ the loop continue, re-calling `/route`, and posting a Step 4.2 comment
 short-circuit belongs to `/ggx-work`'s pipeline-result interpretation,
 which Step 4.4 already owns.
 
-**Why this does NOT fire for `/dev:ff` or `/bug:ff`**: dev and bug
-pipelines terminate at PR-open. Their "done" is unambiguous — the next
-`/route` call returns `(none)` and the loop terminates via Step 4.1.
-Only port has a mid-pipeline handoff that requires a human gate.
+**Why this does NOT fire for `/dev:ff`, `/bug:ff`, or `/ui-tweak:ff`**:
+dev, bug, and ui-tweak pipelines terminate at PR-open. Their "done" is
+unambiguous — the next `/route` call returns `(none)` and the loop
+terminates via Step 4.1. Only port has a mid-pipeline handoff that
+requires a human gate.
 
 ---
 
@@ -543,8 +571,8 @@ where it left off via `infer_dev_stage`.
   `<iter> <= 2`. Cap firing means a bug in `/route` or a pathological
   pipeline — surface, don't paper over.
 - **`--auto` is sticky downward.** When `--auto` is set, every spawned
-  `/port:ff` / `/dev:ff` / `/bug:ff` gets its own `--auto` flag. Mixed
-  modes (parent auto, child interactive) are not supported.
+  `/port:ff` / `/dev:ff` / `/bug:ff` / `/ui-tweak:ff` gets its own `--auto`
+  flag. Mixed modes (parent auto, child interactive) are not supported.
 - **Linear writes are scoped by purpose, not by mode.** Both interactive
   and `--auto` perform Step 2.5 lifecycle init (status / assignee /
   estimate / labels / starting comment) and the Step 4.4a HITL fallback
@@ -561,11 +589,16 @@ where it left off via `infer_dev_stage`.
 
 ## Relationship to `/ggx-dispatcher`
 
-`/ggx-dispatcher` now spawns `/ggx-work <id> --auto` for every locked
-ticket regardless of lane (see `ggx-dispatcher.md` §5.1). Inside each
-spawned subagent, `/ggx-work` calls `/route --non-interactive` to pick
-`/port:ff` / `/dev:ff` / `/bug:ff` from the classification label plus
-worktree filesystem state.
+`/ggx-dispatcher` spawns `/ggx-work <id> --auto` for every locked
+ticket regardless of lane (see `ggx-dispatcher.md` §5.1) — **with one
+exception**: `design bug` tickets run the ui-tweak lane **inline in the
+dispatcher's main session** instead of in a spawned subagent, because the
+ui-tweak audit panel spawns an opus judge (`dev-reviewer`) and nested
+opus spawns from a general-purpose subagent are unreliable (see
+`ggx-dispatcher.md` §5.0). Inside each spawned subagent, `/ggx-work`
+calls `/route --non-interactive` to pick `/port:ff` / `/dev:ff` /
+`/bug:ff` / `/ui-tweak:ff` from the classification label plus worktree
+filesystem state.
 
 Label ownership is split (see `ggx-dispatcher.md`'s "Label ownership
 boundary" section for the canonical statement). `/ggx-work` has limited
@@ -586,9 +619,9 @@ write authority — it is NOT label-agnostic:
     HITL skip so the spec-review handoff is discoverable by
     `/spec-review`'s batch path. Never fires when `/port:ship --auto`
     already added the label (the if-branch wins).
-- **Classification labels** (`bug`, `port`, `feature`) are owned by
-  humans and read only by `/route` (and now read by `/ggx-work` Step
-  2.5 to derive lane — read-only). `/ggx-work` never writes them.
+- **Classification labels** (`bug`, `port`, `feature`, `design bug`) are
+  owned by humans and read only by `/route` (and now read by `/ggx-work`
+  Step 2.5 to derive lane — read-only). `/ggx-work` never writes them.
 
 What `/ggx-work` contributes on top of plain ff spawn:
 

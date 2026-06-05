@@ -6,7 +6,7 @@ description: >
   shapes: pass a ticket id to analyze just that one, or call with no args
   to sweep every **To-Do** ticket **assigned to me** on the active team.
   Per ticket it judges content completeness against the lane's pipeline
-  needs (port / feature / bug), builds a dependency graph from explicit
+  needs (port / feature / bug / ui-tweak), builds a dependency graph from explicit
   relations (Linear `.relations[]`, Jira `issuelinks`) plus LLM content
   inference, computes a topological implementation order and the best
   starting ticket, then writes the outcome back: complete + unblocked →
@@ -26,8 +26,8 @@ Prerequisite: >
 # `/ticket-analyze [ticket-id]`
 
 Analyze To-Do tickets assigned to me for **pipeline readiness**: is the
-content sufficient for the port / feature / bug workflow, and is the ticket
-blocked by another ticket? Persist the verdict as workflow labels + a
+content sufficient for the port / feature / bug / ui-tweak workflow, and is
+the ticket blocked by another ticket? Persist the verdict as workflow labels + a
 structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 `/ggx-work` → `/route`) picks up ready tickets with zero extra steps.
 
@@ -56,13 +56,15 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 | incomplete (incl. missing/ambiguous classification) | any | any | `need-revision` |
 | complete | blocked | any | `need-dependency` |
 | complete | unblocked | port | `ready-to-port` |
-| complete | unblocked | feature / bug | `ready-to-dev` |
+| complete | unblocked | feature / bug / ui-tweak | `ready-to-dev` |
 
 The four analyzer-owned labels (`ready-to-port`, `ready-to-dev`,
 `need-revision`, `need-dependency`) are **mutually exclusive** — every
 label write is a full-set rewrite that removes the other three (mirrors
-the dispatcher §4.1 swap pattern). `bug`-lane tickets get `ready-to-dev`;
-`/route` derives the bug pipeline from the classification label downstream.
+the dispatcher §4.1 swap pattern). `bug`- and `ui-tweak`-lane tickets get
+`ready-to-dev` (no new workflow label for ui-tweak — the dispatcher sweep
+stays two-label); `/route` derives the bug / ui-tweak pipeline from the
+classification label downstream.
 
 **Re-run semantics** (how tickets flow through repeated runs):
 
@@ -188,10 +190,14 @@ names from its field-mapping table:
 
 - `<title>`, `<description>`, `<url>`, `<status_name>`, `<labels>`,
   `<priority>`, `<createdAt>`
-- `<lane>` — derive per the `_ticket-lib.md` lane table: Linear
-  classification label ∈ `{bug, port, feature}` (exactly one → that lane;
-  zero or multiple → `unknown`); Jira `fields.issuetype.name` (`Bug` →
-  bug, story/task family → feature; no port lane).
+- `<lane>` — derive per the `_ticket-lib.md` lane table: Linear — first
+  the **`design bug` precedence rule** (whole-string, case-insensitive;
+  present → `ui-tweak`, regardless of which canonical labels co-occur —
+  a `design bug`-only ticket must resolve to `ui-tweak`, NOT fall through
+  to `unknown`/`need-revision`); only if absent, classification label ∈
+  `{bug, port, feature}` (exactly one → that lane; zero or multiple →
+  `unknown`). Jira `fields.issuetype.name` (`Bug` → bug, story/task
+  family → feature; no port or ui-tweak lane).
 - **Explicit relations** — first command in the repo to read these:
   - Linear: `.relations[]` from `get_issue` — capture
     `type ∈ {blocks, blocked_by, related, duplicate}` + related issue id.
@@ -230,10 +236,20 @@ explanation each]}`.
   - [ ] Reproduction steps.
   - [ ] Expected vs actual behavior.
   - [ ] Environment / build / version (or an explicit "all versions").
+- **ui-tweak** — sufficient for `/ui-tweak:ff` (a design bug is a visual
+  defect, NOT a logic bug — do not demand repro steps):
+  - [ ] What visual/layout change is wanted (the target look, or the
+        delta from current: size, color, spacing, ordering, …).
+  - [ ] Where — the screen / component the change applies to.
+  - [ ] Figma URL or before/after reference — preferred but not required
+        when the textual description is unambiguous (e.g. "make the
+        order-page CTA button 5dp taller").
 - **all lanes**:
-  - [ ] Resolvable lane. Linear: exactly one classification label —
-        missing or multiple is itself a revision reason
-        (`no single classification label — add exactly one of bug/port/feature`),
+  - [ ] Resolvable lane. Linear: `design bug` present → `ui-tweak`
+        (precedence — always resolvable, even with canonical co-labels);
+        otherwise exactly one classification label — missing or multiple
+        is itself a revision reason
+        (`no single classification label — add exactly one of bug/port/feature, or design bug for UI-only defects`),
         NOT a HITL prompt (keeps the batch flowing; contrast `/route`,
         which prompts because it must pick a pipeline *now*).
         Jira: unrecognized `issuetype.name` → same treatment.
@@ -454,7 +470,7 @@ see `_slack-notify.md` Guardrails); do not add change-detection here.
 ## §A — Output comment schema
 
 ```markdown
-<!-- ticket-analysis:v1 ticket=<TICKET-ID> verdict=<complete-unblocked|complete-blocked|incomplete> lane=<port|feature|bug|unknown> -->
+<!-- ticket-analysis:v1 ticket=<TICKET-ID> verdict=<complete-unblocked|complete-blocked|incomplete> lane=<port|feature|bug|ui-tweak|unknown> -->
 ## Ticket Analysis
 
 **Verdict**: <Ready (ready-to-dev) | Ready (ready-to-port) | Blocked (need-dependency) | Needs revision (need-revision)>
@@ -516,8 +532,9 @@ Schema rules:
 
 - Do NOT invoke `/ggx-work`, `/route`, or any pipeline — labels are the
   only handoff.
-- Do NOT write classification labels (`bug` / `port` / `feature`) — those
-  are human-owned (`/ggx-dispatcher` ownership table).
+- Do NOT write classification labels (`bug` / `port` / `feature` /
+  `design bug`) — those are human-owned (`/ggx-dispatcher` ownership
+  table).
 - Do NOT write `dispatcher-*-in-flight` or `need-spec-review` — other
   writers own those.
 - Do NOT create Linear issue relations from inferred dependencies — record

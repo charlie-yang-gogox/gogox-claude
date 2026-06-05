@@ -1,6 +1,6 @@
 ---
 name: audit
-description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — the deferred LLM logic gate, and the SOLE logic enforcement in the skill (there is no edit-time hook). Reached only after the designer confirms the look and picks 'Ship it' (R18). Formats, then runs the decorrelated dual-judge panel (ui-verify-agent sonnet UI-lens + dev-reviewer opus behavior-lens, with a deterministic structural pre-pass) ONCE on the final cumulative diff (base_ref → working tree); BOTH must return CLEAR. CLEAR → writes .dev/ui-verify-pass.md (Status: CLEAR) → orchestrator advances to commit. BLOCKED → writes repair-context + bumps repair-count → orchestrator routes back to /ui-tweak:apply for an agent UI-only fix (max 3, then engineer card Ce); no standalone C2 card. Internal stage — designers run /ui-tweak."
+description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — the deferred LLM logic gate, and the SOLE logic enforcement in the skill (there is no edit-time hook). Reached after the designer confirms the look and picks 'Ship it' (R18), or under --auto via the orchestrator's direct-ship auto-decision (same panel, both judges, no override; BLOCKED = loud-fail, no repair loop). Formats, then runs the decorrelated dual-judge panel (ui-verify-agent sonnet UI-lens + dev-reviewer opus behavior-lens, with a deterministic structural pre-pass) ONCE on the final cumulative diff (base_ref → working tree); BOTH must return CLEAR. CLEAR → writes .dev/ui-verify-pass.md (Status: CLEAR) → orchestrator advances to commit. BLOCKED → writes repair-context + bumps repair-count → orchestrator routes back to /ui-tweak:apply for an agent UI-only fix (max 3, then engineer card Ce); no standalone C2 card. Internal stage — designers run /ui-tweak."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -96,13 +96,23 @@ The orchestrator's loop sees `repair-context` and routes back to `/ui-tweak:appl
 
 ## `--auto` — failures must be LOUD (R13)
 
-`--auto` cannot reach this stage normally (handoff requires a human picking "Ship it" on card C1, and
-`--auto` shows no cards — D7). If audit is ever reached under `--auto`, a BLOCKED result prints exactly
-one deterministic stderr line and exits non-zero (no agent-repair loop under `--auto`):
+`--auto` DOES reach this stage (D7, revised): `/ui-tweak:ff --auto` auto-takes the direct-ship path
+after its single apply (used by `/ggx-work` / `/ggx-dispatcher` for `design bug` tickets — the
+dispatcher runs that lane inline in its main session precisely so this stage's opus judge can spawn,
+see `ggx-dispatcher.md` §5.0). **The panel is UNCHANGED under `--auto`**: both judges always spawn,
+same tiers (`ui-verify-agent` sonnet + `dev-reviewer` opus), same unanimous-CLEAR rule — full
+tier-decorrelation, no model override, neither judge skipped.
+
+The only `--auto` difference is BLOCKED handling: print exactly one deterministic stderr line and
+exit non-zero (no agent-repair loop under `--auto` — v1 keeps loud-fail; the caller classifies the
+ticket `failed` and leaves `dispatcher-dev-in-flight` as the human-resume signal):
 
 ```
 UI-TWEAK BLOCKED (<ui-verify|dev-reviewer>): <one-line reason> — reverted, no changes kept.
 ```
+
+(Still run the Step-4 revert — `git checkout -- $(git diff "$BASE" --name-only)` — before exiting,
+so nothing un-audited is left in the tree; skip the repair-context/repair-count writes.)
 
 ## HITL / Stop
 

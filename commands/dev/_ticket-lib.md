@@ -150,8 +150,21 @@ Only `blocks`/`blocked-by` kinds carry ordering semantics; treat
 
 | ticket_system | Source                          | Mapping                                                                                  |
 |---------------|---------------------------------|------------------------------------------------------------------------------------------|
+| `linear`      | classification label `design bug` (**precedence — evaluated first**) | present (whole-string, case-insensitive) → `ui-tweak`, regardless of which canonical labels co-occur. Only if absent, fall through to the canonical row below. |
 | `linear`      | classification label ∈ `{bug,port,feature}` | exactly one match → that lane; zero or multiple → `unknown`                  |
-| `jira`        | `fields.issuetype.name`         | `Bug` → `bug`; `Story` / `Task` / `Sub-task` / `Improvement` / `New Feature` → `feature`. Anything else → `unknown`. **No `port` lane** — the port pipeline is Linear-specific (copy-from-source CAF / DAF tickets) and not used in Jira projects. |
+| `jira`        | `fields.issuetype.name`         | `Bug` → `bug`; `Story` / `Task` / `Sub-task` / `Improvement` / `New Feature` → `feature`. Anything else → `unknown`. **No `port` lane** — the port pipeline is Linear-specific (copy-from-source CAF / DAF tickets) and not used in Jira projects. **No `ui-tweak` lane** — Jira has no `design bug` classification; design-bug routing is Linear-only, like `port`. |
+
+**`design bug` precedence rule (canonical statement — route.md, ggx-work.md,
+and ticket-analyze.md cite this file and replicate it verbatim):** if the
+Linear label set contains `design bug` (whole-string match after lowercasing
+each label name — `Design bug`, `design bug`, `DESIGN BUG` all match; never a
+substring match), the lane is `ui-tweak`, full stop — evaluated **before and
+overriding** the canonical `{bug,port,feature}` set-count. All combinations
+resolve the same way: `design bug`+`bug`, `design bug`+`feature`,
+`design bug`+`port`, and `design bug` alone (zero canonical labels) → `ui-tweak`.
+The `design bug` label is **human-owned**: automation reads it but never
+writes it, and it must exist in the Linear workspace before routing works
+(setup precondition, same as `bug`/`port`/`feature`).
 
 `UNKNOWN_LANE` semantics are the same in both trackers — the caller
 surfaces a structured error and exits non-zero.
@@ -169,7 +182,7 @@ the dispatcher / port-ship handoff. Their Jira equivalents:
 | `need-spec-review`                 | none — spec-review gate is a port-pipeline concept; Jira has no port lane.                        |
 | `dispatcher-*-in-flight`           | none — dispatcher is Linear-only (`/ggx-dispatcher` Step 1 validates `ticket_system == linear`).  |
 | `need-revision`, `need-dependency` | none — analyzer verdicts degrade to `fields.labels` string labels (`ticket-analysis-need-revision` / `ticket-analysis-need-dependency`) + the `ticket-analysis:v1` comment as primary record. |
-| classification labels (`bug` / `port` / `feature`) | replaced by `fields.issuetype.name` — read-only, never written.                       |
+| classification labels (`bug` / `port` / `feature` / `design bug`) | replaced by `fields.issuetype.name` — read-only, never written. Jira has no `design bug` equivalent: no ui-tweak lane. |
 | `estimate` field                   | Jira has story-point fields but project-specific. Skip the auto-set; rely on human estimation.    |
 
 ---

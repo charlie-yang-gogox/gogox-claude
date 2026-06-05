@@ -1,6 +1,6 @@
 ---
 name: ff
-description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → [demo] → pr → review) runs when they pick 'Ship it' — demo is the opt-in Tier-1 passive capture ('Ship it — and record a short demo' on C1 looks-good): zero-input screenshot+recording of the approved screen, after commit, fail-silent. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate still runs before the audit. Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce; C3/C4 removed); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: a draft PR happens only when the designer picks 'Ship it'. --auto shows no cards → reaches neither a device preview nor a PR."
+description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → [demo] → pr → review) runs when they pick 'Ship it' — demo is the opt-in Tier-1 passive capture ('Ship it — and record a short demo' on C1 looks-good): zero-input screenshot+recording of the approved screen, after commit, fail-silent. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate still runs before the audit. Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce; C3/C4 removed); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: in interactive mode a draft PR happens only when the designer picks 'Ship it'. --auto (the /ggx-work / /ggx-dispatcher lane for `design bug` tickets) shows no cards and never reaches a device preview; instead it auto-takes the R20 direct-ship path after the single apply — build-only compile gate → dual-judge audit → commit → draft PR (terminal; never draft→ready, never merge). Accepts-and-ignores --no-ticket-init (ui-tweak never calls /_ticket-init; the flag exists so /ggx-work's lane-agnostic spawn builder can append it uniformly)."
 ---
 
 <!-- RULE: ALL content, including designer-facing CARD text, is English. No Chinese / non-ASCII. -->
@@ -17,6 +17,12 @@ misdirect guard (Step 0a) knows it was reached legitimately.
 
 ## Routing rule (alias entry)
 
+- **Flag pre-pass**: strip `--auto` (→ `<auto-mode>`) and `--no-ticket-init` from `<source>` before
+  any other parsing. `--no-ticket-init` is **accepted and ignored** — ui-tweak never calls
+  `/_ticket-init` (`/ui-tweak:start` is read-only on the ticket; in the orchestrated path the
+  lifecycle write happens one level up, in `/ggx-work` Step 2.5). The flag exists only so
+  `/ggx-work`'s lane-agnostic spawn builder can append it uniformly; it is stripped here and NOT
+  forwarded to `/ui-tweak:start` (which would also ignore it — belt and suspenders).
 - `<source>` **empty / whitespace / a help token** (`help`, `?`, `how`) → print **card C0**, do
   not dispatch.
 - `<source>` carries a **requirement string** → **first run Step 0 (split the worktree, R19)**, then
@@ -40,9 +46,13 @@ can pick "It already looks right — ship it" on C1 (show-me) — the device pre
 stop are skipped, but a **build-only compile gate still runs** before the audit (their hand-build may
 predate the latest tweak; the "cannot ship broken code" guarantee never relaxes). A build or audit failure is the agent's implementation problem, not the designer's — the
 orchestrator routes back to `apply` for an **agent fix (max 3 attempts)**, then surfaces the engineer
-card. `--auto`: suppress ALL cards, walk silently; with no card the designer can never pick "show me"
-or "ship it", so `--auto` reaches neither a device-preview nor a PR (structural guarantee, D7).
-Failures under `--auto` still print the deterministic stderr line (R13).
+card. `--auto` (the unattended `/ggx-work` / `/ggx-dispatcher` lane for `design bug` tickets):
+suppress ALL cards, walk silently; the C1 (show-me) decision is **auto-taken as the R20 direct-ship
+path** (write `deliver` + `direct-ship` after the single apply), so the run still passes the
+build-only compile gate AND the dual-judge audit, then commits and opens a **draft PR** — the
+terminal (D7, revised). `--auto` never reaches a *device preview* (no card can request one), never
+goes draft→ready, never merges — the human reviewing the draft PR is the gate that replaces the
+suppressed cards. Failures under `--auto` still print the deterministic stderr line (R13).
 
 ## Designer-facing language rules (apply to EVERY card)
 
@@ -80,9 +90,12 @@ review the PR".)
 - **Info cards (C0 first-contact, C5 done) and the stop-only notice C-MISDIRECT stay
   as plain text** — they present no choice, so a tool prompt would be noise.
 - **`--auto` NEVER calls `AskUserQuestion`** (it is interactive). Under `--auto` all cards are
-  suppressed (D7); with no prompt there is no way to pick "Ship it", which is the
-  structural guarantee that `--auto` can never reach a PR. Only verify's deterministic stderr line
-  survives (R13).
+  suppressed (D7, revised): instead of rendering C1 (show-me), the orchestrator **auto-takes the
+  direct-ship branch** (writes `deliver` + `direct-ship` — see the dispatch loop's `--auto`
+  auto-decision), so the run flows build-gate → audit → commit → **draft PR** with no prompt.
+  C1 (looks-good) is structurally unreachable under `--auto` (nothing ever writes
+  `preview-requested`), so a device preview can never happen. Only verify's deterministic stderr
+  line survives (R13).
 - **Routing keys on the returned selection** (the chosen option's `label`, or the Other free-text),
   not on a parsed `[N]`. The branch logic below names the option by its label.
 
@@ -121,7 +134,8 @@ wt=$(git rev-parse --show-toplevel)
       changed, no marker is written, so re-running `/ui-tweak` later with a number starts cleanly.
     - `--auto` → no card is allowed; print
       `FAIL: /ui-tweak:ff --auto needs a work-item id in <source> to name the worktree.` to stderr and
-      STOP (R13). (`--auto` is non-interactive and reaches neither preview nor PR anyway, D7.)
+      STOP (R13). (`--auto` is non-interactive; the `/ggx-work` / `/ggx-dispatcher` callers always
+      pass a ticket id, so this is a guard against malformed direct invocations.)
 
 > **Why no in-place fallback (B3).** An earlier draft let "I don't have one" edit the current tree
 > with no worktree. That re-introduced two defects: (1) a later "Ship it" routed through `start` →
@@ -147,8 +161,10 @@ infer_ui_stage() {
   id=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
   # PREVIEW-REQUESTED (Phase 1): written when the designer picks "I'm done — show me" on card C1.
-  # DELIVER (Phase 2): written when the designer picks "Ship it" on the post-preview card. No
-  # unattended path writes either (--auto shows no cards → can reach neither preview nor PR, D7).
+  # Never written under --auto (no card → no device preview, ever).
+  # DELIVER (Phase 2): written when the designer picks "Ship it" on a C1 variant — or, under
+  # --auto, auto-written together with direct-ship by the dispatch loop's auto-decision (D7,
+  # revised: --auto terminates at a draft PR via the direct-ship build-gate + audit path).
   preview_req=0;   [ -f "$wt/.dev/ui-tweak/preview-requested" ] && preview_req=1
   preview_shown=0; [ -f "$wt/.dev/ui-tweak/preview-shown" ]     && preview_shown=1
   deliver=0;       [ -f "$wt/.dev/ui-tweak/deliver" ]           && deliver=1
@@ -222,7 +238,11 @@ dispatch:
 Step 0   → split+enter ../<ticket-id> (skip if worktree-ready exists; no id → card C-WT, else STOP)
 loop:
   # --- card-terminus (checked BEFORE the walker) ---
-  repair-count >= 3  → render the engineer card (couldn't do it as a pure look change) and STOP
+  repair-count >= 3  → interactive: render the engineer card (couldn't do it as a pure look change)
+                       and STOP. --auto: no card — print
+                       `FAIL: /ui-tweak:ff --auto — repair budget exhausted (3); needs an engineer.`
+                       to stderr and exit non-zero (R13); the caller (/ggx-work / dispatcher)
+                       classifies the ticket failed.
   # --- otherwise advance ---
   s = infer_ui_stage
   dispatch s
@@ -233,6 +253,29 @@ loop:
 `done` resolves to a card by markers: **deliver + PR open + code-review → C5**; **preview-requested +
 preview-shown → the post-preview C1 variant ("looks good — ship it / more changes")**; **otherwise →
 the iteration C1 ("I'm done — show me / more changes")**.
+
+**`--auto` auto-decision (the ONE structural difference from interactive — D7, revised).** Under
+`--auto` no card may render, so the two `done` resolutions that would show a card are auto-taken:
+
+- `done` would render **C1 (show-me)** (`base_ref` present, `preview-requested`/`deliver` absent) →
+  do NOT stop. First check `.dev/ui-tweak/.not-deliverable`: if present, a partial change must not
+  ship — print `FAIL: /ui-tweak:ff --auto — change is partial (.not-deliverable); needs a human.`
+  to stderr and exit non-zero (R13). Otherwise **auto-take the R20 direct-ship branch**: write
+  `.dev/ui-tweak/deliver` AND `.dev/ui-tweak/direct-ship`, then continue the loop. This is exactly
+  the existing C1 "It already looks right — ship it" choice, auto-supplied — the build-only compile
+  gate, the dual-judge audit, commit, draft PR, and code-review all still run; nothing is skipped
+  except the human look. The draft PR (engineer review) is the human gate that replaces the card.
+- `done` would render **C5** (deliver + PR open + code-review) → terminal: print
+  `Ticket <id>: ui-tweak shipped — draft PR open.` and exit 0. (`/ggx-work`'s next `/route` call
+  sees PR OPEN → phase done.)
+- `done` would render **C1 (looks-good)** → structurally unreachable under `--auto` (nothing writes
+  `preview-requested`); if ever hit, treat as the show-me case.
+- `demo` is never requested under `--auto` (`demo-requested` is only written by a card choice).
+
+Note the iteration phase collapses to a single `apply` under `--auto` — corrections require a human
+reply, so there are none (R18's "designer iterates first" intent is deliberately relaxed here; the
+audit panel + draft-PR review are the safety net, same as `/dev:ff --auto` producing a first-pass
+diff a human reviews on the PR).
 
 | stage | action |
 |---|---|
@@ -467,5 +510,13 @@ Never reuse `/pull-request`'s empty placeholder.
 Terminal is a **draft PR** — never `draft→ready`, never merge, never mutate ticket status (the only
 ticket writes are the read-only PR-link comment and — when the designer supplied a capture —
 attaching that capture file to the ticket so the PR can embed its `assetUrl`; status/assignee are
-never touched). No `--pr` flag; deliver only via a human picking C1
-`[3]`. Not wired into `/route` / `/ggx-work` / `/ggx-dispatcher`.
+never touched). No `--pr` flag; in interactive mode deliver happens only via a human picking
+"Ship it" on a C1 card. Under `--auto` the deliver decision is auto-supplied via the direct-ship
+auto-decision (D7, revised) — the draft PR remains the terminal and the human gate.
+
+**Wired into `/route` / `/ggx-work` / `/ggx-dispatcher`**: `/route` recommends `/ui-tweak:ff` for
+tickets whose Linear labels include `design bug` (precedence over the canonical
+`{bug,port,feature}` set — see `_ticket-lib.md` § Lane derivation); `/ggx-work` executes it like
+the other FF pipelines (terminates at PR-open, no mid-pipeline HITL gate); `/ggx-dispatcher` runs
+`design bug` tickets **inline in its main session** (not as a spawned worker) so the audit panel's
+opus judge can spawn — see `ggx-dispatcher.md` §5.0. Linear-only; Jira has no ui-tweak lane.
