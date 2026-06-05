@@ -31,7 +31,7 @@ Pull latest trunk via merge/rebase, resolve conflicts, verify tests pass, format
 
 - `--rebase` (default) / `--merge` — strategy, passed through to every PR in batch mode.
 - `--user=<login>` — batch only; restrict to PRs **created by** that GitHub login. `@me` resolves to the authenticated user. Omit to sweep all PRs (bots excluded).
-- `--dry-run` — batch only; **read-only preview**. Lists every matching PR and reports GitHub's own merge status (`mergeable` / `mergeStateStatus`) for each. Performs **no** checkout, fetch-merge, rebase, conflict resolution, test run, commit, or push — nothing is mutated, locally or remotely.
+- `--dry-run` — batch only; **read-only preview**. Lists every matching PR and probes mergeability **locally with git** (`git merge-tree`, an in-memory merge that reports conflicts without touching the working tree, index, or any branch). Performs **no** checkout, real merge/rebase, conflict resolution, test run, commit, or push — nothing is mutated, locally or remotely (a read-only `git fetch` of the refs is the only network call).
 
 **Base branch.** Throughout Steps 2–8, `{base_branch}` is the remote ref the branch is rebased/merged onto:
 
@@ -195,7 +195,7 @@ gh pr list --repo "$REPO" --state open \
   --limit 100
 ```
 
-`mergeable` is `MERGEABLE` / `CONFLICTING` / `UNKNOWN`; `mergeStateStatus` is `CLEAN` / `BEHIND` / `DIRTY` / `BLOCKED` / `UNSTABLE` / `UNKNOWN`. These are GitHub's authoritative merge-status fields — used directly by `--dry-run` (Step B3) and as the conflict hint in the summary. If a value is `UNKNOWN`, GitHub is still computing it; re-running the command shortly resolves it.
+`mergeable` is `MERGEABLE` / `CONFLICTING` / `UNKNOWN`; `mergeStateStatus` is `CLEAN` / `BEHIND` / `DIRTY` / `BLOCKED` / `UNSTABLE` / `UNKNOWN`. Carry these along as a coarse conflict hint in the summary, but the authoritative conflict check is the local `git merge-tree` probe (used by `--dry-run` in Step B3, and the real rebase/merge in the live run).
 
 Filter the list:
 
@@ -218,26 +218,42 @@ BEHIND=$(git rev-list --count "origin/<headRefName>..origin/<baseRefName>")
 
 > Note on fork PRs: `headRefName` may not exist on `origin`. If the fetch of `<headRefName>` fails, fall back to `gh pr checkout` in Step B3 (it handles forks) and compute `BEHIND` after checkout as `git rev-list --count "HEAD..origin/<baseRefName>"`.
 
-> **Dry-run:** skip the local `git fetch` / `git rev-list` entirely — use GitHub's `mergeStateStatus` (`BEHIND` ⇒ behind base, `CLEAN` ⇒ up to date) as the behind/up-to-date signal. Dry-run touches no local refs.
+> **Dry-run:** still run the read-only `git fetch` + `git rev-list` above to get `BEHIND` (this only updates remote-tracking refs — no working-tree or branch mutation). The mergeability check itself is done in Step B3 with `git merge-tree`.
 
 ### Step B3: Resolve each queued PR (sequential)
 
-> **Dry-run short-circuit.** If `--dry-run` was passed, do **not** check out, resolve, test, commit, or push anything. Instead print the read-only preview table below — using the `mergeable` / `mergeStateStatus` values already fetched in Step B1 — and stop. Nothing is mutated.
+> **Dry-run short-circuit.** If `--dry-run` was passed, do **not** check out, run a real merge/rebase, resolve, test, commit, or push anything. Instead probe each PR's mergeability locally and print the read-only preview table below, then stop. Nothing is mutated.
+>
+> For each PR, run an **in-memory merge** of base and head — no checkout, no working-tree/index/branch change:
+>
+> ```bash
+> # git 2.38+: --write-tree writes only loose objects to the object store
+> git merge-tree --write-tree --name-only "origin/<baseRefName>" "origin/<headRefName>"
+> # exit 0 → clean (no conflicts); exit 1 → conflicts (stdout lists the conflicted paths)
+> ```
+>
+> If `git merge-tree --write-tree` is unavailable (git < 2.38), fall back to the legacy form and grep its output for conflict markers (`<<<<<<<`):
+>
+> ```bash
+> git merge-tree "$(git merge-base origin/<baseRefName> origin/<headRefName>)" \
+>   origin/<baseRefName> origin/<headRefName> | grep -q '^<<<<<<<' && echo CONFLICTS || echo CLEAN
+> ```
 >
 > ```
 > ## Batch Dry-Run — open PRs in <owner/repo>
 >
 > Strategy if run: <rebase|merge>   Filter: <--user value or "all (bots excluded)">
 >
-> | # | PR | Branch ← Base | Merge status (GitHub) | Up to date? | Would do |
-> |---|----|--------------|------------------------|-------------|----------|
-> | 1 | #123 Add foo | feat/foo ← main | CONFLICTING / BEHIND | no | resolve conflicts, leave local for review |
-> | 2 | #124 Fix bar | fix/bar ← trunk | MERGEABLE / BEHIND | no | rebase clean, push (--force-with-lease) |
-> | 3 | #125 Tidy    | tidy ← main | MERGEABLE / CLEAN | yes | skip (already current) |
-> | 4 | #126 WIP     | wip ← main | UNKNOWN / UNKNOWN | ? | re-run shortly — GitHub still computing |
+> | # | PR | Branch ← Base | Behind | git merge-tree | Conflicted files | Would do |
+> |---|----|--------------|--------|----------------|-------------------|----------|
+> | 1 | #123 Add foo | feat/foo ← main | 7 | conflicts | lib/a.dart, lib/b.dart | resolve conflicts, leave local for review |
+> | 2 | #124 Fix bar | fix/bar ← trunk | 5 | clean | — | rebase clean, push (--force-with-lease) |
+> | 3 | #125 Tidy    | tidy ← main | 0 | — | — | skip (already current) |
 > ```
 >
-> The **Would do** column is derived purely from GitHub's reported status — `CONFLICTING` ⇒ would resolve then leave local; `MERGEABLE` + `BEHIND` ⇒ would resolve cleanly and push; `CLEAN` ⇒ would skip. No local git operations are performed to produce this.
+> The **Would do** column follows directly from the probe: `behind 0` ⇒ skip; clean merge-tree ⇒ would resolve cleanly and push; conflicts ⇒ would resolve then leave local for review. List the conflicted paths so the user sees the blast radius before committing to a live run.
+>
+> Caveat to note in the output: `git merge-tree` models a **merge**; with `--rebase` the exact conflict set can differ, but it is a reliable mergeability signal.
 
 Process queued PRs **one at a time** (conflict resolution needs focused, sequential attention). For each PR:
 
