@@ -373,7 +373,14 @@ If any ticket fails any of steps 1-5 mid-batch:
    - Recovery lanes: `save_issue` is a no-op — the in-flight label was already present before the run, so leaving it as-is preserves the recovery signal for next time. Do NOT remove the in-flight label here; doing so would lose the only marker that says "this ticket needs another dispatcher pass."
    - Post `Dispatcher: aborting batch — Linear MCP failure on <failed-ticket>.` comment.
 2. If unlock itself fails for any ticket: post `Dispatcher: PARTIAL LOCK — manual recovery needed for <ticket-id>.` comment.
-3. STOP — release lock — do NOT spawn any agents.
+3. **Slack alert (best-effort, opt-in)**: invoke
+   `/_slack-notify batch-abort detail=<failed-ticket, which MCP call failed, tickets needing manual unlock>`.
+   This is the only abnormal exit that never reaches the §6.5 digest —
+   without it a mid-lock abort leaves zero Slack record. The helper is
+   fail-soft and always exits 0; do not let its outcome change this
+   abort path. (Mapping/config/send live in `commands/dev/_slack-notify.md`
+   — do not re-inline.)
+4. STOP — release lock — do NOT spawn any agents.
 
 The user sees the full failure trace in stdout per the audit-trail rule.
 
@@ -767,6 +774,29 @@ Counts : <N-done> done, <N-paused> port-paused, <N-failed> failed.
 Report : claude-reports/dispatcher/<RUN_TS>-<PID>.md
 ```
 
+**Slack digest (best-effort, opt-in)** — after printing the block above,
+post ONE run-level digest via `/_slack-notify digest ggx-dispatcher`:
+
+<!-- SYNC: the status mapping, message grammar, config gates, and send
+     block live in commands/dev/_slack-notify.md. Do not re-inline. -->
+
+- Header stats: `team=<team_key>`, `processed=<N>`, `done=<N-done>`,
+  `port_paused=<N-paused>`, `failed=<N-failed>`, `skipped=<skip-count>`.
+- One raw-signal line per §6.4 row, built from the **§6.2-derived
+  authoritative outcome + Flags + pr** already in memory (NEVER from the
+  cosmetic §6.1 `[ggx-work-result]` parse), format per `_slack-notify.md`
+  Inputs:
+  `<ticket-id> <url> <lane> done flags=<In-Review|-> pr=<pr-url|->` /
+  `... port-paused flags=<need-spec-review|->` /
+  `... failed flags=<in-flight-residue|-> stage=<stage_reached> reason=<short>`.
+- Include the `Report :` path so the Slack message links back to the
+  full table.
+
+The helper owns emoji/token mapping, `#needs-human` tagging, and the
+fail-soft send; it always exits 0 — its outcome never affects this
+step. `--dry-run` stops at §4.0 and never reaches here, so dry runs are
+naturally Slack-silent.
+
 STOP.
 
 **Render contract**: stdout and the md file render the **same six
@@ -790,6 +820,7 @@ the data).
 - **Lock is released on every exit path.** Including aborts in Step 0/1, empty-tickets in Step 2/3, port config missing in Step 3.5, dry-run in Step 4, partial lock in Step 4.2, and normal completion in Step 6.5.
 - **`branch_prefix: auto` repos require `--team:<KEY>`.** No silent fan-out across teams.
 - **All user-facing output is English.** Per repo convention.
+- **Slack notify points are exclusively §4.2 (batch-abort) and §6.5 (digest).** Both go through `/_slack-notify` (opt-in via `~/.claude/ggx-slack.json`, fail-soft, always exit 0). NEVER insert a notify call between the §4.3 dispatch table and the §5.3 spawns — the table + N `Agent` calls must stay in one assistant message; any tool call in between breaks that contract. No per-ticket or batch-start pings — the §6.5 digest is the batch's single Slack surface.
 - **In-flight labels (Plan X) are managed exclusively by dispatcher + `*:ship`.** `dispatcher-port-in-flight` / `dispatcher-dev-in-flight` are added by §4.1 lock and removed by `/dev:ship` / `/port:ship` on success, by §3.1 PR-exists on stale-state cleanup, and by §4.2 rollback on fresh lanes. They are NEVER added by `/dev:start`, `/port:start`, or any other code path — those routes are for manual users who do not want dispatcher to auto-resume their work. Adding the label outside the dispatcher would silently make manual runs dispatcher-recoverable, breaking the user's expectation of "if I stopped, it stays stopped."
 
 ## Linear label state machine (Plan X)
