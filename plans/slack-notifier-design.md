@@ -57,7 +57,9 @@ The ANNOYANCE critique showed Proposal 1's `GGX_NOTIFY_SUPPRESS` env had to be t
 
 Design principle: **three tiers** — every `needs_human` line carries the `#needs-human` hashtag (the client-reliable, load-bearing filter key; emoji are only at-a-glance visual hints, because Slack emoji search is unreliable). Reuse the dispatcher's existing 🟢/🟡/🔴 primary colors and refine with text-token suffixes — **no separate emoji legend** (the MAINTAINABILITY critique rejected Proposal 2's legend fork: it would force edits to the dispatcher's Step 6.5 stdout table and make one run maintain two legends).
 
-Fixed message grammar: `<emoji> [TOKEN] <ticket-link> · <lane> — <summary> (next: <action>) #ggx-<token> [#needs-human]`
+Fixed message grammar *(format v1)*: `<emoji> [TOKEN] <ticket-link> · <lane> — <summary> (next: <action>) #ggx-<token> [#needs-human]`
+
+> **Format v2 (2026-06-05, after a live preview with real Linear data)**: Charlie picked **Block Kit** over the flat single-line grammar — header block + counts section + divider + a "Needs your action (N)" section of **two-line items** (line 1: emoji + bold ticket link + **title truncated to 60 chars**; line 2: `↳ status: summary — next action`) + a context block holding the hashtags **once per message** (Slack search matches at message granularity, so per-line tags were pure noise) + a one-line `text` fallback for mobile notification previews. The token/emoji taxonomy and `#needs-human` semantics in the table below are unchanged; only the rendering moved. The authoritative rendering spec lives in `_slack-notify.md` ("Rendering — Block Kit"); the §4 examples below show the v1 flat rendering and are kept for the historical record.
 
 | status (token) | emoji | needs_human | Trigger (subsystem / event) | Jira | Example message |
 |---|---|---|---|---|---|

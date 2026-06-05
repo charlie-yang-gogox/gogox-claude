@@ -785,10 +785,11 @@ post ONE run-level digest via `/_slack-notify digest ggx-dispatcher`:
 - One raw-signal line per §6.4 row, built from the **§6.2-derived
   authoritative outcome + Flags + pr** already in memory (NEVER from the
   cosmetic §6.1 `[ggx-work-result]` parse), format per `_slack-notify.md`
-  Inputs:
-  `<ticket-id> <url> <lane> done flags=<In-Review|-> pr=<pr-url|->` /
-  `... port-paused flags=<need-spec-review|->` /
-  `... failed flags=<in-flight-residue|-> stage=<stage_reached> reason=<short>`.
+  Inputs (`title` = the ticket title from the same §6.2 `get_issue`
+  snapshot — the helper truncates to 60 chars):
+  `<ticket-id> <url> <lane> done flags=<In-Review|-> pr=<pr-url|-> title="<title>"` /
+  `... port-paused flags=<need-spec-review|-> title="<title>"` /
+  `... failed flags=<in-flight-residue|-> stage=<stage_reached> reason=<short> title="<title>"`.
 - Include the `Report :` path so the Slack message links back to the
   full table.
 

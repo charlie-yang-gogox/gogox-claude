@@ -435,12 +435,13 @@ no extra MCP calls):
   `need_revision=<I>`, `blocked=<B>`, `errored=<Z>`, and
   `best_start=<id>` when Step 9 has a recommended start.
 - One raw-signal line per analyzed/errored ticket, format per
-  `_slack-notify.md` Inputs:
-  `<ticket-id> <url> <lane> ready` /
-  `... need-revision reasons=<comma-list>` /
-  `... need-dependency blockers=<comma-list>` /
-  `... cycle ids=<id1↔id2>` /
-  `... errored detail=<what failed>`.
+  `_slack-notify.md` Inputs (`title` = the ticket title, already in
+  memory from the analysis loop — the helper truncates to 60 chars):
+  `<ticket-id> <url> <lane> ready title="<title>"` /
+  `... need-revision reasons=<comma-list> title="<title>"` /
+  `... need-dependency blockers=<comma-list> title="<title>"` /
+  `... cycle ids=<id1↔id2> title="<title>"` /
+  `... errored detail=<what failed> title="<title>"`.
 
 The helper owns the emoji/token mapping, `#needs-human` tagging, and the
 fail-soft send — invoke it and continue regardless of its outcome (it

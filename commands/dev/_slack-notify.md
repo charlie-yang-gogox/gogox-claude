@@ -37,14 +37,15 @@ feature must see zero behavior change in every pipeline.
 
 Header stats: `team`, `analyzed`, `ready`, `need_revision`, `blocked`,
 `errored`, optional `best_start`. Per-ticket lines (raw signals, one per
-analyzed ticket):
+analyzed ticket; `title` is the ticket title, required — the renderer
+truncates it to 60 chars):
 
 ```
-<ticket-id> <url> <lane> ready
-<ticket-id> <url> <lane> need-revision reasons=<comma-list>
-<ticket-id> <url> <lane> need-dependency blockers=<comma-list>
-<ticket-id> <url> <lane> cycle ids=<id1↔id2>
-<ticket-id> <url> <lane> errored detail=<what failed>
+<ticket-id> <url> <lane> ready title="<title>"
+<ticket-id> <url> <lane> need-revision reasons=<comma-list> title="<title>"
+<ticket-id> <url> <lane> need-dependency blockers=<comma-list> title="<title>"
+<ticket-id> <url> <lane> cycle ids=<id1↔id2> title="<title>"
+<ticket-id> <url> <lane> errored detail=<what failed> title="<title>"
 ```
 
 ### `digest ggx-dispatcher`
@@ -52,12 +53,13 @@ analyzed ticket):
 Header stats: `team`, `processed`, `done`, `port_paused`, `failed`,
 `skipped`. Per-ticket lines — built from the **§6.2-derived authoritative
 outcome + Flags + pr** carried in memory for the §6.4 table (NEVER from
-the cosmetic `[ggx-work-result]` lines):
+the cosmetic `[ggx-work-result]` lines); `title` comes from the same
+§6.2 `get_issue` snapshot:
 
 ```
-<ticket-id> <url> <lane> done flags=<In-Review|-> pr=<pr-url|->
-<ticket-id> <url> <lane> port-paused flags=<need-spec-review|->
-<ticket-id> <url> <lane> failed flags=<in-flight-residue|-> stage=<stage_reached> reason=<short>
+<ticket-id> <url> <lane> done flags=<In-Review|-> pr=<pr-url|-> title="<title>"
+<ticket-id> <url> <lane> port-paused flags=<need-spec-review|-> title="<title>"
+<ticket-id> <url> <lane> failed flags=<in-flight-residue|-> stage=<stage_reached> reason=<short> title="<title>"
 ```
 
 ### `batch-abort`
@@ -149,41 +151,48 @@ Notes:
   says what to do. The full design taxonomy (incl. `CLASSIFY` ❓) lives in
   `plans/slack-notifier-design.md` §2 for future expansion.
 
-### Line grammar (per ticket)
+### Rendering — Block Kit (format v2, decided 2026-06-05)
 
-```
-<emoji> [<TOKEN>] <<url>|<ticket-id>> · <lane> — <summary> (next: <action>) #ggx-<token-lowercase> [#needs-human]
-```
+One `chat.postMessage` with a `blocks` array plus a one-line `text`
+fallback (drives mobile notification previews and adds search
+redundancy). Markdown tables do NOT render in Slack — always
+line-based mrkdwn inside blocks.
 
-`<<url>|<ticket-id>>` is Slack link syntax. Omit ` · <lane>` when the
-lane is unknown. `<summary>` is the raw signal's detail (reasons /
-blockers / stage+reason / PR state), kept to one line.
+**Digest blocks** (in order):
 
-### Digest layout (one message, markdown tables do NOT render in Slack — always line-based)
+1. `header` block (plain_text, ≤150 chars — hard Slack limit):
+   `📊 <source> · <team> team`
+2. `section` (mrkdwn) — counts line:
+   - ticket-analyzer: `*<X> analyzed* — <a> ready · <b> need-revision · <c> blocked · <z> errored`
+   - ggx-dispatcher: `*<N> processed* — <d> done · <p> port-paused · <f> failed · skipped <s>`
+3. `divider`
+4. `section` (mrkdwn) — `*Needs your action (<n>)*` followed by
+   **two-line items**, one blank line between items, ordered FAILED
+   first, then SPEC-REVIEW / NEEDS-REVISION / BLOCKED / CYCLE, then
+   REVIEW:
 
-```
-📊 [DIGEST] <source> · team <KEY> — <header counts>
-<needs-human lines, one per ticket, FAILED first, then SPEC-REVIEW / NEEDS-REVISION / BLOCKED / CYCLE, then REVIEW>
-<info footer: ready/skipped counts, best-start, report path>
-#ggx-digest
-```
+   ```
+   <emoji> *<<url>|<ticket-id>>* <title, truncated to 60 chars with …>
+           ↳ <status-word>: <summary> — _<next action>_
+   ```
 
-Header counts:
+   `<<url>|<ticket-id>>` is Slack link syntax. `<summary>` is the raw
+   signal's detail (reasons / blockers / stage+reason / PR state), one
+   line. Omit this whole block when nothing needs action.
+5. Optional `section` (mrkdwn) — info footer:
+   - ticket-analyzer: `ready: <id, id, …>` (ids only — READY gets no
+     item) and `Best start: <id>` when present.
+   - ggx-dispatcher: `Report: claude-reports/dispatcher/<RUN_TS>-<PID>.md`.
+6. `context` block — hashtags, ONCE per message (Slack search matches
+   at message granularity, so per-line tags add nothing but noise):
+   `#ggx-digest <#ggx-<token> for each token present> [#needs-human if any item needs action]`
 
-- ticket-analyzer: `<X> analyzed (<a> ready, <b> need-revision, <c> blocked, <z> errored)`
-- ggx-dispatcher: `<N> processed (<d> done, <p> port-paused, <f> failed) · skipped <s>`
+**Fallback `text`** (one line): `📊 [DIGEST] <source> · <team> — <compact counts> [#needs-human]`.
 
-Footer (info, no hashtags):
-
-- ticket-analyzer: `ready: <id, id, ...>` (ids only — READY gets no
-  per-ticket line) and `Best start: <id>` when present.
-- ggx-dispatcher: `Report: claude-reports/dispatcher/<RUN_TS>-<PID>.md`.
-
-### `batch-abort` message (single line + detail)
-
-```
-⛔ [BATCH-ABORT] ggx-dispatcher · team <KEY> — <detail> (next: manually unlock <ids>) #ggx-batch-abort #needs-human
-```
+**`batch-abort` blocks**: single `section` —
+`⛔ *BATCH-ABORT* · ggx-dispatcher · <team> team\n        ↳ <detail> — _manually unlock <ids>_`
+plus a `context` block `#ggx-batch-abort #needs-human`. Fallback text:
+`⛔ [BATCH-ABORT] ggx-dispatcher · <team> — <detail> #needs-human`.
 
 ## Step 2: Send (curl, fail-soft)
 
@@ -191,8 +200,10 @@ The transport is the user's own bot via `chat.postMessage` — messages
 post under the bot identity. One message per invocation.
 
 ```bash
-PAYLOAD=$(jq -n --arg ch "$CHANNEL" --arg text "$MESSAGE" \
-  '{channel: $ch, text: $text, unfurl_links: false, unfurl_media: false}')
+# $BLOCKS is the Block Kit array built per "Rendering" above (jq -n '[...]');
+# $FALLBACK is the one-line text fallback.
+PAYLOAD=$(jq -n --arg ch "$CHANNEL" --arg text "$FALLBACK" --argjson blocks "$BLOCKS" \
+  '{channel: $ch, text: $text, blocks: $blocks, unfurl_links: false, unfurl_media: false}')
 
 RESP=$(curl -sS -m 10 -X POST "https://slack.com/api/chat.postMessage" \
   -H "Authorization: Bearer $TOKEN" \
