@@ -1,161 +1,165 @@
-# Slack Notifier 設計討論
+# Slack Notifier — Design Discussion
 
-> **狀態（2026-06-05）**：設計討論完成（4 設計視角 + 3 對抗評審 + 綜合）。§8 開放問題已由 Charlie 拍板，決議如下：
+> **Status (2026-06-05)**: design discussion complete (4 design lenses + 3 adversarial critiques + synthesis). The §8 open questions were decided by Charlie as follows:
 >
-> | # | 問題 | 決議 |
+> | # | Question | Decision |
 > |---|---|---|
-> | Q1 | Channel 結構 | **單一 `#ggx-pipeline`**，CAF/CET 靠 ticket-id 前綴區分（channel id 待實作時提供） |
-> | Q3 | REVIEW 音量 | **digest 行內**，不獨立 ping |
-> | Q4 | Liveness pulse | **要**，每日一次，`chat.update` 原地編輯同一則 pinned 訊息 |
-> | Q6 | 去重 ledger | **不去重（2026-06-05 翻案定案）**。Charlie 明確表示：卡住的票就是要每輪重複通知，作為持續提醒。→ sidecar / ticket marker 全部取消，§5.2 的 send-on-change-only 規則廢除；digest 每輪重新列出所有 needs-human 票。連帶取消 BLOCKED 的「僅首次進入通知」自癒規則。仍然靜音的只剩：空掃 no-op、中間過程 progress。此決議同時消除了「雲端 sidecar 不跨 session」的未來債——雲端啟用 PR 不再需要重訪 ledger。 |
-> | Q2 | 發送身分 | 未拍板 — 預設沿用既有 Slack bot 身分 |
-> | Q5 | 雲端啟用 | 未拍板 — 預設照本文分期：v1 本地通知、雲端 graceful no-op，雲端啟用列獨立 PR |
+> | Q1 | Channel structure | **Single `#ggx-pipeline`**, CAF/CET distinguished by ticket-id prefix (channel id provided at implementation time) |
+> | Q3 | REVIEW volume | **Digest line only**, no individual ping |
+> | Q4 | Liveness pulse | **Yes**, once daily, `chat.update` editing the same pinned message in place |
+> | Q6 | Dedup ledger | **No dedup (final, reversed 2026-06-05)**. Charlie was explicit: stuck tickets SHOULD be re-announced every run, as a standing reminder. → sidecar / ticket marker both cancelled; the §5.2 send-on-change-only rule is abolished; the digest re-lists every needs-human ticket each run. The BLOCKED "notify only on first entry" self-healing rule is cancelled along with it. The only remaining silence: empty-sweep no-ops and mid-pipeline progress. This decision also eliminates the "cloud sidecar doesn't survive sessions" future debt — the cloud-enablement PR no longer needs to revisit the ledger. |
+> | Q2 | Sender identity | Not decided then — default to the existing Slack bot identity |
+> | Q5 | Cloud enablement | Not decided then — default to the phasing in this doc: v1 local notifications, cloud graceful no-op, cloud enablement as a separate PR |
 
-## 1. 核心設計決策
+## 1. Core Design Decisions
 
-以下決策皆為定案。每條註明採納的理由，以及哪一份 critique 否決了被棄方案。
+All decisions below are final. Each notes WHY it was adopted and which critique killed the rejected alternative.
 
-### 1.1 傳輸機制：本地走 MCP、雲端走 Bash curl，且「雲端是否可送」必須先驗證
+### 1.1 Transport: MCP locally, Bash curl in the cloud — and "can the cloud send at all" must be proven first
 
-- **本地（互動式 / 本地 dispatcher）**：使用 `mcp__claude_ai_Slack__slack_send_message`。這是整個 repo 的既定慣例（所有 skill 都只用 MCP tool，repo 內 grep 不到任何 raw curl / webhook / bot token）。
-- **雲端（headless routine）**：唯一可行路徑是 `Bash` curl 到 `chat.postMessage`。已驗證兩個 `routine.json` 的 `allowed_tools` 都是 `[Bash, Read, Write, Edit, Glob, Grep]`、`mcp_connections` 只有 Linear，因此 Slack MCP 在雲端「不存在」。
-- **為何不讓 curl 變成本地預設**：Proposal 3 主張「本地也預設走 bot-token curl 以統一行為」，被 MAINTAINABILITY critique 否決——這會引入 repo 從未有過的長效 secret 管理面、第二套傳輸路徑，而本地早已有互動授權的 Slack MCP。curl 只在 MCP 缺席時（即雲端）作為例外。
-- **關鍵未決前提**：FAILURE-MODES critique 指出，沒有任何已知機制能把自訂 secret（`GGX_SLACK_BOT_TOKEN`）注入 CCR 雲端 sandbox——`GH_TOKEN` 是 GitHub 整合專屬注入，routine.json 沒有 env block。**因此 v1 先落地「本地通知」，雲端維持 graceful no-op**；雲端送 Slack 列為待驗證的獨立 PR（見 §8 Q5）。在 secret 注入被實證之前，不對外宣稱雲端 Slack 可運作。
+*[Superseded by §9.1: local transport was later switched to bot-token curl as well, per Charlie's explicit requirement that messages post under his existing bot identity.]*
 
-### 1.2 Helper 放哪：單一 markdown helper-doc `commands/dev/_slack-notify.md`
+- **Local (interactive / local dispatcher)**: use `mcp__claude_ai_Slack__slack_send_message`. This is the repo's established convention (every skill uses MCP tools only; grepping the repo finds no raw curl / webhook / bot token anywhere).
+- **Cloud (headless routine)**: the only viable path is `Bash` curl to `chat.postMessage`. Verified: both `routine.json` files list `allowed_tools = [Bash, Read, Write, Edit, Glob, Grep]` and `mcp_connections` contains only Linear — the Slack MCP simply does not exist in the cloud.
+- **Why curl was not made the local default**: Proposal 3 argued "use bot-token curl locally too, for uniform behavior" — rejected by the MAINTAINABILITY critique: it would introduce a long-lived-secret management surface the repo has never had, plus a second transport path, while local already has the interactively-authorized Slack MCP. curl was to be the exception only where MCP is absent (i.e. the cloud).
+- **Key unproven premise**: the FAILURE-MODES critique pointed out there is no known mechanism to inject a custom secret (`GGX_SLACK_BOT_TOKEN`) into the CCR cloud sandbox — `GH_TOKEN` is injected exclusively by the GitHub integration, and routine.json has no env block. **Therefore v1 ships local notifications only; the cloud stays a graceful no-op**; cloud Slack delivery is a separate, to-be-proven PR (see §8 Q5). Until secret injection is empirically verified, do not claim cloud Slack works.
 
-完全比照 `_ticket-init.md` 形狀：underscore 前綴（內部專用）、版本化 marker、fail-soft single-WARN、「Callers (current)」footer、「引用勿內聯」規則。command 檔會自動安裝，**零 install.sh 改動**。四份提案在此一致，且符合已驗證的 repo 慣例。
+### 1.2 Where the helper lives: a single markdown helper-doc `commands/dev/_slack-notify.md`
 
-它只暴露**一個概念入口**，呼叫端傳「原始訊號 + ticket-id」，由 helper 內部唯一一張表做 `signal → status → emoji` 映射——**呼叫端永遠不指定 status**。MAINTAINABILITY critique 否決了 Proposal 2「8 種 status × 6 個呼叫點各自判斷」的設計（那會在每次有人改 pipeline 時漂移，正是 repo 禁止的內聯）。映射是 chokepoint，不是每個呼叫端的義務。
+Exactly the `_ticket-init.md` shape: underscore prefix (internal-only), versioned marker, fail-soft single-WARN, a "Callers (current)" footer, and the "reference, never re-inline" rule. Command files install automatically — **zero install.sh changes**. All four proposals agreed here, and it matches the verified repo convention.
 
-### 1.3 Channel topology：單一 `#ggx-pipeline` channel + run-level digest + 扁平貼文（v1 不做 thread-per-ticket、不做 Canvas）
+It exposes **one conceptual entry point**: callers pass "raw signal + ticket-id", and the helper's single internal table does the `signal → status → emoji` mapping — **callers never pick a status**. The MAINTAINABILITY critique rejected Proposal 2's "8 statuses × 6 call sites each deciding for themselves" design (it would drift every time someone edits a pipeline — exactly the inlining this repo forbids). The mapping is a chokepoint, not a per-caller obligation.
 
-- **單一 channel**：低量（analyzer 2x/天、dev-agent 2x/天），單 channel 才能兌現「從 Slack 一處掌握全狀態」（requirement 3）。過濾靠每行尾端的 `#needs-human` hashtag saved-search，而非拆 channel。
-- **不做 thread-per-ticket（v1）**：Proposal 3/4 用「在 Linear/Jira ticket 上寫 `<!-- slack-thread:v1 ts=... -->` marker comment」來跨 stateless 重啟還原 `thread_ts`。MAINTAINABILITY 與 FAILURE-MODES 兩份 critique 同時否決：(a) 把 Slack 傳輸 handle 寫進 tracker 是分層違規，污染人看的 ticket，並讓 `_ticket-lib` 被迫長出 Slack 義務；(b) 雲端讀不到 Slack（`slack_search` 也是 MCP，雲端缺席），永遠 fallback 成新 root → thread-per-ticket 在最重要的無人值守路徑悄悄退化成 post-per-event；(c) Gap-A race（雲端 dev-agent 與本地 dispatcher 重疊）會雙寫 marker、產生雙 thread。
-  → **v1 採 run-level digest 模型**：唯一需要的關聯鍵是「這一次 run」，在 process 內解決，不需跨 invocation 還原 ts。
-- **不做 Canvas（v1）**：Proposal 4 的 pinned Canvas 被三份 critique 一致否決——它是 MCP-only（雲端無法寫，而雲端正是主要產出者，導致「single pane」在最該即時時反而最舊）、需要付費 Slack 方案、需要多寫者併發 `slack_update_canvas` + 快取 section_id（repo 無任何 shared-mutable-state 先例）。threaded channel + saved-search 已滿足 requirement 3。
+### 1.3 Channel topology: one `#ggx-pipeline` channel + run-level digests + flat posts (no thread-per-ticket, no Canvas in v1)
 
-### 1.4 通知政策：always-send（terminal-only），no-op fire 全靜音 【2026-06-05 修訂】
+- **Single channel**: volume is low (analyzer 2×/day, dev-agent 2×/day), and only a single channel delivers "know the whole pipeline state from one place in Slack" (requirement 3). Filtering relies on the `#needs-human` hashtag saved-search at the end of each line, not on splitting channels.
+- **No thread-per-ticket (v1)**: Proposals 3/4 stored `thread_ts` as a `<!-- slack-thread:v1 ts=... -->` marker comment on the Linear/Jira ticket to restore threads across stateless restarts. Rejected by BOTH the MAINTAINABILITY and FAILURE-MODES critiques: (a) writing a Slack transport handle into the tracker is a layering violation, pollutes the human-facing ticket, and forces `_ticket-lib` to grow Slack obligations; (b) the cloud cannot read Slack (`slack_search` is also MCP, absent in the cloud), so it would always fall back to a new root — thread-per-ticket silently degrades to post-per-event on exactly the unattended path that matters most; (c) the Gap-A race (cloud dev-agent overlapping a local dispatcher) double-writes the marker and produces twin threads.
+  → **v1 adopts the run-level digest model**: the only correlation key needed is "this run", which is resolved in-process — no cross-invocation ts restoration required.
+- **No Canvas (v1)**: Proposal 4's pinned Canvas was unanimously rejected by all three critiques — it is MCP-only (the cloud can't write it, and the cloud is the main producer, so the "single pane" would be stalest exactly when freshness matters), requires a paid Slack plan, and needs multi-writer concurrent `slack_update_canvas` + cached section_ids (the repo has no shared-mutable-state precedent at all). A channel + saved-search already satisfies requirement 3.
 
-- ~~send-on-CHANGE-only~~ → **always-send**：Charlie 拍板「卡住的票就是要每輪重複通知，作為持續提醒」。原評審把 always-send 列為 mute-channel 風險，使用者知情並刻意選擇。digest 每輪重新列出當下所有 needs-human 票（一張卡在 `need-spec-review` 的票每天被重念兩次 = 期望行為）。
-- 此修訂的紅利：整個去重機制（sidecar / ticket marker）取消，實作面更簡單，且雲端 stateless 重跑不再是問題。
-- no-op / zero-candidate fire 仍**完全靜音**（四份提案一致）。已驗證實際 cadence 是 2x/天（非 brief 假設的 hourly），且多數 fire 是空掃。liveness 由每日 pulse 承擔。
+### 1.4 Notification policy: always-send (terminal-only), no-op fires fully silent 【revised 2026-06-05】
 
-### 1.5 發送來源：只從 parent / orchestrator session，呼叫端 ggx-work 永不碰 channel root
+- ~~send-on-CHANGE-only~~ → **always-send**: Charlie decided "stuck tickets should be re-announced every run, as a standing reminder." The critiques had flagged always-send as a mute-channel risk; the user is informed and chose it deliberately. The digest re-lists all current needs-human tickets every run (a ticket stuck at `need-spec-review` being re-announced twice a day = desired behavior).
+- Bonus of this revision: the entire dedup machinery (sidecar / ticket marker) is cancelled, the implementation gets simpler, and stateless cloud re-runs stop being a problem.
+- No-op / zero-candidate fires remain **fully silent** (all four proposals agreed). Verified actual cadence is 2×/day (not the hourly assumed in the brief), and most fires are empty sweeps. Liveness is carried by the daily pulse.
 
-ANNOYANCE critique 指出 Proposal 1 的 `GGX_NOTIFY_SUPPRESS` env 需在每個 spawn 與每個 hook site 正確傳遞/檢查，漏一處就 N 份重複。FAILURE-MODES critique 給出更乾淨的方案並被採納：
+### 1.5 Send origin: parent / orchestrator sessions only — ggx-work never touches the channel root
 
-- **ggx-work 從不送 channel root**；它只在 run-level rollup 不存在時（即 standalone 或雲端 sequential）用 digest 模型送自己這張票的 terminal 行，且以 marker 去重。
-- **dispatcher parent 擁有 batch digest 與 channel-root 的 needs-human 行**，在 §6.2（唯一 race-free 的權威分類點）導出。
-- 結果：standalone-ggx-work、cloud-sequential-ggx-work 行為一致，dispatcher 只是在上面疊一個 rollup——**不需 suppress flag、不會漏 site**。三種 ownership regime 收斂成「一種 ggx-work 行為 + 一種 dispatcher 行為」。
+The ANNOYANCE critique showed Proposal 1's `GGX_NOTIFY_SUPPRESS` env had to be threaded and checked correctly at every spawn and every hook site — miss one and you get N duplicates. The FAILURE-MODES critique offered the cleaner scheme that was adopted:
+
+- **ggx-work never posts to the channel root**; only when no run-level rollup exists (standalone, or cloud sequential) does it post its own ticket's terminal line under the digest model.
+- **The dispatcher parent owns the batch digest and the channel-root needs-human lines**, derived at §6.2 (the only race-free authoritative classification point).
+- Result: standalone ggx-work and cloud-sequential ggx-work behave identically, and the dispatcher merely layers a rollup on top — **no suppress flag, no missable site**. Three ownership regimes collapse into "one ggx-work behavior + one dispatcher behavior."
 
 ---
 
-## 2. 統一 Status Taxonomy
+## 2. Unified Status Taxonomy
 
-設計原則：**三層 tier**——`needs_human` 一律附 `#needs-human` hashtag（client-reliable 的 load-bearing 過濾鍵；emoji 僅作為一眼可辨的視覺提示，因 Slack emoji 搜尋不可靠）。重用 dispatcher 既有的 🟢/🟡/🔴 主色，細分用文字 token 後綴，**不另開一套 emoji legend**（MAINTAINABILITY critique 否決 Proposal 2 的 legend fork：那會逼著改 dispatcher Step 6.5 的 stdout 表，並讓同一 run 維護兩套 legend）。
+Design principle: **three tiers** — every `needs_human` line carries the `#needs-human` hashtag (the client-reliable, load-bearing filter key; emoji are only at-a-glance visual hints, because Slack emoji search is unreliable). Reuse the dispatcher's existing 🟢/🟡/🔴 primary colors and refine with text-token suffixes — **no separate emoji legend** (the MAINTAINABILITY critique rejected Proposal 2's legend fork: it would force edits to the dispatcher's Step 6.5 stdout table and make one run maintain two legends).
 
-訊息固定文法：`<emoji> [TOKEN] <ticket-link> · <lane> — <summary> (next: <action>) #ggx-<token> [#needs-human]`
+Fixed message grammar: `<emoji> [TOKEN] <ticket-link> · <lane> — <summary> (next: <action>) #ggx-<token> [#needs-human]`
 
-| status (token) | emoji | needs_human | 觸發來源（subsystem / event） | Jira 適用 | 範例訊息 |
+| status (token) | emoji | needs_human | Trigger (subsystem / event) | Jira | Example message |
 |---|---|---|---|---|---|
-| `READY` | ✅ | false | ticket-analyzer 判定 ready-to-port / ready-to-dev（digest 內列計，不單獨 ping） | 是（degraded：`ticket-analysis-ready` 字串標籤映射至此） | `✅ [READY] CAF-1310 · feature — complete + unblocked (next: dispatcher 自動接手) #ggx-ready` |
-| `REVIEW` | 🟢 | true | ggx-work / dispatcher outcome=done（draft PR、In Review）。soft needs-human=reviewer | 是 | `🟢 [REVIEW] CET-842 · bug — draft PR open, In Review (next: review PR #842) #ggx-review #needs-human` |
-| `SPEC-REVIEW` | 🟡 | true | ggx-work Step 4.4a/4.2 port-paused（need-spec-review HITL） | **n/a（Jira 無 port lane / 無 spec-review gate）** | `🟡 [SPEC-REVIEW] CAF-1260 · port — port 完成，停在 spec-review gate (next: 跑 /spec-review CAF-1260) #ggx-spec-review #needs-human` |
-| `NEEDS-REVISION` | 🟠 | true | ticket-analyzer 判定 incomplete（need-revision + 理由 comment） | 是（degraded：`ticket-analysis-need-revision`） | `🟠 [NEEDS-REVISION] CAF-1234 · bug — incomplete: missing repro steps, AC (next: 編輯 ticket，下輪自動重掃) #ggx-needs-revision #needs-human` |
-| `BLOCKED` | 🟣 | true | ticket-analyzer 判定 complete-but-blocked（need-dependency）。**自癒**：僅進入時送一次 | 是（degraded：`ticket-analysis-need-dependency`） | `🟣 [BLOCKED] CAF-1240 · port — blocked by CAF-1200 (open) (next: 關閉 blocker，下輪自動解除) #ggx-blocked #needs-human` |
-| `CLASSIFY` | ❓ | true | ggx-work /route UNKNOWN_LANE（缺 bug/port/feature 分類） | 是 | `❓ [CLASSIFY] CET-567 · ? — 無 lane 分類 (next: 加上 bug \| port \| feature 標籤) #ggx-classify #needs-human` |
-| `CYCLE` | 🔁 | true | ticket-analyzer Step 5.2 依賴環 | n/a（workflow-label 環偵測為 Linear-only） | `🔁 [CYCLE] CAF-1251 ↔ CAF-1252 — 循環依賴，兩者皆排除於順序 (next: 手動打破環) #ggx-cycle #needs-human` |
-| `FAILED` | 🔴 | true | ggx-work Step 4.3（所有失敗類別匯流：pipeline-failed / route / loop-cap）+ Step 2 pre-flight hard-stop；dispatcher §6.2 failed/orphan/ambiguous；ticket-analyzer errored（寫入失敗） | 是 | `🔴 [FAILED] CAF-1272 · dev — pipeline-failed at /dev:ff (test stage) (next: 看 claude-reports/CAF-1272/report.md，重跑 /ggx-work) #ggx-failed #needs-human` |
-| `BATCH-ABORT` | ⛔ | true | dispatcher Step 4.2 mid-lock MCP 失敗 / partial-lock | 是 | `⛔ [BATCH-ABORT] dispatcher (CAF) — Linear MCP mid-lock 失敗 (next: 手動解鎖 CAF-1280, CAF-1281) #ggx-batch-abort #needs-human` |
-| `DIGEST` | 📊 | false | ticket-analyzer Step 10 / dispatcher Step 6.5 / routine Phase 3-4 的 run-level rollup | 是 | 見 §4 |
+| `READY` | ✅ | false | ticket-analyzer verdict ready-to-port / ready-to-dev (counted in the digest, never pinged individually) | yes (degraded: `ticket-analysis-ready` string label maps here) | `✅ [READY] CAF-1310 · feature — complete + unblocked (next: dispatcher picks it up automatically) #ggx-ready` |
+| `REVIEW` | 🟢 | true | ggx-work / dispatcher outcome=done (draft PR, In Review). Soft needs-human = reviewer | yes | `🟢 [REVIEW] CET-842 · bug — draft PR open, In Review (next: review PR #842) #ggx-review #needs-human` |
+| `SPEC-REVIEW` | 🟡 | true | ggx-work Step 4.4a/4.2 port-paused (need-spec-review HITL) | **n/a (Jira has no port lane / no spec-review gate)** | `🟡 [SPEC-REVIEW] CAF-1260 · port — port complete, paused at spec-review gate (next: run /spec-review CAF-1260) #ggx-spec-review #needs-human` |
+| `NEEDS-REVISION` | 🟠 | true | ticket-analyzer verdict incomplete (need-revision + reasoned comment) | yes (degraded: `ticket-analysis-need-revision`) | `🟠 [NEEDS-REVISION] CAF-1234 · bug — incomplete: missing repro steps, AC (next: edit the ticket; next sweep re-scans automatically) #ggx-needs-revision #needs-human` |
+| `BLOCKED` | 🟣 | true | ticket-analyzer verdict complete-but-blocked (need-dependency). ~~Self-healing: sent only on first entry~~ *[cancelled with the no-dedup decision — re-listed every run]* | yes (degraded: `ticket-analysis-need-dependency`) | `🟣 [BLOCKED] CAF-1240 · port — blocked by CAF-1200 (open) (next: close the blocker; next sweep unblocks automatically) #ggx-blocked #needs-human` |
+| `CLASSIFY` | ❓ | true | ggx-work /route UNKNOWN_LANE (missing bug/port/feature classification) | yes | `❓ [CLASSIFY] CET-567 · ? — no lane classification (next: add a bug \| port \| feature label) #ggx-classify #needs-human` |
+| `CYCLE` | 🔁 | true | ticket-analyzer Step 5.2 dependency cycle | n/a (workflow-label cycle detection is Linear-only) | `🔁 [CYCLE] CAF-1251 ↔ CAF-1252 — dependency cycle, both excluded from ordering (next: break the cycle manually) #ggx-cycle #needs-human` |
+| `FAILED` | 🔴 | true | ggx-work Step 4.3 (all failure classes converge: pipeline-failed / route / loop-cap) + Step 2 pre-flight hard-stop; dispatcher §6.2 failed/orphan/ambiguous; ticket-analyzer errored (write failure) | yes | `🔴 [FAILED] CAF-1272 · dev — pipeline-failed at /dev:ff (test stage) (next: see claude-reports/CAF-1272/report.md, re-run /ggx-work) #ggx-failed #needs-human` |
+| `BATCH-ABORT` | ⛔ | true | dispatcher Step 4.2 mid-lock MCP failure / partial lock | yes | `⛔ [BATCH-ABORT] dispatcher (CAF) — Linear MCP failed mid-lock (next: manually unlock CAF-1280, CAF-1281) #ggx-batch-abort #needs-human` |
+| `DIGEST` | 📊 | false | run-level rollup from ticket-analyzer Step 10 / dispatcher Step 6.5 / routine Phase 3-4 | yes | see §4 |
 
-> Jira parity（FAILURE-MODES critique 要求）：Jira（CET/DET）無 port lane、無 spec-review gate，analyzer 跑 degraded mode（`fields.labels` 字串標籤）。映射表必須把 degraded 字串標籤翻成相同 canonical token；`SPEC-REVIEW` / `CYCLE`（workflow-label）對 Jira 標 **n/a**。Jira 票只會終結於 `READY` / `REVIEW` / `NEEDS-REVISION` / `BLOCKED` / `CLASSIFY` / `FAILED`。
+> Jira parity (required by the FAILURE-MODES critique): Jira (CET/DET) has no port lane and no spec-review gate; the analyzer runs in degraded mode (`fields.labels` string labels). The mapping table must translate the degraded string labels into the same canonical tokens; `SPEC-REVIEW` / `CYCLE` (workflow-label based) are marked **n/a** for Jira. Jira tickets can only terminate as `READY` / `REVIEW` / `NEEDS-REVISION` / `BLOCKED` / `CLASSIFY` / `FAILED`.
 
-> **requirement 4 的交付物**：一個 saved search `#needs-human` 即列出所有需要人工的票。`READY` / `DIGEST` 不帶該 tag，自然分離。
+> **Requirement 4 deliverable**: one saved search for `#needs-human` lists everything needing human action. `READY` / `DIGEST` don't carry the tag, so they separate naturally.
 
 ---
 
-## 3. 各整合點的掛載位置
+## 3. Hook Points per Integration
 
-通則：每個 subsystem **只有一個 run-level 送出點**（MAINTAINABILITY critique 的可維護 chokepoint——一處套 cloud transport override、一處 fail-soft、未來加 ui-tweak 只需在它自己的 rollup 引用 helper）。needs-human 的個別票以「行」內嵌在那一封 digest 裡，**不另發 top-level per-ticket 訊息**（ANNOYANCE critique 否決 Proposal 2 的 digest + per-ticket 雙送：同一秒看到同件事兩次）。
+General rule: each subsystem has **exactly one run-level send point** (the MAINTAINABILITY critique's maintainable chokepoint — one place for the cloud transport override, one place for fail-soft, and a future ui-tweak only needs to reference the helper from its own rollup). Individual needs-human tickets are embedded as **lines inside that one digest** — never a separate top-level per-ticket message (the ANNOYANCE critique rejected Proposal 2's digest + per-ticket double-send: seeing the same thing twice in the same second).
 
-### 3.1 ticket-analyzer（`/ticket-analyze` + `ticket-analyzer-agent`）
+### 3.1 ticket-analyzer (`/ticket-analyze` + `ticket-analyzer-agent`)
 
-- **Hook**：`commands/dev/ticket-analyze.md` Step 10（`Summary: X analyzed, Y skipped, Z errored.` 算出之後）→ 送 **1 封 `DIGEST`**。雲端鏡像：`cloud-routines/ticket-analyzer-agent.routine.json` Phase 3 report block（curl 路徑；§4 'No Slack' scope note 需放寬，列為獨立 PR）。
-- **digest 內含**：per-verdict tallies + 每個 needs-human 票一行（`NEEDS-REVISION` / `CYCLE` / errored→`FAILED`），`READY` 僅列計數，`BLOCKED` 僅在「首次進入」時列行。
-- **suppress**：zero-candidate no-op fire（全靜音）；per-ticket fetched / lane-derived（不送）；Jira degraded-mode notice（至多 digest 內一行 footnote）。
-- **噪音量**：安靜日 **0 則**；活躍日 **1 則 / fire × 2 fire = 2 則/天**。
+- **Hook**: `commands/dev/ticket-analyze.md` Step 10 (after `Summary: X analyzed, Y skipped, Z errored.` is computed) → send **1 `DIGEST`**. Cloud mirror: `cloud-routines/ticket-analyzer-agent.routine.json` Phase 3 report block (curl path; the §4 'No Slack' scope note needs relaxing — separate PR).
+- **Digest contains**: per-verdict tallies + one line per needs-human ticket (`NEEDS-REVISION` / `CYCLE` / errored → `FAILED`); `READY` is counted only; ~~`BLOCKED` lines only on first entry~~ *[superseded: re-listed every run]*.
+- **Suppressed**: zero-candidate no-op fires (fully silent); per-ticket fetched / lane-derived progress (never sent); Jira degraded-mode notice (at most one footnote line inside the digest).
+- **Noise math**: quiet day **0 messages**; active day **1 per fire × 2 fires = 2/day**.
 
-### 3.2 ggx-work（單票 orchestrator）
+### 3.2 ggx-work (single-ticket orchestrator)
 
-- **不碰 channel root**（§1.5）。在 run-level rollup 不存在時（standalone 直接呼叫、或雲端 sequential）才以 digest 模型送自己這張票的 terminal 行。
-- **Hook（terminal 分支，皆讀權威狀態，絕不 parse cosmetic `[ggx-work-result]` 行）**：
-  - Step 4.1 done → `REVIEW`（帶 PR URL）
+*[v1 NOTE: this whole subsection was descoped by the §9.4 simplification — ggx-work sends nothing in v1. Kept as the design for a possible future per-ticket expansion.]*
+
+- **Never touches the channel root** (§1.5). Only when no run-level rollup exists (standalone invocation, or cloud sequential) does it post its own ticket's terminal line under the digest model.
+- **Hooks (terminal branches; all read authoritative state, never parse the cosmetic `[ggx-work-result]` line)**:
+  - Step 4.1 done → `REVIEW` (with PR URL)
   - Step 4.4a / 4.2 port-paused → `SPEC-REVIEW`
   - Step 4.3 failed / unknown-lane → `FAILED` / `CLASSIFY`
   - Step 2 pre-flight hard-stop → `FAILED`
-- ~~去重 marker~~ **【廢除】**：terminal 行直接送，重跑/resume 重發同一狀態是刻意的提醒行為。
-- **suppress**：Step 2.5 started、Step 4.4 pipeline-launch 等 progress（v1 扁平模型下不送；不污染 channel）。
-- **在 dispatcher 之下時**：完全靜音（parent 的 §6.2 擁有報告）。因 ggx-work 不碰 root，自然滿足，無需 suppress env。
-- **噪音量**：standalone 互動執行時，**每票至多 1 則 terminal**；在 dispatcher 下 **0 則**（併入 dispatcher digest）。
+- ~~Dedup marker~~ **【abolished】**: terminal lines send directly; re-runs/resumes re-announcing the same state is the deliberate reminder behavior.
+- **Suppressed**: Step 2.5 started, Step 4.4 pipeline-launch and other progress (not sent in the v1 flat model; keeps the channel clean).
+- **Under the dispatcher**: fully silent (the parent's §6.2 owns reporting). Since ggx-work never touches the root, this holds naturally — no suppress env needed.
+- **Noise math**: standalone interactive runs — **at most 1 terminal line per ticket**; under the dispatcher — **0** (folded into the dispatcher digest).
 
-### 3.3 ggx-dispatcher（本地 batch）+ ggx-dev-agent（雲端）
+### 3.3 ggx-dispatcher (local batch) + ggx-dev-agent (cloud)
 
-- **只從 parent session 送，永不從 fan-out 的 N 個 background agent 送**（已驗證 dispatcher 把所有分類留在 parent，正為此）。
-- **Hook**：
-  - dispatcher Step 6.5（6-column 表已建好、race-free）→ 送 **1 封 `DIGEST`**（batch summary），needs-human 行排在表頂。
-  - dispatcher Step 4.2 batch-abort → `BATCH-ABORT`（即使從未 spawn 也要浮現；可在 spawn 訊息之前的 turn 送）。
-  - 雲端 ggx-dev-agent Phase 4 → curl digest（涵蓋 no-op fire 判斷與 per-ticket outcome）。
-- **嚴禁**在 Step 4.3 dispatch table 與 N 個 Agent spawn 之間插入任何 send。FAILURE-MODES critique 證明：MCP send 是 tool call，會強制 turn 邊界，破壞「table + N spawn 必須同一訊息」的硬約束——所謂「fire-and-forget」在此 harness 不存在。batch-start ping 因此**取消**（Step 6.5 digest 已涵蓋）。
-- **權威性**：所有 status 鍵自 §6.2 derived outcome + Flags，**絕不**用 cosmetic `[joined/N]` 或 `[ggx-work-result]` 行。
-- **suppress**：所有 skip（PR-exists / branch-exists / duplicate / concurrent-lock）→ 只進 digest 的 `skipped: N` 計數，不發行。
-- **噪音量**：每 batch **1 則 digest**（+ 罕見的 batch-abort）。
+- **Send from the parent session only, never from the N fanned-out background agents** (verified: the dispatcher keeps all classification in the parent for exactly this reason).
+- **Hooks**:
+  - dispatcher Step 6.5 (6-column table built, race-free) → send **1 `DIGEST`** (batch summary), needs-human lines at the top.
+  - dispatcher Step 4.2 batch-abort → `BATCH-ABORT` (must surface even if nothing was ever spawned; may send in a turn before any spawn message).
+  - cloud ggx-dev-agent Phase 4 → curl digest (covers the no-op fire check and per-ticket outcomes). *(separate PR)*
+- **Strictly forbidden** to insert any send between the Step 4.3 dispatch table and the N Agent spawns. The FAILURE-MODES critique proved it: an MCP send is a tool call and forces a turn boundary, breaking the hard constraint that "table + N spawns emit in ONE message" — "fire-and-forget" does not exist in this harness. The batch-start ping is therefore **cancelled** (the Step 6.5 digest covers it).
+- **Authoritativeness**: every status keys off the §6.2-derived outcome + Flags — **never** the cosmetic `[joined/N]` or `[ggx-work-result]` lines.
+- **Suppressed**: all skips (PR-exists / branch-exists / duplicate / concurrent-lock) → only the `skipped: N` count inside the digest, no individual lines.
+- **Noise math**: **1 digest per batch** (+ the rare batch-abort).
 
-### 3.4 全域噪音數學（已對齊實際 2x/天 cadence，非 hourly）
+### 3.4 Global noise math (aligned to the actual 2×/day cadence, not hourly)
 
-- 雲端：analyzer 14 fire/週 + dev-agent 14 fire/週 = **28 fire/週**；其中多數為靜音 no-op。
-- 預估：安靜週趨近 **0**；活躍日 **2–6 則**；卡住的票因 send-on-change-only **不重念**。
+- Cloud: analyzer 14 fires/week + dev-agent 14 fires/week = **28 fires/week**, most of them silent no-ops.
+- Estimate: a quiet week approaches **0**; an active day **2–6 messages**; ~~stuck tickets are not re-announced thanks to send-on-change-only~~ *[superseded by the no-dedup decision: stuck tickets ARE re-announced each run — deliberately]*.
 
 ---
 
-## 4. 訊息範例
+## 4. Example Messages
 
-**(A) ticket-analyzer sweep digest（Step 10）**
+**(A) ticket-analyzer sweep digest (Step 10)**
 
 ```
 📊 [DIGEST] ticket-analyzer · CAF team — 6 analyzed (3 ready, 2 need-revision, 1 blocked, 0 errored)
 Best start: CAF-1310
-🟠 [NEEDS-REVISION] CAF-1234 · bug — missing repro steps, AC (next: 編輯 ticket) #ggx-needs-revision #needs-human
-🟠 [NEEDS-REVISION] CAF-1239 · feature — missing Figma, scope (next: 編輯 ticket) #ggx-needs-revision #needs-human
-🟣 [BLOCKED] CAF-1240 · port — blocked by CAF-1200 (open) (next: 關閉 blocker) #ggx-blocked #needs-human
+🟠 [NEEDS-REVISION] CAF-1234 · bug — missing repro steps, AC (next: edit the ticket) #ggx-needs-revision #needs-human
+🟠 [NEEDS-REVISION] CAF-1239 · feature — missing Figma, scope (next: edit the ticket) #ggx-needs-revision #needs-human
+🟣 [BLOCKED] CAF-1240 · port — blocked by CAF-1200 (open) (next: close the blocker) #ggx-blocked #needs-human
 ready: CAF-1310, CAF-1312, CAF-1315 · skipped: 0
 #ggx-digest
 ```
 
-**(B) ggx-work HITL stop（standalone，Step 4.4a port-paused）**
+**(B) ggx-work HITL stop (standalone, Step 4.4a port-paused)** *(descoped in v1 — see §9.4)*
 
 ```
-🟡 [SPEC-REVIEW] CAF-1260 · port — port 完成，停在 spec-review gate；feat/CAF-1260 已推送，無 PR
-(next: 跑 /spec-review CAF-1260；PRD 已貼於 ticket)
+🟡 [SPEC-REVIEW] CAF-1260 · port — port complete, paused at spec-review gate; feat/CAF-1260 pushed, no PR
+(next: run /spec-review CAF-1260; PRD posted on the ticket)
 #ggx-spec-review #needs-human
 ```
 
-**(C) ggx-work failure（standalone，Step 4.3）**
+**(C) ggx-work failure (standalone, Step 4.3)** *(descoped in v1 — see §9.4)*
 
 ```
-🔴 [FAILED] CAF-1272 · dev — pipeline-failed at /dev:ff (test stage, iter 2)；停在 In Progress，無 PR
-(next: 看 claude-reports/CAF-1272/report.md，修正後重跑 /ggx-work CAF-1272)
+🔴 [FAILED] CAF-1272 · dev — pipeline-failed at /dev:ff (test stage, iter 2); stuck at In Progress, no PR
+(next: see claude-reports/CAF-1272/report.md, fix and re-run /ggx-work CAF-1272)
 #ggx-failed #needs-human
 ```
 
-**(D) dispatcher batch summary（Step 6.5）**
+**(D) dispatcher batch summary (Step 6.5)**
 
 ```
 📊 [DIGEST] ggx-dispatcher · CAF team — 5 processed (2 done, 1 spec-review, 2 failed) · skipped 1 (PR-exists)
-🔴 [FAILED] CAF-1272 · dev — pipeline-failed at /dev:ff (next: 重跑 /ggx-work CAF-1272) #ggx-failed #needs-human
-🔴 [FAILED] CAF-1280 · bug — outcome-derivation-ambiguous (next: 手動核對 labels vs PR) #ggx-failed #needs-human
-🟡 [SPEC-REVIEW] CAF-1260 · port — 停在 spec-review gate (next: 跑 /spec-review CAF-1260) #ggx-spec-review #needs-human
+🔴 [FAILED] CAF-1272 · dev — pipeline-failed at /dev:ff (next: re-run /ggx-work CAF-1272) #ggx-failed #needs-human
+🔴 [FAILED] CAF-1280 · bug — outcome-derivation-ambiguous (next: manually reconcile labels vs PR) #ggx-failed #needs-human
+🟡 [SPEC-REVIEW] CAF-1260 · port — paused at spec-review gate (next: run /spec-review CAF-1260) #ggx-spec-review #needs-human
 🟢 [REVIEW] CAF-1310 · feature — draft PR #501 open, In Review #ggx-review #needs-human
 🟢 [REVIEW] CET-842 · bug — draft PR #842 open, In Review #ggx-review #needs-human
 #ggx-digest
@@ -163,73 +167,73 @@ ready: CAF-1310, CAF-1312, CAF-1315 · skipped: 0
 
 ---
 
-## 5. 防噪音機制
+## 5. Anti-Noise Mechanisms
 
-1. ~~send-on-CHANGE-only~~ **【2026-06-05 廢除，Charlie 拍板】**：原設計只在狀態翻轉時通知；Charlie 明確要求卡住的票**每輪重複通知**作為持續提醒。digest 每輪重新列出所有 needs-human 票（need-revision / blocked / spec-review…），這是刻意行為、不是 bug。評審原本標記的 mute-channel 風險由使用者自行承擔——若日後覺得吵，重新引入此規則即可（digest 模型不需改架構）。
-2. ~~去重 ledger~~ **【廢除】**：不需要任何 sidecar / ticket marker。digest 是 run-level 重建（每輪從 tracker 現況重新導出），天然冪等於「當下狀態的快照」，重跑/resume 重發同一快照正是期望行為。
-3. **no-op 全靜音**：zero-candidate / empty sweep 不送、不發 heartbeat（per-fire）。
-4. ~~need-dependency 自癒（僅首次通知）~~ **【廢除，隨不去重決議】**：blocked 票每輪 digest 重新列出，直到 blocker 關閉翻成 ready。
-5. **run-level batching**：一次 sweep / batch 收斂成 **1 封 digest**；needs-human 以行內嵌，**不**另發 per-ticket top-level（避免雙送）。
-6. **單一 surface per item per run**：每件 actionable 物只出現在一處（digest 行），不再 digest + 個別行並列。
-7. **`#needs-human` saved-search**：把 requirement 4 變成一個固定搜尋；emoji 僅視覺輔助。
-8. **rate-limit 防護**：每 batch 上限 = 1 digest（多行單訊息），避免 chat.postMessage ~1 msg/sec/channel 觸發 429；遇 429 尊重 Retry-After 做一次有界 sleep 後丟棄，**絕不** retry-storm。
-9. **--dry-run 全靜音**（已驗證 dispatcher --dry-run 全程唯讀；ticket-analyze 有 --dry-run）。
-
----
-
-## 6. 故障隔離
-
-1. **fail-silent 合約（逐字照搬 `_ticket-init`）**：每次 send 包成 `... || echo 'WARN: /_slack-notify: send failed for <id> — continuing.' >&2`。Slack 失敗**永不**改 exit code、**永不**阻塞 pipeline、**永不**中止 batch。只有 pipeline 自身的初始 ticket read 才 hard-stop。
-2. **default-OFF kill switch**：`GGX_SLACK_ENABLE` 未設 / false 時 helper 立即 no-op return。安裝 helper 在設定前是**零風險 no-op**。單一 enable 旗標 + 單一 channel id 為唯一 config（MAINTAINABILITY critique 否決 Proposal 3 的四旋鈕 config sprawl）。
-3. **headless cloud 處理**：
-   - Slack MCP 在雲端**證明缺席**；helper 偵測到 Slack tool / token 不存在即 silent no-op（與 Jira missing-fields 同模式）。
-   - 雲端唯一路徑是 Bash curl，但 secret 注入機制**未經實證**（§1.1）。v1 落地本地路徑、雲端 graceful no-op；兩個 routine.json 的 re-permission + scope-note 放寬列為**獨立、明確標註**的 PR，待 secret 注入驗證後才動（不綁進 v1 的 invasive edit）。
-4. **併發**：
-   - 只從 parent session 送（§1.5），dispatcher 的 N 個 fan-out background agent 永不送 → 不交錯、不重複。
-   - 嚴禁在 dispatch-table 與 N spawn 之間插 send（會破壞單訊息 spawn 約束）。
-   - Gap-A race（雲端 dev-agent 與本地 dispatcher 重疊抓同票）：因 v1 採 run-level digest（無 per-ticket thread root），不會雙開 thread；去重 ledger 進一步保證同狀態不重念。
-5. **權威性**：所有分類鍵自權威狀態（analyzer label / dispatcher §6.2 outcome+Flags / ggx-work Step 4.x 分支），**絕不** parse cosmetic 行。
+1. ~~send-on-CHANGE-only~~ **【abolished 2026-06-05 by Charlie's decision】**: the original design notified only on state flips; Charlie explicitly wants stuck tickets **re-announced every run** as a standing reminder. The digest re-lists all needs-human tickets each run (need-revision / blocked / spec-review…) — deliberate behavior, not a bug. The mute-channel risk the critiques flagged is knowingly accepted by the user. If it ever gets too noisy, this rule can be reintroduced without architectural change (the digest model is unaffected).
+2. ~~Dedup ledger~~ **【abolished】**: no sidecar / ticket marker of any kind. The digest is a run-level rebuild (re-derived from current tracker state each run), naturally idempotent as a "snapshot of now" — a re-run/resume re-sending the same snapshot is exactly the desired behavior.
+3. **No-op full silence**: zero-candidate / empty sweeps send nothing and emit no per-fire heartbeat.
+4. ~~need-dependency self-healing (first-entry-only notification)~~ **【abolished along with the no-dedup decision】**: blocked tickets are re-listed in every digest until the blocker closes and they flip to ready.
+5. **Run-level batching**: one sweep / batch collapses into **1 digest**; needs-human items are embedded as lines — **no** separate per-ticket top-level posts (avoids double-sends).
+6. **Single surface per item per run**: every actionable item appears in exactly one place (its digest line), never digest + individual post side by side.
+7. **`#needs-human` saved-search**: turns requirement 4 into one fixed search; emoji are visual support only.
+8. **Rate-limit protection**: cap = 1 digest per batch (multi-line single message), avoiding chat.postMessage's ~1 msg/sec/channel 429s; on 429 respect Retry-After with ONE bounded sleep, then drop — **never** retry-storm.
+9. **`--dry-run` fully silent** (verified: dispatcher --dry-run is read-only end-to-end; ticket-analyze has --dry-run too).
 
 ---
 
-## 7. 被否決的方案
+## 6. Failure Isolation
 
-- **Proposal 4 — pinned Slack Canvas 作為 single pane**：被三份 critique 一致否決。MCP-only（雲端無法寫，導致最該即時時最舊）、需付費 Slack 方案、多寫者併發 `slack_update_canvas` + 快取 section_id 是 repo 從無的 shared-mutable-state。
-- **Proposal 3/4 — thread_ts 存成 ticket 上的 marker comment（thread-per-ticket）**：被 MAINTAINABILITY + FAILURE-MODES 否決。分層違規污染 ticket、雲端讀不到 Slack 必 fallback 成 post-per-event、Gap-A race 雙 thread。v1 改用 run-level digest。
-- **Proposal 2/3/4 — terminal 事件無條件 `always-send`**：被 ANNOYANCE + FAILURE-MODES 否決。卡住的票每天被重念兩次，是 mute-channel 路徑。改 send-on-change-only。
-- **Proposal 2 — digest + per-ticket 雙送 + 8-emoji legend fork**：被 ANNOYANCE + MAINTAINABILITY 否決。同件事一秒內出現兩次；fork legend 逼改 dispatcher stdout 表並維護兩套 legend。改單 surface + 重用既有 🟢/🟡/🔴 + 文字 token 細分。
-- **Proposal 3 — 本地預設走 bot-token curl**：被 MAINTAINABILITY 否決。引入 repo 從無的長效 secret 面與第二傳輸路徑；本地已有 Slack MCP。curl 僅雲端例外。
-- **Proposal 1 — 完全無 liveness 信號**：被 FAILURE-MODES（minor）質疑。total silence 讓「routine 死了」與「安靜但健康」無法區分，違反 requirement 3。緩解見 §8 Q4（一條每日 / chat.update in-place 的低調 liveness 行）。
-- **batch-start ping（Proposal 1/4）**：被 FAILURE-MODES 否決。MCP send 會強制 turn 邊界、破壞單訊息 spawn 約束；「fire-and-forget」在此 harness 不存在。取消。
-- **`GGX_NOTIFY_SUPPRESS` env 穿透 spawn（Proposal 1）**：被 FAILURE-MODES 以更乾淨方案取代——「ggx-work 永不碰 channel root」消除 suppress flag 與漏 site 風險。
-
----
-
-## 8. 待你決定的開放問題
-
-1. **目標 channel**：確認單一 `#ggx-pipeline`（推薦）涵蓋 CAF（Linear）與 CET（Jira），以 ticket-id 前綴區分 team？還是要 per-team（`#ggx-pipeline-caf` / `-cet`）？並請提供 channel id。
-2. **發送身分**：訊息以你既有的 Slack bot 身分張貼即可？helper 應吃設定的 channel，不寫死。
-3. **`REVIEW`（draft PR / In Review）的音量**：v1 設計把它放進 digest 行（帶 `#needs-human`，因需 reviewer），**不**單獨 broadcast。確認可接受？（若你希望每個 done 都更醒目地獨立 ping，請說。）
-4. **liveness pulse**：是否要一條**每日一次**（非 per-fire）的「pipeline alive, last sweep HH:MM, nothing actionable」低調行（建議用 chat.update 編輯同一則 pinned 訊息，雲端 curl 可達）？還是接受 no-op fire 完全靜音、liveness 交給 routine log？（推薦：要，成本約 7 則/週。）
-5. **雲端 Slack 啟用**：是否允許開一個**獨立 PR**去 (a) 實證 CCR sandbox 能否注入自訂 secret env（`GGX_SLACK_BOT_TOKEN`），(b) 放寬 `ticket-analyzer-agent` 的「No Slack」scope note，(c) 在兩個 routine.json 加 curl 送出？在實證前 v1 雲端維持 Slack-silent，只本地 dispatcher / analyze 通知——確認此分期可接受？
-6. **去重 ledger marker**：接受在 ticket 上寫 `<!-- ggx-slack:v1 status=... sent=... -->` 這個**通知狀態** marker comment（非 thread_ts、不污染為傳輸 handle，僅記是否已通知）？還是偏好完全不寫 tracker、改用本地 sidecar JSONL（但雲端 sidecar 不跨 session）？（推薦：ticket marker，因唯一跨 stateless 重跑 + Linear/Jira 皆可。）
+1. **Fail-silent contract (copied verbatim from `_ticket-init`)**: every send is wrapped as `... || echo 'WARN: /_slack-notify: send failed for <id> — continuing.' >&2`. A Slack failure **never** changes exit codes, **never** blocks the pipeline, **never** aborts a batch. Only the pipeline's own initial ticket read may hard-stop.
+2. **Default-OFF kill switch**: with no opt-in config the helper no-ops immediately. Installing the helper before configuring is a **zero-risk no-op**. A single enable flag + a single channel id are the only config knobs (the MAINTAINABILITY critique rejected Proposal 3's four-knob config sprawl). *[Implementation note: the original `GGX_SLACK_ENABLE` env became the `enabled` field of the config file — see §9.]*
+3. **Headless cloud handling**:
+   - The Slack MCP is **proven absent** in the cloud; when the helper detects no Slack tool / token it silently no-ops (same pattern as Jira missing-fields).
+   - The cloud's only path is Bash curl, but the secret-injection mechanism is **unproven** (§1.1). v1 ships the local path; the cloud stays a graceful no-op. The re-permissioning of the two routine.json files + the scope-note relaxation are a **separate, explicitly labeled** PR, gated on proving secret injection (not bundled into v1's invasive edits).
+4. **Concurrency**:
+   - Send from parent sessions only (§1.5); the dispatcher's N fanned-out background agents never send → no interleaving, no duplicates.
+   - Never insert a send between the dispatch table and the N spawns (breaks the single-message spawn constraint).
+   - Gap-A race (cloud dev-agent and local dispatcher grabbing the same ticket): since v1 uses run-level digests (no per-ticket thread roots), no twin threads can open. ~~The dedup ledger further guarantees no same-state re-announcement~~ *[ledger abolished — same-state re-announcement is now deliberate]*.
+5. **Authoritativeness**: every classification keys off authoritative state (analyzer labels / dispatcher §6.2 outcome+Flags / ggx-work Step 4.x branches) — **never** parsed from cosmetic lines.
 
 ---
 
-## 9. 實作計畫（v1 本地）【2026-06-05 已實作 ✅ — 依 §9.4 簡化範圍落地：`_slack-notify.md` 新增、`ticket-analyze.md` Step 10.1、`ggx-dispatcher.md` §4.2/§6.5/Guardrail。Gate 邏輯（G1/G2a/G2/G3）已以 bash 實測，全路徑 exit 0】
+## 7. Rejected Alternatives
 
-> **§9.1 位置修訂（2026-06-05，Charlie：「應該要放在這個 repo 裡面」）**：設定檔從 `~/.claude/ggx-slack.json` 改為 **`commands/dev/profiles/ggx-slack.json`（repo 內，與 org.yaml 同層同模式）**——repo 既有慣例本來就是 profiles 放 repo、由 `install.sh` **symlink** 到 `~/.claude/commands/profiles/` 固定路徑供任何 cwd 讀取（symlink = repo 內編輯即時生效）。原 home-dir 設計反而偏離慣例。但 token 仍不可 commit：真檔已加入 `.gitignore`（commit 會洩漏 token + 把個人設定強加給所有安裝者，破壞 opt-in 防呆），committed 的是 `ggx-slack.json.example` 範本（`.example` 結尾不被 install symlink）。fresh clone 無真檔 → symlink 不存在 → G1 靜默 no-op，防呆語義不變。helper 讀固定部署路徑 `$HOME/.claude/commands/profiles/ggx-slack.json`。骨架已建（enabled:false）並已手動建 symlink；Charlie 填 channel_id + bot_token 後翻 true 即生效。
+- **Proposal 4 — pinned Slack Canvas as the single pane**: unanimously rejected by all three critiques. MCP-only (the cloud can't write it, so it's stalest exactly when freshness matters), requires a paid Slack plan, and multi-writer concurrent `slack_update_canvas` + cached section_ids is shared-mutable-state the repo has never had.
+- **Proposals 3/4 — thread_ts stored as a ticket marker comment (thread-per-ticket)**: rejected by MAINTAINABILITY + FAILURE-MODES. Layering violation polluting the ticket; the cloud can't read Slack so it must fall back to post-per-event; the Gap-A race produces twin threads. v1 uses run-level digests instead.
+- **Proposals 2/3/4 — unconditional `always-send` for terminal events**: rejected by ANNOYANCE + FAILURE-MODES as the mute-channel path; changed to send-on-change-only. *[Later reversed: Charlie deliberately chose always-send — see §1.4. The historical rejection is kept for the reasoning record.]*
+- **Proposal 2 — digest + per-ticket double-send + an 8-emoji legend fork**: rejected by ANNOYANCE + MAINTAINABILITY. The same item appears twice within a second; forking the legend forces edits to the dispatcher stdout table and makes one run maintain two legends. Changed to single-surface + reuse of the existing 🟢/🟡/🔴 + text-token refinement.
+- **Proposal 3 — bot-token curl as the local default**: rejected by MAINTAINABILITY at the time (introduces a long-lived-secret surface and a second transport path the repo never had; local already has the Slack MCP). *[Later reversed by Charlie's explicit requirement — see §9.1: messages must post under HIS bot identity, so local uses bot-token curl after all. The secret stays out of git.]*
+- **Proposal 1 — no liveness signal at all**: challenged by FAILURE-MODES (minor). Total silence makes "the routine died" indistinguishable from "quiet but healthy", violating requirement 3. Mitigation: §8 Q4 (one daily, low-key chat.update-in-place liveness line).
+- **Batch-start ping (Proposals 1/4)**: rejected by FAILURE-MODES. An MCP send forces a turn boundary and breaks the single-message spawn constraint; "fire-and-forget" does not exist in this harness. Cancelled.
+- **`GGX_NOTIFY_SUPPRESS` env threaded through spawns (Proposal 1)**: replaced by FAILURE-MODES' cleaner scheme — "ggx-work never touches the channel root" eliminates both the suppress flag and the missable-site risk.
 
-新增需求（Charlie）：(a) **防呆** — repo 是多人共用安裝，沒有 Slack bot 需求的 user 必須完全無感；(b) **Slack bot 設定檔要有留存位置**。
+---
 
-### 9.1 設定檔 + 傳輸層修訂 ✅（2026-06-05 Charlie 已確認：bot token + curl、明文 chmod 600）
+## 8. Open Questions (as posed to the user; decisions recorded in the Status header)
 
-**位置**：`~/.claude/ggx-slack.json` — per-user home 目錄、repo 之外。
+1. **Target channel**: confirm a single `#ggx-pipeline` (recommended) covering CAF (Linear) and CET (Jira), distinguished by ticket-id prefix? Or per-team channels (`#ggx-pipeline-caf` / `-cet`)? Please provide the channel id.
+2. **Sender identity**: post as your existing Slack bot? The helper should take the channel from config, never hardcode it.
+3. **`REVIEW` (draft PR / In Review) volume**: v1 puts it in a digest line (with `#needs-human`, since a reviewer is needed), **not** an individual broadcast. Acceptable? (Say so if you want every done pinged separately and more prominently.)
+4. **Liveness pulse**: one **daily** (not per-fire) low-key line — "pipeline alive, last sweep HH:MM, nothing actionable" (recommended: chat.update editing the same pinned message; reachable from cloud curl)? Or accept fully-silent no-op fires with liveness left to routine logs? (Recommended: yes, ~7 messages/week.)
+5. **Cloud Slack enablement**: allow a **separate PR** to (a) prove whether the CCR sandbox can inject a custom secret env (`GGX_SLACK_BOT_TOKEN`), (b) relax the `ticket-analyzer-agent` "No Slack" scope note, (c) add curl sends to both routine.json files? Until proven, v1 stays cloud-Slack-silent with local dispatcher / analyze notifications only — is this phasing acceptable?
+6. **Dedup ledger marker**: accept a `<!-- ggx-slack:v1 status=... sent=... -->` **notification-state** marker comment on the ticket (not a thread_ts, not a transport handle — just "has this state been announced")? Or prefer never writing the tracker and using a local sidecar JSONL (which doesn't survive cloud sessions)? *(Final answer: NEITHER — Charlie chose no dedup at all; see the Status header.)*
 
-- 為什麼不放 repo：repo 經 `install.sh` 多人共用，任何進 repo 的設定都變成所有人的預設，違反防呆需求；且 channel/token 是個人的。先例：`~/.claude/monthly-summary-config.json`（monthly-summary skill）。
-- home 目錄天然解決 worktree 問題（ggx-work 的 worktree 會被清除，home 不受影響）。
+---
 
-**Schema v1**（最小化，防 config sprawl）：
+## 9. Implementation Plan (v1, local) 【IMPLEMENTED ✅ 2026-06-05 — landed per the §9.4 simplified scope: `_slack-notify.md` added; `ticket-analyze.md` Step 10.1; `ggx-dispatcher.md` §4.2/§6.5/Guardrail. Gate logic (G1/G2a/G2/G3) bash-tested, every path exits 0】
+
+> **§9.1 location revision (2026-06-05, Charlie: "it should live inside this repo")**: the config moved from `~/.claude/ggx-slack.json` to **`commands/dev/profiles/ggx-slack.json` (in-repo, same directory and pattern as org.yaml)** — the repo's existing convention is precisely that profiles live in the repo and `install.sh` **symlinks** them into `~/.claude/commands/profiles/` for fixed-path reads from any cwd (symlink = edits in the repo take effect immediately). The original home-dir design was actually the off-convention one. The token still must never be committed: the real file is in `.gitignore` (committing would leak the token AND force one user's config onto every installer, breaking the opt-in foolproofing). *(An `.example` template was initially added, then deliberately deleted by Charlie — the schema in `_slack-notify.md` is the reference.)* A fresh clone has no real file → no symlink → G1 silent no-op, so the foolproofing semantics are unchanged. The helper reads the fixed deployed path `$HOME/.claude/commands/profiles/ggx-slack.json`. The skeleton was created (enabled:false), the symlink created manually, and after Charlie filled in channel_id + bot_token a live test message posted successfully (bot "Planner agent", `ok:true`).
+
+New requirements from Charlie: (a) **foolproofing** — the repo is a shared multi-user install; users without a Slack bot must be completely unaffected; (b) **the Slack bot config needs a durable home**.
+
+### 9.1 Config file + transport revision ✅ (2026-06-05, confirmed by Charlie: bot token + curl, plaintext chmod 600)
+
+**Location**: *[original: `~/.claude/ggx-slack.json`, per-user home dir — superseded by the in-repo location in the revision note above]*.
+
+- Why not in the repo *(original reasoning)*: the repo is shared via `install.sh`; any config in the repo becomes everyone's default, violating foolproofing; and channel/token are personal. Precedent: `~/.claude/monthly-summary-config.json` (monthly-summary skill). *(The in-repo + gitignore + symlink scheme later satisfied both this concern and Charlie's discoverability requirement.)*
+- The home dir also naturally dodges the worktree problem (ggx-work worktrees get deleted; home is unaffected). *(The deployed symlink path retains this property.)*
+
+**Schema v1** (minimal, anti-config-sprawl):
 
 ```json
 {
@@ -241,79 +245,80 @@ ready: CAF-1310, CAF-1312, CAF-1315 · skipped: 0
 }
 ```
 
-檔案 `chmod 600`。`liveness_message_ts` 保留給 v1.1 每日 pulse（chat.update 需要）。
+File `chmod 600`. `liveness_message_ts` is reserved for the v1.1 daily pulse (needed by chat.update).
 
-**⚠️ 傳輸層修訂（推翻 §1.1 的「本地走 MCP」）**：Charlie 明確說「我已經有一個 slack bot，要和他整合」且「bot 設定檔要留存」——**Slack MCP 發出的訊息不是他的 bot 身分**（是 claude.ai Slack 整合的授權身分）。因此：
+**⚠️ Transport revision (overturns §1.1's "MCP locally")**: Charlie explicitly said "I already have a Slack bot — integrate with it" and "the bot config needs a durable home" — **messages sent via the Slack MCP do NOT post under his bot's identity** (they post under the claude.ai Slack integration's authorized identity). Therefore:
 
-- **修訂**：本地與雲端統一走 `Bash curl https://slack.com/api/chat.postMessage`，以 `bot_token` 認證 → 訊息以**他既有的 bot** 身分發出，傳輸路徑單一（未來雲端 PR 不需第二套）。
-- §1.1 原 MAINTAINABILITY 否決理由（「repo 從無 secret 管理面」）被使用者需求覆蓋；secret 不進 repo（只在 `~/.claude/` chmod 600，與 `~/.netrc`、`gh hosts.yml` 同級）。更高安全需求可日後改 macOS Keychain，v1 不做。
-- 紅利：curl 不是 MCP tool call → dispatcher「table 與 spawn 之間禁 send」的 turn-boundary 顧慮自動消失（但仍維持只在 §6.5 送的設計，理由是 digest 模型本身）。
+- **Revision**: local AND cloud uniformly use `Bash curl https://slack.com/api/chat.postMessage` authenticated with `bot_token` → messages post under **his existing bot**, and there is a single transport path (the future cloud PR needs no second one).
+- §1.1's original MAINTAINABILITY rejection ("the repo has no secret-management surface") is overridden by the user's requirement; the secret stays out of the repo's git history (gitignored, chmod 600 — same class as `~/.netrc`, `gh hosts.yml`). macOS Keychain remains a future hardening option; not in v1.
+- Bonus: curl is not an MCP tool call → the dispatcher's "no send between table and spawns" turn-boundary concern technically disappears (the §6.5-only design is kept anyway — the digest model itself is the reason).
 
-### 9.2 防呆 gate chain（helper Step 0，依序短路，全部 exit 0）
+### 9.2 Foolproofing gate chain (helper Step 0, short-circuit in order, all exit 0)
 
-| Gate | 條件 | 行為 |
+| Gate | Condition | Behavior |
 |---|---|---|
-| G1 | `~/.claude/ggx-slack.json` 不存在 | **完全靜音 no-op**。stdout 一行 audit `slack-notify: disabled (no config)`，無 WARN。→ 其他 user 的預設體驗 |
-| G2 | `enabled != true` | 同 G1（`disabled by config`）|
-| G3 | JSON parse 失敗 / `channel_id` 空 / `bot_token` 空 | 單行 WARN（user 開了但設錯，需要知道），no-op |
-| G4 | curl 失敗 / 非 2xx / `ok:false` | 單行 WARN（含 Slack error code），no-op。429 → 尊重 Retry-After 一次，再失敗即丟棄，絕不 retry-storm |
+| G1 | config file absent | **Fully silent no-op.** One stdout audit line `slack-notify: disabled (no config)`, no WARN. → the default experience for every other user |
+| G2a | file exists but is not valid JSON | One WARN (a config exists = the user opted in; a corrupted file must not be silent), no-op |
+| G2 | `enabled != true` | Same silence as G1 (`disabled (enabled != true)`) |
+| G3 | `channel_id` or `bot_token` empty | One WARN (the user opted in but misconfigured — they need to know), no-op |
+| G4 | curl failure / non-2xx / `ok:false` | One WARN (with the Slack error code), no-op. 429 → respect Retry-After once, then drop; never retry-storm |
 
-防呆語義：G1/G2 用 audit line 而非零輸出——debug「為什麼沒通知」時有跡可循，但不是 WARN、不會嚇到無需求的 user。任何 gate 都不影響 pipeline exit code。
+Foolproofing semantics: G1/G2 use an audit line rather than zero output — "why didn't I get a notification" stays debuggable, but it's not a WARN and won't alarm users who never opted in. No gate ever affects the pipeline's exit code.
 
-### 9.3 Helper 介面（`commands/dev/_slack-notify.md`，仿 `_ticket-init.md`）【2026-06-05 簡化】
+### 9.3 Helper interface (`commands/dev/_slack-notify.md`, modeled on `_ticket-init.md`) 【simplified 2026-06-05】
 
-兩種呼叫 shape，呼叫端永遠傳**原始訊號**、不指定 status（映射是 helper 內唯一一張表）：
+Two call shapes; callers always pass **raw signals** and never pick a status (the mapping is the helper's single internal table):
 
-- `/_slack-notify digest <source>` + per-ticket signal 行
-  source ∈ `ticket-analyzer`（行：`ready` / `need-revision reasons=<..>` / `need-dependency blockers=<..>` / `cycle ids=<..>` / `errored`）| `ggx-dispatcher`（行：§6.2 權威 outcome + Flags：`done flags=In-Review pr=<url>` / `port-paused flags=need-spec-review` / `failed flags=in-flight-residue stage=<s>`）
-- `/_slack-notify batch-abort detail=<...>` — dispatcher §4.2 專用（batch 層級事件、無單一 ticket-id）
+- `/_slack-notify digest <source>` + per-ticket signal lines
+  source ∈ `ticket-analyzer` (lines: `ready` / `need-revision reasons=<..>` / `need-dependency blockers=<..>` / `cycle ids=<..>` / `errored`) | `ggx-dispatcher` (lines from the §6.2 authoritative outcome + Flags: `done flags=In-Review pr=<url>` / `port-paused flags=need-spec-review` / `failed flags=in-flight-residue stage=<s>`)
+- `/_slack-notify batch-abort detail=<...>` — dispatcher §4.2 only (batch-level event, no single ticket-id)
 
-章節結構：frontmatter / Inputs / Config + 防呆 gates（§9.2）/ 映射表（signal → §2 taxonomy token/emoji/#needs-human/next-action 模板）/ 訊息文法（§2）/ Send（curl + fail-soft）/ Audit line / Failure handling 表 / Callers (3 sites, 2 files) / Guardrails。
+Section structure: frontmatter / Inputs / Config + foolproofing gates (§9.2) / mapping table (signal → §2 taxonomy token/emoji/#needs-human/next-action template) / message grammar (§2) / Send (curl + fail-soft) / Audit line / Failure-handling table / Callers (3 sites, 2 files) / Guardrails.
 
-Guardrails 必含：**no-dedup is deliberate（不要好心加回去）**、永不阻塞 pipeline、config 永不進 repo、`--dry-run` 路徑不可達 send、絕不在 dispatcher 表格與 spawn 之間插 send。
+Guardrails must include: **no-dedup is deliberate (do not "helpfully" add it back)**, never block the pipeline, the config is never committed, `--dry-run` paths must not reach the send, and never insert a send between the dispatcher table and the spawns.
 
-### 9.4 範圍簡化決議（2026-06-05，Charlie）：digest-only，ggx-work 完全不動
+### 9.4 Scope-simplification decision (2026-06-05, Charlie): digest-only, ggx-work untouched
 
-Charlie：「我通常是用 dispatcher 進行 batch 工作，是不是只要在 ggx-dispatcher 印出就好？而且可以只印在執行完最後吐出的 table？」+「也可以新增 ticket analyzer 的訊息」。定案：
+Charlie: "I usually do batch work through the dispatcher — can we just print from ggx-dispatcher, and only the final table it emits at the end?" + follow-up "let's also add the ticket-analyzer messages." Final:
 
-- **v1 通知點只有三個**：dispatcher §6.5 digest、dispatcher §4.2 batch-abort、ticket-analyze Step 10 digest。
-- **ggx-work 的 7 處 terminal hook 全部取消**：standalone `/ggx-work` 是互動式（輸出就在眼前，Slack 通知多餘）；dispatcher 之下的結果由 §6.5 table 涵蓋。
-- **連帶取消 `--dispatched` flag 與 5 處範例字串同步**——ggx-work 不通知，「偵測自己在 dispatcher 之下」的問題整個消失。（歷史備註：候選方案「讀 `dispatcher-*-in-flight` label」已被證偽——`/dev:ship` 成功時即移除該 label，而 Step 4.1 Terminal 在 ship 之後才到達；未來若要恢復 per-ticket 通知，用 CLI flag，勿用 label。）
-- §4.2 batch-abort 保留的理由：它是唯一**到不了 §6.5** 的異常出口——batch 中途死掉時「最後的 table」永遠不會印，沒有它 Slack 上就零紀錄。
-- v1 實際出現的 token：`DIGEST`、`REVIEW` / `SPEC-REVIEW` / `FAILED`（dispatcher 行）、`NEEDS-REVISION` / `BLOCKED` / `CYCLE` / `FAILED`（analyzer 行，`READY` 僅計數）、`BATCH-ABORT`。`CLASSIFY` 在 dispatcher 視角併入 `FAILED`（reason 文字仍可見）；§2 完整 taxonomy 保留供未來擴點。
+- **v1 has exactly three notify points**: dispatcher §6.5 digest, dispatcher §4.2 batch-abort, ticket-analyze Step 10 digest.
+- **All 7 ggx-work terminal hooks are cancelled**: standalone `/ggx-work` is interactive (the output is right in front of you; a Slack ping adds nothing); results under the dispatcher are covered by the §6.5 table.
+- **The `--dispatched` flag and the 5 example-string syncs are cancelled along with them** — if ggx-work never notifies, the "am I under the dispatcher" detection problem disappears entirely. (Historical note: the candidate "read the `dispatcher-*-in-flight` label" was disproven — `/dev:ship` removes that label on success, and Step 4.1 Terminal is only reached after ship; if per-ticket notifications are ever restored, use a CLI flag, never the label.)
+- Why §4.2 batch-abort is kept: it is the only abnormal exit that **never reaches §6.5** — when a batch dies mid-lock, "the final table" never prints, and without this hook Slack would have zero record.
+- Tokens actually emitted in v1: `DIGEST`, `REVIEW` / `SPEC-REVIEW` / `FAILED` (dispatcher lines), `NEEDS-REVISION` / `BLOCKED` / `CYCLE` / `FAILED` (analyzer lines; `READY` counted only), `BATCH-ABORT`. `CLASSIFY` folds into `FAILED` from the dispatcher's viewpoint (the reason text is still visible); the full §2 taxonomy is kept for future expansion.
 
-### 9.5 各檔精確 edit 形狀（3 檔）
+### 9.5 Exact edit shapes per file (3 files)
 
-**(1) `commands/dev/_slack-notify.md`** — 新增，§9.3 結構。
+**(1) `commands/dev/_slack-notify.md`** — new, §9.3 structure.
 
-**(2) `commands/dev/ticket-analyze.md`** — Step 10（L402-413）結尾加「Slack digest (best-effort)」小節：
-- gate：`--dry-run`（Step 7 即轉印報告、不進寫入迴圈）或 `analyzed + errored == 0`（空掃/全 skipped）→ 跳過，一行 audit。
-- 否則：從 Step 9 報告資料組 header counts + per-ticket signal 行（needs-human 行排頂、ready 僅計數、best-start 一行）→ `/_slack-notify digest ticket-analyzer`（1 封）。
+**(2) `commands/dev/ticket-analyze.md`** — add a "Slack digest (best-effort)" subsection at the end of Step 10 (L402-413):
+- Gates: `--dry-run` (dry-run already short-circuits to the report at Step 7, never entering the write loop) or `analyzed + errored == 0` (empty sweep / everything skipped) → skip with one audit line.
+- Otherwise: build header counts + per-ticket signal lines from the Step 9 report data (needs-human lines on top, ready as a count only, best-start as one line) → `/_slack-notify digest ticket-analyzer` (1 message).
 
-**(3) `commands/dev/ggx-dispatcher.md`** — 2 處 + 1 條 guardrail：
-- §6.5（L748-770）：印完 `Counts/Report` 之後、`STOP.` 之前 → 從 §6.4 in-memory rows（§6.2 權威 outcome + Flags + pr）組 digest 行 → `/_slack-notify digest ggx-dispatcher`（1 封）。`--dry-run` 在 §4.0 gate 即停、不達 §6.5 → 天然靜音。
-- §4.2（L367-378）：第 2 點 `PARTIAL LOCK` 之後、`STOP — release lock` 之前插入 → `/_slack-notify batch-abort detail=<failed-ticket + 未解鎖清單>`（best-effort）。
-- Guardrails 清單末尾加一條：Slack notify 僅存在於 §4.2 / §6.5 兩點；絕不在 §4.3 表格與 §5.3 spawn 之間插入任何 send。
+**(3) `commands/dev/ggx-dispatcher.md`** — 2 spots + 1 guardrail:
+- §6.5 (L748-770): after printing `Counts/Report`, before `STOP.` → build digest lines from the §6.4 in-memory rows (§6.2 authoritative outcome + Flags + pr) → `/_slack-notify digest ggx-dispatcher` (1 message). `--dry-run` stops at the §4.0 gate and never reaches §6.5 → naturally silent.
+- §4.2 (L367-378): after item 2 (`PARTIAL LOCK`), before `STOP — release lock` → `/_slack-notify batch-abort detail=<failed ticket + tickets needing manual unlock>` (best-effort).
+- End of the Guardrails list: one new guardrail — Slack notify exists ONLY at §4.2 / §6.5; never insert any send between the §4.3 table and the §5.3 spawns.
 
-**不動**：`commands/dev/ggx-work.md`、`cloud-routines/*`（獨立 PR）、`install.sh`（command 檔自動安裝）、`_ticket-lib.md`。
+**Untouched**: `commands/dev/ggx-work.md`, `cloud-routines/*` (separate PR), `install.sh` (command files auto-install), `_ticket-lib.md`.
 
-### 9.6 v1.1 後續（不綁進 v1）
+### 9.6 v1.1 follow-ups (not bundled into v1)
 
-- **每日 liveness pulse**：機制 = 本地 cron（或 schedule routine）每日呼叫 helper 的 pulse mode，`chat.update` 編輯 `liveness_message_ts` 指向的 pinned 訊息（ts 存設定檔）。獨立小 PR。
-- **雲端啟用**：實證 CCR secret 注入 → 兩個 routine.json + scope note 放寬。獨立 PR（§8 Q5）。
+- **Daily liveness pulse**: mechanism = a local cron (or a schedule routine) invoking the helper's pulse mode daily; `chat.update` edits the pinned message referenced by `liveness_message_ts` (ts stored in the config). Separate small PR.
+- **Cloud enablement**: prove CCR secret injection → both routine.json files + scope-note relaxation. Separate PR (§8 Q5).
 
-### 9.7 驗證計畫（實作後依序）
+### 9.7 Verification plan (executed in order after implementation)
 
-1. **防呆**：無 config 跑 `/ticket-analyze <id>` → 零 Slack 訊息、audit line 出現、exit code 不變。
-2. `enabled:false` → 同上。
-3. 真 channel 設定後手動 `/_slack-notify terminal CAF-XXX done pr=<url>` → 驗證 bot 身分、格式、hashtags。
-4. 故意填錯 token → 單行 WARN、pipeline 不受影響。
-5. 小規模 `/ticket-analyze` batch → 恰好 1 封 digest、needs-human 行在頂。
-6. `/ggx-dispatcher --dry-run` → 0 訊息。
-7. standalone `/ggx-work` → 1 條 terminal 行；模擬 `--dispatched` → 0 條。
+1. **Foolproofing**: with no config, run `/ticket-analyze <id>` → zero Slack messages, the audit line appears, exit codes unchanged. ✅ *(bash-tested)*
+2. `enabled:false` → same. ✅
+3. With a real channel configured, manually invoke the helper → verify bot identity, format, hashtags. ✅ *(2026-06-05: bot "Planner agent" posted to C0AQG1DR8RY, `ok:true` — invalid_auth caught and fixed along the way: the first paste was a signing secret, not an `xoxb-` bot token)*
+4. Deliberately corrupt the token → single WARN, pipeline unaffected. *(invalid_auth path exercised in step 3)*
+5. A small `/ticket-analyze` batch → exactly 1 digest, needs-human lines on top. *(pending first real batch)*
+6. `/ggx-dispatcher --dry-run` → 0 messages. *(structural: dry-run stops at §4.0)*
+7. A real dispatcher batch → exactly 1 digest at §6.5 matching the stdout table. *(pending first real batch)*
 
-### 9.8 動工前待 Charlie 提供／確認
+### 9.8 Decisions Charlie provided before/at implementation
 
-1. **傳輸層修訂確認**（§9.1）：本地也改走你的 bot token curl（訊息=你的 bot 身分）。若你其實接受訊息以 Slack MCP 授權身分（非 bot）發出，可回到原 §1.1 設計、設定檔就不存 token。
-2. `#ggx-pipeline` 的 **channel id**（bot 需先被邀進 channel）。
-3. bot token 放 `~/.claude/ggx-slack.json`（chmod 600，明文）可接受？或要求 Keychain（v1 成本較高）。
+1. **Transport revision confirmed** (§9.1): local also uses his bot-token curl (messages = his bot identity). ✅
+2. `#ggx-pipeline` **channel id** — provided when filling the config. ✅ *(C0AQG1DR8RY)*
+3. Bot token as plaintext in the gitignored config (chmod 600) — accepted over macOS Keychain. ✅
