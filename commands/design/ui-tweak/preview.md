@@ -182,12 +182,25 @@ The orchestrator's loop sees `repair-context` and routes back to `/ui-tweak:appl
 
 ## `--auto` — failures must be LOUD (R13)
 
-`--auto` cannot normally reach preview (it shows no cards, so the designer never picks "show me").
-If reached, a build-fail prints one deterministic stderr line and exits non-zero:
+Under `--auto`, preview IS reached — in **direct-ship build-only mode** (D7, revised): the
+orchestrator's auto-decision wrote `deliver` + `direct-ship`, so this stage runs as the pure compile
+gate (no device cascade, no `preview-shown`, no card) — it is the load-bearing build proof before
+the audit. The *device* mode is never reached under `--auto` (no card ever writes
+`preview-requested`).
+
+A build-fail under `--auto` goes through the SAME agent repair loop as interactive (write
+`repair-context` + bump `repair-count` → apply fixes UI-only → re-gate, max 3 — the loop needs no
+card, so it is `--auto`-safe). Each failed attempt prints one deterministic stderr line:
 
 ```
 UI-TWEAK BUILD-FAIL (preview): <one-line reason> — repair attempt <n>/3.
 ```
+
+At `repair-count >= 3` the orchestrator's `--auto` card-terminus fires instead of the engineer card
+(`FAIL: ... repair budget exhausted` to stderr, exit non-zero — see `/ui-tweak:ff` dispatch loop);
+the caller classifies the ticket `failed` and `dispatcher-dev-in-flight` stays as the resume signal.
+(Contrast audit BLOCKED, which loud-fails immediately with NO repair loop under `--auto` — a logic
+finding is not a mechanical fix; see `/ui-tweak:audit`.)
 
 ## HITL / Stop
 

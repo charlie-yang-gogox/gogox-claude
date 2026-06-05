@@ -4,9 +4,13 @@ description: >
   Manual batch worker for actionable Linear tickets. Sweeps the cwd repo's
   team for `ready-to-port` and `ready-to-dev` tickets, race-locks them, and
   fans out parallel `/ggx-work <ID> --auto` agents (which in turn route to
-  `/port:ff` / `/dev:ff` / `/bug:ff` via `/route`). Single-repo, cwd-driven;
-  user-invoked from a Claude session opened in the target repo on its
-  default branch.
+  `/port:ff` / `/dev:ff` / `/bug:ff` / `/ui-tweak:ff` via `/route`).
+  Exception (§5.0): tickets labeled `design bug` (the ui-tweak lane) run
+  `/ggx-work <ID> --auto` INLINE in the dispatcher main session instead of
+  a spawned subagent, because the ui-tweak audit panel spawns an opus
+  judge and nested opus spawns from a general-purpose subagent are
+  unreliable. Single-repo, cwd-driven; user-invoked from a Claude session
+  opened in the target repo on its default branch.
 Prerequisite: >
   - Linear MCP authenticated; gh CLI authenticated.
   - cwd is the main worktree of a registered Linear repo, on default branch,
@@ -17,7 +21,7 @@ Prerequisite: >
 
 # /ggx-dispatcher — manual batch worker
 
-Find every actionable ticket in the cwd repo's Linear team and dispatch each through `/ggx-work <ID> --auto` in parallel. The `/ggx-work` subagent then calls `/route --non-interactive` to pick the right `/port:ff` / `/dev:ff` / `/bug:ff` based on the ticket's classification label and worktree state. Each spawned agent runs in `run_in_background: true`; the dispatcher waits for all to complete before posting fallbacks and emitting a summary.
+Find every actionable ticket in the cwd repo's Linear team and dispatch each through `/ggx-work <ID> --auto` in parallel. The `/ggx-work` subagent then calls `/route --non-interactive` to pick the right `/port:ff` / `/dev:ff` / `/bug:ff` / `/ui-tweak:ff` based on the ticket's classification label and worktree state. Each spawned agent runs in `run_in_background: true` — except `design bug` tickets, which run `/ggx-work --auto` inline in the dispatcher main session (§5.0). The dispatcher waits for all to complete before posting fallbacks and emitting a summary.
 
 **Usage**: `/ggx-dispatcher [--dry-run] [--test] [--max-parallel:<N>] [--team:<KEY>]`
 
@@ -38,7 +42,7 @@ single most common reason for incorrect routing. They are **orthogonal**.
 |----------------------------|----------------------------------------------------------------|------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
 | **Workflow labels**        | `ready-to-port`, `ready-to-dev`, `dispatcher-port-in-flight`, `dispatcher-dev-in-flight`, `need-spec-review` | dispatcher + `/port:ship` + `/dev:ship` + `/ggx-work` (scoped — see below) + `/ticket-analyze` (writes `ready-to-*` only) | dispatcher (Q1–Q4 discovery, §4.1 lock, §6.2 fallback); `/ggx-work` Step 2.5 + Step 4.4a; `/spec-review` batch fetch; `/ticket-analyze` Step 1.5 skip filter |
 | **Analyzer labels**        | `need-revision`, `need-dependency`                             | `/ticket-analyze` exclusively                                                                  | humans (revision checklist / blocker visibility); `/ticket-analyze` re-run filter. The dispatcher ignores them — a ticket carrying one is by definition not `ready-to-*`. |
-| **Classification labels**  | `bug`, `port`, `feature`                                       | humans (PM/eng)                                                                                | `/route`; `/ggx-work` Step 2.5 (read-only, lane derivation); `/ticket-analyze` Step 2 (read-only, lane derivation) |
+| **Classification labels**  | `bug`, `port`, `feature`, `design bug`                         | humans (PM/eng)                                                                                | `/route`; `/ggx-work` Step 2.5 (read-only, lane derivation); `/ticket-analyze` Step 2 (read-only, lane derivation); dispatcher §2.1/§5.0 (read-only, `design bug` ONLY — spawn-shape decision) |
 
 `/ggx-work`'s write scope inside the workflow namespace is deliberately
 narrow:
@@ -64,12 +68,17 @@ What this means concretely:
   decide success vs. failure. `/ggx-work`'s expanded write authority
   covers the orchestrator's own lifecycle moves (Step 2.5, Step 4.4a);
   the dispatcher's contracts are unchanged.
-- The dispatcher does NOT read classification labels. It cannot route by
-  pipeline type itself, and doesn't try — once a ticket is locked, the
-  spawned `/ggx-work` subagent calls `/route`, which reads the
+- The dispatcher does NOT route by classification labels — once a ticket
+  is locked, the `/ggx-work` orchestrator calls `/route`, which reads the
   classification label and decides which `/port:ff` / `/dev:ff` /
-  `/bug:ff` to run. `/ggx-work` Step 2.5 also reads the classification
-  label to derive lane for its lifecycle init, but does not write it.
+  `/bug:ff` / `/ui-tweak:ff` to run. `/ggx-work` Step 2.5 also reads the
+  classification label to derive lane for its lifecycle init, but does
+  not write it. **One narrow exception (§5.0)**: the dispatcher reads the
+  single classification label `design bug` (read-only, whole-string
+  case-insensitive) to decide the *spawn shape* — `design bug` tickets
+  run `/ggx-work --auto` inline in the main session instead of in a
+  spawned subagent. This is a spawn-mechanics decision, not routing: the
+  pipeline choice still happens inside `/ggx-work` via `/route`.
 - `/route` deliberately does NOT read workflow labels (see `/route`
   guardrails). It cannot tell a freshly-locked ticket apart from a
   recovery one — and shouldn't have to. The classification label
@@ -235,7 +244,7 @@ Selection model (Plan X, May 2026):
 
 - **Fresh dispatch** = ticket has `ready-to-port` / `ready-to-dev`. The label IS the "ready to dispatch" signal — **Q1/Q3 deliberately omit the `state` filter** because the port→spec-review→dev handoff transitions the label without resetting status to `To-do`: port leaves status as `In Progress`, the human reviewer relabels `need-spec-review` → `ready-to-dev` without touching status, so any `state: unstarted` filter on Q3 silently drops every post-port dev ticket. The status-level exclusion of completed / in-review tickets is enforced post-fetch (§2.0) instead. At lock time the dispatcher swaps the actionable label for the corresponding `dispatcher-*-in-flight` label (§4.1).
 - **Crash recovery** = ticket has `dispatcher-port-in-flight` / `dispatcher-dev-in-flight` left over from a prior run that didn't reach ship. Q2/Q4 catch these. `/port:ship` and `/dev:ship` remove the in-flight label only on full success, so its presence is a hard signal that "dispatcher claimed this and didn't finish."
-- The two-label split (port vs dev) lets the dispatcher pick the right §4.1 lock transition and the right §6.4 walker (`infer_port_stage` vs `infer_dev_stage`) at end-of-run table rendering without re-deriving pipeline type from worktree state. Spawn target itself is uniformly `/ggx-work` (§5.1) regardless of lane — pipeline routing happens inside the subagent via `/route`.
+- The two-label split (port vs dev) lets the dispatcher pick the right §4.1 lock transition and the right §6.4 walker (`infer_port_stage` vs `infer_dev_stage`; dev-lane tickets carrying the §2.1 ui-tweak flag use `infer_ui_stage` instead) at end-of-run table rendering without re-deriving pipeline type from worktree state. Spawn target itself is uniformly `/ggx-work` (§5.1) regardless of lane — pipeline routing happens inside the worker via `/route`; the only lane-conditional spawn mechanics is §5.0's inline execution for ui-tweak-flagged tickets.
 - Q2/Q4 use state name `In Progress` exactly — `In Review` / `Ready for QA` are post-work and must NOT be re-dispatched. (If a team renames `In Progress`, Q2/Q4 silently miss; verify with `mcp__claude_ai_Linear__list_issue_statuses` on onboarding.)
 
 ### 2.0 Post-fetch status filter (Q1/Q3 only)
@@ -262,6 +271,18 @@ Each surviving entry is tagged with its **selection lane**:
 - `recovery-dev` — picked up by Q4 (`dispatcher-dev-in-flight` present).
 
 The lane controls (a) which command Step 5 dispatches and (b) which lock transitions Step 4.1 performs.
+
+Additionally, tag each dev-lane entry (`fresh-dev` / `recovery-dev`) with
+an orthogonal **`ui-tweak` flag** when its merged `labels[]` contains the
+classification label `design bug` (whole-string, case-insensitive —
+read-only; see §5.0). The flag does NOT change the lock transition (§4.1
+still swaps `ready-to-dev` ↔ `dispatcher-dev-in-flight`) — it changes the
+**spawn shape** (§5.0: inline instead of spawned) and the **walker /
+outcome rules** (§6.2: `infer_ui_stage` + the ui-tweak `done` predicate).
+On a re-sweep (recovery-dev) the flag is re-derived from the same label —
+a failed ui-tweak ticket re-enters the inline lane, never the spawned dev
+walker (whose `done` predicate expects openspec markers a ui-tweak
+worktree never creates).
 
 ### 2.2 Conflict checks
 
@@ -364,8 +385,10 @@ Total: <N>. Re-run without --dry-run to execute.
 ```
 
 The command string is identical for every lane (`/ggx-work <ID> --auto`)
-per §5.1; lane only drives the §4.1 lock-label transition and the
-§6.4 end-of-run table's choice of `infer_port_stage` vs `infer_dev_stage`.
+per §5.1 (ui-tweak-flagged rows show the `(inline)` prefix per §5.0); lane
++ ui-tweak flag drive the §4.1 lock-label transition, the §5.0 spawn shape,
+and the §6.4 end-of-run table's choice of `infer_port_stage` vs
+`infer_dev_stage` vs `infer_ui_stage`.
 
 ### 4.1 Init protocol — apply per ticket, sequentially
 
@@ -442,12 +465,53 @@ Column rules:
 - `ticket` = Linear ticket id (column ordering follows the §2.3 priority sort).
 - `lane` = the §2.1 value (`fresh-port` / `fresh-dev` / `recovery-port` / `recovery-dev`).
 - `status` = `locked ✓` for every row here; failed-lock tickets never reach this step (§4.2 aborts the whole batch).
-- `command` = the exact string Step 5 will pass to its spawn — uniformly `/ggx-work <ID> --auto` per §5.1.
+- `command` = the exact string Step 5 will pass to its spawn — uniformly `/ggx-work <ID> --auto` per §5.1; ui-tweak-flagged rows render it as `(inline) /ggx-work <ID> --auto` (§5.0 — same command, inline execution; see the roster note below).
 - `link` = the issue `url` field returned by the Step 2 `list_issues` calls. Cache the url alongside the ticket id from Step 2 so this column does not require a re-fetch.
 
-While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>\t<url>`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention; `url` is the issue url cached from Step 2. **Held in session state only — do NOT write a roster.tsv file.** §6.4 uses this roster to render the end-of-run table (lane lookup, walker selection, Ticket-link column).
+While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>\t<url>\t<ui-tweak|->`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention; `url` is the issue url cached from Step 2; the 5th field is `ui-tweak` when the §2.1 ui-tweak flag is set, else `-`. **Held in session state only — do NOT write a roster.tsv file.** §6.4 uses this roster to render the end-of-run table (lane lookup, walker selection, Ticket-link column). Rows with the ui-tweak flag render their `command` column as `(inline) /ggx-work <ID> --auto` in the §4.0/§4.3 tables so the spawn shape is visible up-front.
 
-### 5.1 Uniform spawn command (all four lanes)
+### 5.0 Spawn-shape decision — `design bug` tickets run INLINE (ui-tweak lane)
+
+Tickets whose §2.1 roster row carries the **ui-tweak flag** (`design bug`
+classification label present) are **excluded from the §5.3 parallel spawn**.
+For each of them, the dispatcher runs the SAME command — `/ggx-work <ID>
+--auto` — **inline in its own main session**, sequentially, AFTER the §5.3
+spawns have been emitted (so the spawned batch runs in the background while
+the inline lane executes).
+
+**Why inline.** `/route` resolves a `design bug` ticket to `/ui-tweak:ff`,
+whose audit stage spawns a decorrelated dual-judge panel:
+`ui-verify-agent` (**sonnet**) + `dev-reviewer` (**opus**). Nested sonnet
+spawns from a general-purpose subagent are known to work in practice (see
+the §5.3 `model` rationale below and `commands/dev/dev/apply.md`), but
+**nested opus spawns are not** — inside a spawned worker the opus judge
+would fail, and the panel's tier-decorrelation (`dev-reviewer.md`: the
+tier-pin is why the two judges' misses are not positively correlated) is
+load-bearing: downgrading the judge to sonnet would collapse both judges
+to one tier. Running the lane in the main session — where opus nesting
+works exactly as in the interactive designer flow — preserves the audit
+guarantee verbatim: both judges, both tiers, both-must-be-CLEAR.
+
+Consequences, stated honestly:
+
+- This is the ONE lane-specific branch in the otherwise-uniform fan-out.
+  The price of keeping the audit panel intact.
+- Design-bug tickets run **serially** in the main session, not in
+  parallel with each other (they do overlap with the spawned background
+  batch). Acceptable while design bugs are a minority of any batch;
+  revisit (model-override fallback: spawn the worker and pass
+  `dev-reviewer` a `model: "sonnet"` override, accepting weaker
+  lens-only decorrelation) only if volume makes this a bottleneck.
+- The inline lane shares the dispatcher session's context budget. Keep
+  inline tickets LAST (after spawns) so a context-heavy ui-tweak run can
+  never delay the parallel batch.
+- Everything else is uniform: §4.1 lock (`ready-to-dev` ↔
+  `dispatcher-dev-in-flight`), `/ggx-work`'s Step 2.5 `/_ticket-init
+  lane=dev`, the §6.2 fallback writes, and the §6.4/§6.5 reporting all
+  treat it as a dev-lane ticket — only the walker + `done` predicate
+  differ (§6.2 step 2/4).
+
+### 5.1 Uniform spawn command (all four lanes; §5.0 inline exception)
 
 ```
 /ggx-work <ID> --auto
@@ -455,14 +519,16 @@ While building this table, accumulate the same rows into an in-memory `DISPATCH_
 
 Port and dev lanes share one spawn target. The `/ggx-work` subagent calls
 `/route --non-interactive` to decide which ff to run; `/route` reads the
-ticket's classification label (`bug` / `port` / `feature`) plus the
-worktree filesystem (port-ship marker, `.dev/*` markers) and recommends
-`/port:ff`, `/dev:ff`, or `/bug:ff`. Recovery lanes (`recovery-port` /
-`recovery-dev`) dispatch the same command because the ff walkers
-(`infer_port_stage` / `infer_dev_stage`) resume idempotently from their
-own marker files — the in-flight label is the dispatcher's signal that
-the worktree exists, not a routing hint that needs to be carried into
-the spawned subagent.
+ticket's classification label (`bug` / `port` / `feature` / `design bug`)
+plus the worktree filesystem (port-ship marker, `.dev/*` markers) and
+recommends `/port:ff`, `/dev:ff`, `/bug:ff`, or `/ui-tweak:ff`. Recovery
+lanes (`recovery-port` / `recovery-dev`) dispatch the same command because
+the ff walkers (`infer_port_stage` / `infer_dev_stage` / `infer_ui_stage`)
+resume idempotently from their own marker files — the in-flight label is
+the dispatcher's signal that the worktree exists, not a routing hint that
+needs to be carried into the spawned subagent. The command string is the
+same for ui-tweak-flagged tickets; only the execution context differs
+(inline per §5.0 instead of a spawned subagent).
 
 **Figma URL detection is no longer dispatcher's job.** Previously the
 dispatcher pre-scanned the ticket description for `figma\.com/...` and
@@ -476,7 +542,17 @@ the ticket through the SKIPPED short-circuit. Dispatcher just passes
 
 **You MUST emit the §4.3 dispatch table and all N `Agent` tool calls in a single assistant message.** Print the table text first, then the N parallel `Agent` calls — back-to-back, no turn break, no intermediate "ready to spawn?" pause. Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. It may also be tempted to end the turn after the table so the user can review — do not. The table is the review; spawning follows immediately in the same turn. Narration belongs after the join in Step 6.
 
-Single message, N parallel `Agent` calls (one per ticket):
+**ui-tweak-flagged tickets (§5.0) are NOT spawned here.** N = the roster
+minus ui-tweak rows. After emitting the table + the N spawn calls, run
+each ui-tweak-flagged ticket's `/ggx-work <ID> --auto` **inline in this
+session, sequentially**, while the spawned agents run in the background.
+The inline runs honor the same terminal conditions as the spawn prompt
+below; each inline completion increments the same §6.1 `joined` counter
+(over the FULL roster count, spawned + inline). If the roster is
+ui-tweak-only (N=0), still print the table first, then run the inline
+lane.
+
+Single message, N parallel `Agent` calls (one per non-ui-tweak ticket):
 
 - `description`: `Dispatch <ticket-id> via /ggx-work`
 - `subagent_type`: `general-purpose`
@@ -549,6 +625,14 @@ Spawned <N> agents in parallel. Completion lines will appear as each
 finishes. Session must remain open. Do not let the machine sleep.
 ```
 
+When the roster contains ui-tweak-flagged tickets, append:
+
+```
+Running <M> design-bug ticket(s) inline (ui-tweak lane, §5.0): <id, id, …>
+```
+
+then immediately begin the first inline `/ggx-work <ID> --auto` run.
+
 No separate progress poller. Per-ticket completion is surfaced by §6.1
 when each agent's background notification arrives; end-of-run rendering
 is the §6.4 summary table.
@@ -564,6 +648,11 @@ background-completion notification. **No sibling poller process.** Each
 notification arrives event-driven from the harness; printing a 30s tick
 table on top of those events was redundant noise — the table re-rendered
 the same per-ticket state that the notification line already announces.
+
+Inline ui-tweak runs (§5.0) complete synchronously in this session — when
+each finishes, increment `joined` and emit the same `[<joined>/<N>]` line
+(its `[ggx-work-result]` outcome line is read directly from the inline
+output). `N` counts the FULL roster (spawned + inline).
 
 Maintain an in-memory `joined` counter. On each background-completion
 notification:
@@ -626,11 +715,18 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
    - lane ∈ {`fresh-port`, `recovery-port`} → `infer_port_stage` →
      emits one of `start` / `explore` / `plan` / `synth` / `revise` /
      `ship` / `done`.
-   - lane ∈ {`fresh-dev`, `recovery-dev`} → `infer_dev_stage` →
-     emits one of `start` / `figma` / `align` / `apply` / `verify` /
-     `review` / `ship` / `done`. (Bug-mode tickets go through
-     `infer_bug_stage_safe` from the same dispatch, which emits a subset
-     of the same vocabulary; treat them uniformly.)
+   - lane ∈ {`fresh-dev`, `recovery-dev`} **with the ui-tweak flag**
+     (roster 5th field — §2.1) → `infer_ui_stage` (from
+     `commands/design/ui-tweak/ff.md`) → emits one of `start` / `apply` /
+     `preview` / `audit` / `commit` / `demo` / `pr` / `review` / `done`.
+     **Never run `infer_dev_stage` on a ui-tweak worktree** — it has no
+     `.dev/mode.md` (absent ⇒ "feature" branch) and no openspec dirs, so
+     the dev walker would mis-walk it and its `done` could never fire.
+   - lane ∈ {`fresh-dev`, `recovery-dev`} without the flag →
+     `infer_dev_stage` → emits one of `start` / `figma` / `align` /
+     `apply` / `verify` / `review` / `ship` / `done`. (Bug-mode tickets
+     go through `infer_bug_stage_safe` from the same dispatch, which
+     emits a subset of the same vocabulary; treat them uniformly.)
 3. **Query PR state**:
    ```bash
    pr_state=$(gh pr view "$TICKET_ID" --json state -q .state 2>/dev/null)
@@ -638,7 +734,7 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
    Possible values: `OPEN` / `MERGED` / `CLOSED` / empty (no PR).
 4. **Derive `outcome`** from the three signals — rules are lane-aware:
 
-   **Dev lane** (`fresh-dev` / `recovery-dev`):
+   **Dev lane** (`fresh-dev` / `recovery-dev`, no ui-tweak flag):
    - `outcome = done` ⟺ `walker == done` (the walker's own `done`
      predicate already requires the openspec archive dir + a clean
      `code-review.md` + `gh pr view ... state == OPEN`, so this is the
@@ -648,6 +744,21 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
      `/dev:ship` finalize never ran).
    - `port-paused` is impossible on the dev lane — exclude it from the
      decision table.
+
+   **ui-tweak lane** (`fresh-dev` / `recovery-dev` WITH the ui-tweak
+   flag) — a DISTINCT branch, never the dev rule (a ui-tweak worktree
+   never creates `openspec/changes/archive/<n>`, so the dev `done`
+   predicate can never fire and would misclassify every shipped design
+   bug as `failed`):
+   - `outcome = done` ⟺ `infer_ui_stage == done` AND `pr_state == OPEN`
+     AND `claude-reports/<ticket-id>/code-review.md` present (the
+     ui-tweak walker's own `done` predicate — PR open + code-review).
+   - `outcome = failed` ⟺ not `done` AND
+     `dispatcher-dev-in-flight ∈ labels` (e.g. apply failed, build
+     repair budget exhausted, or audit BLOCKED — `/ui-tweak:ff --auto`
+     exits non-zero with the loud stderr line; the in-flight label stays
+     as the resume signal).
+   - `port-paused` is impossible here too.
 
    **Port lane** (`fresh-port` / `recovery-port`):
    - `outcome = port-paused` ⟺ `need-spec-review ∈ labels` (canonical
@@ -676,6 +787,7 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
    | derived `outcome`  | required Linear end state                                                            | fallback if missing                                                                                                                                                                                                                  |
    |--------------------|--------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
    | dev `done`         | status `In Review` AND `dispatcher-dev-in-flight ∉ labels`                           | `save_issue` to set status `In Review` and remove `dispatcher-dev-in-flight`. **Re-fetch labels via `get_issue` immediately before the write** to avoid racing a slow `/dev:ship` finalize (same diff-then-write idempotency pattern as `/port:ship` step 13). |
+   | ui-tweak `done`    | status `In Review` AND `dispatcher-dev-in-flight ∉ labels`                           | Same write as dev `done`. NOTE: unlike `/dev:ship`, ui-tweak's `pr` stage deliberately does NOT transition ticket status (its only ticket write is the read-only PR-link comment), so for ui-tweak this fallback is the **primary** status writer, not a safety net — expect it to fire on every shipped design bug. |
    | port `port-paused` | `need-spec-review ∈ labels` AND `dispatcher-port-in-flight ∉ labels`                  | `save_issue` to add `need-spec-review` and remove `dispatcher-port-in-flight`. Same re-fetch-before-write to avoid racing a slow `/port:ship`.                                                                                          |
    | port `done`        | `dispatcher-port-in-flight ∉ labels`                                                  | `save_issue` to remove `dispatcher-port-in-flight`. Re-fetch labels first.                                                                                                                                                              |
    | any `failed`       | `dispatcher-*-in-flight` STAYS (resume signal for Q2/Q4 on the next sweep)            | If no failure comment exists yet on the ticket, post one via `save_comment`. Do NOT remove the in-flight label — that's the resume signal.                                                                                              |
@@ -734,7 +846,7 @@ For each ticket in `DISPATCH_ROSTER` (§4.3), collect:
 | `status.name`    | same call as `labels`                                                  | shared with §6.2 — `In Progress` / `In Review` etc.                                              |
 | `url`            | from roster (cached at Step 2)                                         | no re-fetch                                                                                     |
 | `outcome`        | §6.2-derived value (`done` / `port-paused` / `failed`) carried in-memory | authoritative — derived from `labels` + walker + PR per the §6.2 algorithm. If §6.2 didn't run (e.g. `--dry-run`), recompute inline from `labels` + walker + PR here. The agent's text is NOT consulted. |
-| `stage_reached` | §6.2-derived walker output (`infer_port_stage` / `infer_dev_stage` already ran there) | shared with §6.2 — no extra worktree shell-out. Walker selection follows the lane tagged in §2.1. |
+| `stage_reached` | §6.2-derived walker output (`infer_port_stage` / `infer_dev_stage` / `infer_ui_stage` already ran there) | shared with §6.2 — no extra worktree shell-out. Walker selection follows the lane + ui-tweak flag tagged in §2.1. ui-tweak rows render their stage with a `ui:` prefix (e.g. `ui:audit`) so the table distinguishes them from dev stages. |
 | `pr`             | §6.2-derived `pr_state` (shared) — augmented here with `number,url` via `gh pr view <ticket-id> --json number,url,state` if needed for the link column | shared with §6.2 for the state; non-zero exit ⇒ no PR, render `—`                              |
 
 **Render order**: collect all rows in memory first (parallel MCP+gh calls
@@ -827,6 +939,10 @@ post ONE run-level digest via `/_slack-notify digest ggx-dispatcher`:
   `<ticket-id> <url> <lane> done flags=<In-Review|-> pr=<pr-url|-> title="<title>"` /
   `... port-paused flags=<need-spec-review|-> title="<title>"` /
   `... failed flags=<in-flight-residue|-> stage=<stage_reached> reason=<short> title="<title>"`.
+  ui-tweak-flagged tickets ride the same dev-lane line format (`<lane>` is
+  the selection lane, e.g. `fresh-dev`; the `ui:`-prefixed
+  `stage_reached` is the only visible difference) — no new outcome token,
+  no `_slack-notify.md` change.
 - Include the `Report :` path so the Slack message links back to the
   full table.
 
@@ -866,7 +982,7 @@ the data).
 | Label                              | Added by                  | Removed by                                                                              | Meaning                                  |
 |------------------------------------|---------------------------|-----------------------------------------------------------------------------------------|------------------------------------------|
 | `ready-to-port`                    | human (PM/eng)            | `/_ticket-init` (via `/port:start`, `/ggx-work` Step 2.5, `/ggx-dispatcher` §4.1) / `/ggx-dispatcher` §4.1 lock (fresh-port lane, swaps to `<inflight>`) | "this ticket is ready for the port pipeline" |
-| `ready-to-dev`                     | human (PM/eng)            | `/_ticket-init` (via `/dev:start`, `/ggx-work` Step 2.5, `/ggx-dispatcher` §4.1) / `/ggx-dispatcher` §4.1 lock (fresh-dev lane, swaps to `<inflight>`) | "this ticket is ready for the dev pipeline" |
+| `ready-to-dev`                     | human (PM/eng)            | `/_ticket-init` (via `/dev:start`, `/ggx-work` Step 2.5, `/ggx-dispatcher` §4.1) / `/ggx-dispatcher` §4.1 lock (fresh-dev lane, swaps to `<inflight>`) | "this ticket is ready for the dev pipeline" (covers feature, bug, AND ui-tweak/`design bug` tickets — the classification label picks the pipeline downstream) |
 | `dispatcher-port-in-flight`        | `/ggx-dispatcher` §4.1 (fresh-port) | `/port:ship` step 13 (success) / `/ggx-dispatcher` §3.1 (PR exists) / `/ggx-dispatcher` §4.2 (rollback fresh-port only) | "dispatcher is mid-run on port; resume if seen next time" |
 | `dispatcher-dev-in-flight`         | `/ggx-dispatcher` §4.1 (fresh-dev)  | `/dev:ship` step 3 (success) / `/ggx-dispatcher` §3.1 (PR exists) / `/ggx-dispatcher` §4.2 (rollback fresh-dev only)   | "dispatcher is mid-run on dev; resume if seen next time"  |
 | `need-spec-review`                 | `/port:ship` step 13 (auto only) / `/ggx-work` Step 4.4a else-branch (HITL fallback) | human reviewer / `/spec-review` step 6                                                  | "ported spec ready for human spec review" |

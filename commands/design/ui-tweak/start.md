@@ -14,9 +14,13 @@ description: "Stage 1 of the /ui-tweak pipeline — the up-front worktree split 
 
 ## Inputs
 
-`<source> [figma-url] [--auto]` — `<source>` MUST resolve to a ticket id (ID/URL); free text cannot
-name a branch/PR. `/ui-tweak:ff` Step 0 only ever invokes this stage with an id already parsed out of
-the designer's input (or supplied via card C-WT), so a free-text arrival here is a misdirect.
+`<source> [figma-url] [--auto] [--no-ticket-init]` — `<source>` MUST resolve to a ticket id (ID/URL);
+free text cannot name a branch/PR. `/ui-tweak:ff` Step 0 only ever invokes this stage with an id
+already parsed out of the designer's input (or supplied via card C-WT), so a free-text arrival here
+is a misdirect. `--no-ticket-init` is **accepted and ignored** (never error on it): this stage does
+no `/_ticket-init` anyway, so the flag is semantically a no-op — it exists only because `/ggx-work`'s
+lane-agnostic spawn builder appends it uniformly and `/ui-tweak:ff` may forward it (belt-and-suspenders;
+ff.md normally strips it before dispatching here).
 
 ## Step 0a — misdirect guard (R5/D11)
 

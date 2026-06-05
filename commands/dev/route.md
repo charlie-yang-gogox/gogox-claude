@@ -2,9 +2,10 @@
 name: route
 description: >
   Atomic decision command. Reads a ticket's classification (Linear label
-  `bug` / `port` / `feature`, or Jira `issuetype.name`) plus minimal
-  worktree state and recommends the ONE pipeline entry-point command to
-  run next (`/port:ff`, `/dev:ff`, `/bug:ff`, or `/spec-review`). Advisory
+  `bug` / `port` / `feature` / `design bug`, or Jira `issuetype.name`) plus
+  minimal worktree state and recommends the ONE pipeline entry-point command
+  to run next (`/port:ff`, `/dev:ff`, `/bug:ff`, `/ui-tweak:ff`, or
+  `/spec-review`). Advisory
   only by default — prints the recommendation for the user to copy-paste.
   Does NOT execute the command, does NOT mutate ticket state, does NOT
   detect resume points inside a pipeline (the FF wrappers do that
@@ -26,9 +27,9 @@ Prerequisite: >
 > `/route` is an **atomic decision command**. It answers ONE question:
 > **which pipeline entry-point should I run for this ticket?**
 >
-> - It does NOT detect resume points within a pipeline — `/port:ff` and
->   `/dev:ff` derive their own resume via `infer_port_stage` /
->   `infer_dev_stage`.
+> - It does NOT detect resume points within a pipeline — `/port:ff`,
+>   `/dev:ff`, and `/ui-tweak:ff` derive their own resume via
+>   `infer_port_stage` / `infer_dev_stage` / `infer_ui_stage`.
 > - It does NOT execute the recommended command — it prints it for the user
 >   to copy.
 > - It does NOT mutate Linear labels — only reads.
@@ -111,19 +112,35 @@ or Atlassian Rovo) is authenticated.`
 
 ### Step 3: Determine lane
 
-**Linear path** — match `<labels>` against `{bug, port, feature}`
-(**case-insensitive**: lowercase each label name before comparison, so the
-workspace's actual capitalized labels `Bug` / `Port` / `Feature` map to the
-canonical lanes — mirrors the Jira path's case-insensitive treatment below):
+**Linear path** — first apply the `design bug` precedence rule, then match
+`<labels>` against `{bug, port, feature}` (**case-insensitive**: lowercase
+each label name before comparison, so the workspace's actual capitalized
+labels `Bug` / `Port` / `Feature` / `Design bug` map to the canonical lanes —
+mirrors the Jira path's case-insensitive treatment below):
+
+> **`design bug` precedence (evaluated first).** If `<labels>` (each name
+> lowercased, whole-string) contains **`design bug`** → `<lane> = ui-tweak`,
+> full stop — evaluated **before and overriding** the canonical-set count,
+> regardless of which other canonical labels co-occur (`bug`, `feature`,
+> `port`, none, or several). All four shapes resolve identically:
+> `design bug`+`bug` → ui-tweak; `design bug`+`feature` → ui-tweak;
+> `design bug`+`port` → ui-tweak; `design bug` alone (zero canonical labels,
+> which would otherwise be `unknown`) → ui-tweak. Only if `design bug` is
+> absent do we fall through to the canonical match below. Canonical
+> statement lives in `_ticket-lib.md` § Lane derivation.
 
 | Match shape                    | `<lane>`  |
 |--------------------------------|-----------|
+| contains `design bug`          | `ui-tweak` (**precedence — wins over any canonical co-label**) |
 | exactly one of `{bug,port,feature}` | that one |
 | zero of the three              | `unknown` |
 | two or three of the three      | `unknown` |
 
-Note: a label like `Design bug` does NOT match — matching is against the
-whole lowercased label name equalling `bug`/`port`/`feature`, not a substring.
+Note: `design bug` is a recognized classification label routing to the
+`ui-tweak` lane — matched **whole-string** case-insensitive (`Design bug` /
+`design bug` / `DESIGN BUG` all match), never as a substring. The other
+three lanes likewise match the whole lowercased label name equalling
+`bug`/`port`/`feature`, not a substring.
 
 **Jira path** — derive from `<issue-type>` (case-insensitive):
 
@@ -134,8 +151,9 @@ whole lowercased label name equalling `bug`/`port`/`feature`, not a substring.
 | anything else                                               | `unknown`  |
 
 Jira repos have no `port` lane — the port pipeline is Linear-specific
-(copy-from-source CAF/DAF tickets). A Jira ticket can only resolve to `bug`
-or `feature`.
+(copy-from-source CAF/DAF tickets). Jira also has no `ui-tweak` lane (no
+`design bug` issuetype); design-bug routing is Linear-only, like `port`. A
+Jira ticket can only resolve to `bug` or `feature`.
 
 If `<lane> == unknown`:
 
@@ -153,10 +171,10 @@ If `<lane> == unknown`:
   > "Ticket `<ticket-id>` cannot derive a lane (system=<linear|jira>, signal=
   > `<labels-or-issuetype>`). Which pipeline should it use?"
 
-  Options for Linear: `bug` / `port` / `feature`. Options for Jira:
-  `bug` / `feature` (no port lane on Jira — silently omit). The user's
-  answer becomes `<lane>`. `confidence = user-input`. Continue to Step 4
-  with the chosen lane.
+  Options for Linear: `bug` / `port` / `feature` / `ui-tweak`. Options for
+  Jira: `bug` / `feature` (no port or ui-tweak lane on Jira — silently
+  omit). The user's answer becomes `<lane>`. `confidence = user-input`.
+  Continue to Step 4 with the chosen lane.
 
 Otherwise `confidence = rule-based`.
 
@@ -202,6 +220,39 @@ phase                = "feature"
 reasoning            = "Classification is `feature`. No port phase, no
                        spec-review gate — go straight to dev."
 next_after_recommended = "(none — /dev:ff terminates at /dev:ship)"
+```
+
+Skip to Step 5.
+
+#### Step 4.ui-tweak — lane is `ui-tweak` (Linear only)
+
+If `<ticket-system> == jira` and `<lane> == ui-tweak` somehow → STOP with
+`Status: UNKNOWN_LANE` (per Step 3, the Jira path can never derive
+`ui-tweak`; this is a defense-in-depth guard, mirroring Step 4.port's).
+
+Same done-detection shape as Step 4.bug: the only phase information
+`/route` surfaces is whether the design-bug ticket is already shipped;
+everything else delegates to `/ui-tweak:ff`'s own `infer_ui_stage` walker.
+
+```
+check: is the ticket already shipped? (gh pr view <id> state == OPEN, OR
+       Linear status == In Review). If yes:
+  recommended_command  = "(none — /ui-tweak:ff terminates at its draft PR)"
+  phase                = "done"
+  reasoning            = "Classification includes `design bug`. PR is open
+                         (or Linear status is In Review) — the ui-tweak
+                         pipeline has shipped its draft PR."
+
+Otherwise:
+  recommended_command  = "/ui-tweak:ff <ticket-id>"
+  phase                = "ui-tweak" (the walker inside /ui-tweak:ff resolves
+                                     the sub-phase: start / apply / preview /
+                                     audit / commit / pr / review)
+  reasoning            = "Classification includes `design bug` (precedence
+                         over any canonical co-label). /ui-tweak:ff drives
+                         the UI-only pipeline: apply → build gate → dual-judge
+                         audit → commit → draft PR."
+next_after_recommended = "(none — /ui-tweak:ff terminates at its draft PR)"
 ```
 
 Skip to Step 5.
