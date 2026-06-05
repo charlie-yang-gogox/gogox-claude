@@ -167,8 +167,20 @@ labeling still works — the analyzer is additive, not mandatory.
 3. **Branch + clean checks** (skipped when `--test`):
    - On default branch? `[ "$(git branch --show-current)" = "$default_branch" ]` else STOP with:
      > `Switch to <default_branch> first: git checkout <default_branch> && git pull`
-   - Clean tree? `[ -z "$(git status --porcelain)" ]` else STOP with:
-     > `Working tree is dirty. Stash or commit first: git stash`
+   - Clean tree? Block on **tracked modifications only** — untracked files
+     warn but proceed:
+     ```bash
+     # Tracked changes (staged or unstaged) are a human's in-progress work — STOP.
+     [ -z "$(git status --porcelain --untracked-files=no)" ] || abort \
+       "Working tree has tracked modifications. Stash or commit first: git stash"
+     # Untracked files cannot be clobbered by the dispatcher (it never edits the
+     # main worktree; agents work in their own worktrees) — note and continue.
+     # Known shape: harness runtime residue like .claude/scheduled_tasks.lock
+     # (a short-lived lock that aborted the 2026-06-05 06:00 scheduled fire
+     # under the old whole-porcelain check, wasting the slot for nothing).
+     UNTRACKED=$(git status --porcelain | grep -c '^??')
+     [ "$UNTRACKED" -gt 0 ] && echo "note: $UNTRACKED untracked file(s) present — proceeding (agents work in separate worktrees)"
+     ```
 
 4. **Worktree prune.** `git worktree prune` (silent).
 
