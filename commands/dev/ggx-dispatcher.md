@@ -103,7 +103,7 @@ labeling still works — the analyzer is additive, not mandatory.
 ## Execution rules
 
 - **No `AskUserQuestion`.** Dispatcher never prompts. Every gate either auto-resolves or aborts with a paste-ready remediation message.
-- **All MCP tool calls use `mcp__claude_ai_Linear__*`.** Never the legacy `mcp__linear-server__*`.
+- **All MCP tool calls use whichever Linear MCP server is connected in the session.** Prefer `mcp__claude_ai_Linear__*` (the claude.ai account connector) when present; otherwise fall back to `mcp__linear-server__*` (the project `.mcp.json` server at `https://mcp.linear.app/mcp`). Both target the same Linear workspace and expose identical `list_issues` / `get_issue` / `save_issue` / `save_comment` capability — the prefix difference is purely how the connector was wired up, not a capability or correctness difference. Resolve the prefix once at the start of the run and use it uniformly for every Linear call below.
 - **stdout is the audit trail.** Every per-ticket lock attempt prints `<ticket>: locked ✓` or `<ticket>: failed (<reason>)`. If MCP outage breaks the recovery chain, the user has the terminal scrollback to fix manually via Linear UI. Cron usage (where stdout is invisible) is explicitly NOT supported.
 - **Lockfile.** Step 1 acquires `claude-reports/dispatcher/.lock`; every exit path (success, abort, MCP error) releases it.
 
