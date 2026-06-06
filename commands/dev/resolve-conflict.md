@@ -7,7 +7,9 @@ description: >
   --batch, sweeps open GitHub PRs (optionally filtered by --user) and fans out
   one parallel subagent per PR — each works in the PR's worktree, merges onto
   its base, tests, and pushes only if clean (conflicted PRs are flagged for a
-  human).
+  human). With --callee (invoked by /ggx-pr-resolver, not user-facing), a hybrid
+  variant rebases one caller-supplied worktree onto an explicit base ref,
+  auto-aborts non-interactively on uncertain conflicts, and does NOT push.
 ---
 
 # Resolve Conflict — Rebase onto Trunk & Fix Conflicts
@@ -22,12 +24,14 @@ Pull latest trunk via merge/rebase, resolve conflicts, verify tests pass, format
 |------|---------|-------|
 | **Single** (default) | no `--batch` | Resolves the **current branch** against `origin/trunk`. Runs Steps 0–8 below. |
 | **Batch** | `--batch` | Sweeps open GitHub PRs (optionally filtered by `--user`) and fans out **one parallel subagent per PR**. Each subagent works in that PR's own git worktree (reused if it exists, created otherwise), merges/rebases onto the PR's base branch, runs tests, and **pushes only if the merge was clean**. Conflicted PRs are aborted and flagged for human review. See the **Batch Mode** section near the end. |
+| **Callee** (hybrid) | `--callee` | Invoked by `/ggx-pr-resolver` step 5 — **not** a user-facing mode. Operates on **one explicit worktree path** (the caller already created/reused it), **rebase-only** onto an **explicit base ref the caller passes** (never assumes `origin/trunk`), with **batch-style non-interactive give-up** (unresolvable/uncertain conflict → auto-abort + restore worktree + report `needs-human: conflict`, NEVER `AskUserQuestion`), then tests + format + commit, **NO push** (the caller owns the single push). See the **Callee Mode** section near the end. |
 
 **Usage**:
 
 ```
 /resolve-conflict [--rebase | --merge]
 /resolve-conflict --batch [--user=<login> | --user=@me] [--limit=<N>] [--rebase | --merge] [--dry-run]
+/resolve-conflict --callee --worktree=<path> --base=<ref>   # hybrid; invoked by /ggx-pr-resolver only
 ```
 
 - `--rebase` (default) / `--merge` — strategy, passed through to every PR in batch mode.
@@ -39,6 +43,7 @@ Pull latest trunk via merge/rebase, resolve conflicts, verify tests pass, format
 
 - Single mode → `{base_branch}` is `origin/trunk`.
 - Batch mode → `{base_branch}` is `origin/<the PR's baseRefName>` (i.e. the actual base the PR targets — `main`, `master`, `trunk`, or any release branch), set by the batch loop per PR.
+- Callee mode → `{base_branch}` is the **explicit `--base=<ref>` the caller passes** (e.g. `origin/<the PR's baseRefName>`), **never `origin/trunk`** — `/ggx-pr-resolver` resolves the real `baseRef` per PR (release-branch PRs exist; assuming trunk would rebase onto the wrong base and corrupt the PR — owner decision D12, review item M5).
 
 ---
 
@@ -312,3 +317,35 @@ Then print:
 - **Pushed:** branches now current with their base on the remote (outcome `pushed`).
 - **Needs a human:** `conflicts` / `tests-failed` / `worktree-dirty` PRs, with the worktree path and the suggested next step — for conflicts, `cd <path> && /resolve-conflict` (single mode) to resolve interactively.
 - **Worktrees created:** list the worktrees this run created (vs reused) so the user can `/remove-worktree` them when done.
+
+---
+
+## Callee Mode (`--callee`) — hybrid invoked by `/ggx-pr-resolver`
+
+**Not a user-facing mode.** This is the callee-side contract for `/ggx-pr-resolver` step 5, which needs conflict-resolution mechanics that neither single nor batch mode provides as-is: single mode is HITL (it asks via `AskUserQuestion` on doubt — Steps 3.2c, 3.7, and the >5-rounds rule — which would deadlock the resolver's unattended background subagent); batch mode is non-interactive but owns its own worktree creation and **pushes**. Callee mode is the missing hybrid — **worktree-scoped + rebase-only onto an explicit base + batch-style auto-abort + NO push** — borrowing the conflict-handling halves of both by reference rather than re-stating them.
+
+**Inputs (all required, passed by the caller — this mode resolves nothing itself):**
+
+- `--worktree=<path>` — the PR's worktree, **already created/reused/refreshed by the caller** (`/ggx-pr-resolver` step 4 owns the worktree primitive, the stale-reuse `git fetch` + reset, and the dirty guard). Callee mode does **not** create, fetch, reset, or clean the worktree; it operates strictly inside `<path>` (all git commands run with `git -C <path>`).
+- `--base=<ref>` — the **explicit** ref to rebase onto (the PR's real base; see the Callee-mode line under **Base branch** above). Substitute the bare ref for the `git fetch` refspec.
+
+Strategy is **rebase-only** (owner decision D12) — `--merge` is rejected in this mode; the caller's single push is unconditionally `--force-with-lease`, which is correct only for a rebase. Resolve project profile exactly as in **Step 0** to obtain `{test_cmd}` / `{format_cmd}`.
+
+### Procedure
+
+1. **Rebase onto the explicit base** inside the worktree (the caller has already fetched `<base>`; re-fetching it is harmless and keeps the ref current):
+   ```bash
+   git -C <path> fetch origin <base-ref-name>
+   git -C <path> rebase <base>
+   ```
+   Clean rebase (no conflicts) → go to step 3.
+2. **On conflict — attempt resolution with Step 3's mechanics, but with batch-style give-up.** Apply the conflict-resolution logic of **Step 3** (read each conflicted file, understand both sides, merge preserving both intents) — with one overriding rule that **supersedes** Step 3.2c, Step 3's "ask the user" rule, the Rules-section "never `--abort` without asking" rule, and the >5-rounds rule **for this mode only**: this is an unattended background subagent, so it **NEVER** calls `AskUserQuestion`. If a conflict is **unresolvable, ambiguous, or you are uncertain** of the correct merge, **give up immediately** — exactly the batch-mode auto-abort (Batch Step B3.3): capture the conflicted file list (`git -C <path> diff --name-only --diff-filter=U`), then
+   ```bash
+   git -C <path> rebase --abort
+   ```
+   to restore the worktree to a clean pre-rebase state, and **report `needs-human: conflict`** (with the conflicted files) and STOP — push nothing, run no tests. This auto-abort is the same sanctioned exception batch mode relies on: it touches only the caller's isolated PR worktree, never the user's main worktree.
+3. **Verify — tests green.** Run `{test_cmd}` in the worktree exactly as **Step 4**. Tests red after the rebase → report `needs-human: tests-failed` (leave the worktree as-is for inspection) and STOP — push nothing.
+4. **Format.** Run `{format_cmd}` in the worktree exactly as **Step 5** (no commit yet).
+5. **Commit.** Commit the rebase + fix-ups exactly as **Step 6** (`/commit`, or the conventional-commit fallback).
+6. **Report — NO push.** Return a structured result and **do not push** (owner decision D14: the caller — `/ggx-pr-resolver` step 7, or resolve-pr-comments' push step when a comments stage follows — owns the single `--force-with-lease` push). Report shape:
+   `{ worktree: <path>, base: <ref>, outcome: rebased | no-op | needs-human, needs_human?: conflict | tests-failed, conflicted_files?: [...], conflict_summary?: <Step 7 table> }` — where `rebased` means commits were applied, `no-op` means already current (clean rebase with nothing to replay). Include the **Step 7** conflict-resolution summary table when conflicts were resolved.
