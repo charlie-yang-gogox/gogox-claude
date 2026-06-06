@@ -16,10 +16,12 @@ description: Resolve all unresolved comments on a GitHub PR end-to-end. Classifi
 
 ## Inputs
 
-- **Optional PR identifier** as the only argument:
+- **Optional PR identifier** as the first argument:
   - `<number>` (e.g. `337`) — resolved against the cwd repo's default remote.
   - GitHub URL (e.g. `https://github.com/gogovan/gogox-client-flutter/pull/337`).
 - If omitted, infer the PR from the cwd worktree's current branch via `gh pr view --json number,headRefName,url,baseRefName`. Abort if no PR is associated.
+- **`--auto`** (optional flag) — auto-approve the strategy-table HITL gate for unattended use (e.g. when called from `/ggx-pr-resolver` inside `/ggx-on-duty`). It bypasses **only** that one prompt (Step 4); every other locked decision and gate is unchanged — in particular the Step 5b build-sanity gate still runs and still aborts on failure (see Step 5b). Under `--auto` it also suppresses DEFER promise-replies (Step 5d, owner decision D16). Default (no flag) behavior is identical to today.
+- **`--force-with-lease`** (optional flag) — callee push convention (owner decision D14). When `/ggx-pr-resolver` step 7 invokes this skill after a real rebase has rewritten branch history, it passes this flag so the Step 5f push uses `git push --force-with-lease` instead of plain `git push`. Standalone (no flag) the push stays a plain fast-forward `git push` as today.
 
 ## Prerequisites
 
@@ -112,7 +114,9 @@ Print a single Markdown table (do **not** use `AskUserQuestion` — the table is
 | 4 | DEFER | lib/baz.dart:88        | dave      | should also handle the V2 endpoint… | reply: follow-up ticket needed             |
 ```
 
-Then ask the user in plain text:
+**Under `--auto`** — skip the prompt entirely (standing approval; this is the ONLY thing `--auto` bypasses). Still BUILD the table above and **capture it verbatim** so it can be reproduced in the Step 6 report — the human reviews it after the fact instead of before. Execute all rows (no `skip` selection is possible without a prompt). Then continue to Step 5.
+
+**Default (no `--auto`)** — ask the user in plain text:
 
 > Approve all? Reply `yes` to execute, or list row numbers to skip (e.g. `skip 2,4`).
 
@@ -142,9 +146,11 @@ Run, in order, and **abort before commit** if any step fails:
 If `/format` produces additional formatting diffs, fold them into the same staged set and continue. If `/check-test` fails:
 - Print the failing test output.
 - Leave the working tree dirty (do **not** revert the FIX edits).
-- Abort the skill with a clear message: "Build sanity failed — fix the failing tests/analyzer warnings, then re-run /resolve-pr-comments to continue." No replies are posted, no thread is resolved, nothing is pushed.
+- Abort the skill. No replies are posted, no thread is resolved, **nothing is pushed** (not even an already-applied rebase commit — see Step 5f). This is a real build failure and stopping here is by design.
+  - **Default mode**: print "Build sanity failed — fix the failing tests/analyzer warnings, then re-run /resolve-pr-comments to continue."
+  - **Under `--auto`**: this is a **TERMINAL** state — emit the report (Step 6) with `needs-human: comment-fix-failed-tests` and stop. The dirty worktree is left in place for a human to inspect.
 
-This is the only gate after the strategy-table approval, and it only triggers on real build failures — clean runs continue straight through to commit.
+This gate is **not** bypassed by `--auto` — `--auto` waives only the strategy-table prompt (Step 4), never this build-sanity abort (owner decision M3). It is the second, mandatory gate after strategy approval, and it triggers only on real build failures — clean runs continue straight through to commit.
 
 **5c. Commit**
 
@@ -173,6 +179,7 @@ Reply templates (English, terse — no emoji, no "thanks for the review", no boi
 - `REPLY`:  `<direct answer, 1-3 sentences>.`
 - `STALE`:  `Already addressed in <SHA>. <one-sentence what changed>.`
 - `DEFER`:  `Out of scope for this PR — tracking as follow-up. Will file <ticket-prefix> after merge.` (If a ticket already exists, cite it.)
+  - **Under `--auto`**: post **no** DEFER promise-reply at all (owner decision D16) — nobody in the loop actually files the ticket, so the "will file…" promise would be unkept. The DEFER row is still classified and counted; it is surfaced in the Step 6 report only (and its thread is left open, as in default mode). Default (no flag) keeps the reply above unchanged.
 
 `<SHA>` for FIX = the commit just created in 5c. For STALE = the historical commit that resolved it (find via `git log -S '<symbol>' -- <path>` or `git blame`).
 
@@ -191,11 +198,23 @@ Do **not** resolve FIX/REPLY/DEFER threads — leave them for the reviewer.
 
 **5f. Push**
 
+**Default (standalone)** — plain fast-forward push:
+
 ```bash
 git push
 ```
 
 If the branch has divergent upstream, fail loudly — do not force-push.
+
+**Callee push mode (`--force-with-lease`, owner decision D14)** — when invoked from `/ggx-pr-resolver` step 7 with the `--force-with-lease` flag, the caller has just done a real rebase that rewrote branch history upstream of these comment-fix commits, so a plain `git push` would be rejected as non-fast-forward. In that case push with the lease instead:
+
+```bash
+git push --force-with-lease
+```
+
+This is owned here (not in `/ggx-pr-resolver`) so the branch is pushed exactly **once** per resolver pass, carrying both the rebase commit and the comment-fix commit. A lease rejection (someone pushed between the caller's fetch and this push) → fail loudly; never escalate to a plain `--force`. The standalone path above is unaffected — `--force-with-lease` is used **only** when this flag is passed.
+
+If the Step 5b build-sanity gate aborted, this step is never reached — nothing is pushed regardless of which push mode applies.
 
 ### 6. Final report
 
@@ -212,6 +231,11 @@ Resolved <N> PR comments on #<PR#>:
 Pushed to <HEAD_REF>. PR: <PR_URL>
 ```
 
+**Under `--auto`** the report additionally:
+- Reproduces the Step 4 strategy table **verbatim** (the human did not see it before execution since the prompt was auto-approved — this is its review point).
+- Reports each DEFER row as listed-only (no promise-reply was posted; see Step 5d / D16).
+- If the Step 5b build-sanity gate aborted, the report's terminal line is `needs-human: comment-fix-failed-tests` instead of the `Pushed to …` line — nothing was pushed and the worktree is left dirty for inspection.
+
 Done. No follow-up prompts.
 
 ## Failure modes
@@ -225,6 +249,6 @@ Done. No follow-up prompts.
 
 - This skill does **not** run a `/code-review` / `verify-agent` correctness audit on the FIX edits. It only runs `/format` + `/check-test` as a build-sanity gate.
 - This skill does **not** resolve threads on your behalf except for `STALE`. The reviewer owns thread closure on FIX/REPLY/DEFER.
-- This skill does **not** force-push, rebase, or rewrite history.
+- This skill does **not** rebase or rewrite history. It does **not** force-push in standalone use; the one exception is the `--force-with-lease` callee push mode (Step 5f, owner decision D14) — and even then only a leased push, never a plain `--force`.
 - This skill does **not** post anything to Linear — it operates purely on GitHub.
 - This skill does **not** ask follow-up questions after the strategy table is approved (except when the build-sanity gate fails, in which case it aborts cleanly without prompts).
