@@ -14,7 +14,7 @@ Drives the OpenSpec artifact prep + apply loop. State A creates artifacts from s
 | `--auto` | inline in current session | none | inline in current session |
 | `default` | inline in main session | `AskUserQuestion` between prep and apply | spawn `dev-agent` (opus, worktree-isolated) |
 
-Why flipped: `/ggx-dispatcher` invokes `/dev:ff --auto` inside a `general-purpose` subagent. That subagent cannot reliably nest-spawn an opus `dev-agent`, so `--auto` must be inline end-to-end. Default mode runs from a main session that can spawn freely — so the heavy `/opsx:apply` work is isolated into dev-agent for context savings, and `dev-agent` gains a real caller. Only `apply` is mode-conditional. `figma` and `align` always go through their (sonnet) subagents because neither has a meaningful HITL gate and nested sonnet spawns work in practice today (officially unsupported — see `ARCHITECTURE.md` "Nested-spawn constraint"; each carries a one-time inline fallback for spawn failure).
+Why flipped: `/ggx-dispatcher` invokes `/dev:ff --auto` inside a `general-purpose` subagent. That subagent cannot reliably nest-spawn an opus `dev-agent`, so `--auto` must be inline end-to-end. Default mode runs from a main session that can spawn freely — so the heavy `/opsx:apply` work is isolated into dev-agent for context savings, and `dev-agent` gains a real caller. Only `apply` is mode-conditional on the `--auto` flag itself. `figma` and `align` default to their (sonnet) subagents in both modes because neither has a meaningful HITL gate and nested sonnet spawns work in practice today (officially unsupported — see `ARCHITECTURE.md` "Nested-spawn constraint"); on spawn failure each degrades to a one-time inline fallback instead of running the subagent.
 
 ## Inputs
 

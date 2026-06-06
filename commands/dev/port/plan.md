@@ -132,7 +132,7 @@ Run `pm-agent` and `designer-agent` in parallel against the dev-notes grounding 
    Do NOT emit `## Open Questions`.
    ```
 
-7. **Wait for both, handle failure.** Here "fail/empty" explicitly includes the case where the `Agent` tool itself is unavailable or errored (nested spawns are officially unsupported — see `ARCHITECTURE.md` "Nested-spawn constraint"); the existing retry-once (pm) / retry-once + placeholder (designer) paths below already cover it, so /port:plan adds no inline-fallback machinery (R-excluded — its parallel-dispatch invariant resists inlining).
+7. **Wait for both, handle failure.** Here "fail/empty" explicitly includes the case where the `Agent` tool itself is unavailable or errored (nested spawns are officially unsupported — see `ARCHITECTURE.md` "Nested-spawn constraint"); the existing retry-once (pm) / retry-once + placeholder (designer) paths below already cover it, so /port:plan adds no inline-fallback machinery (excluded per the `/port:plan` note under the R1–R5 table in `ARCHITECTURE.md` "Nested-spawn constraint" — its parallel-dispatch invariant resists inlining).
    - HITL:
      - `pm-agent` fail/empty → `AskUserQuestion`: `retry / abort` (skipping is fatal).
      - `designer-agent` fail/empty → `AskUserQuestion`: `retry / skip / abort`. On `skip`, atomic-write a placeholder note: `# Design notes unavailable\n\nAgent failed; user opted to skip. Treat as backend-only.\n` to `design-notes.md`.
