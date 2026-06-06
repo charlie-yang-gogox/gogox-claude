@@ -946,10 +946,14 @@ post ONE run-level digest via `/_slack-notify digest ggx-dispatcher`:
 - Include the `Report :` path so the Slack message links back to the
   full table.
 
-The helper owns emoji/token mapping, `#needs-human` tagging, and the
-fail-soft send; it always exits 0 — its outcome never affects this
-step. `--dry-run` stops at §4.0 and never reaches here, so dry runs are
-naturally Slack-silent.
+The helper owns emoji/token mapping, `#needs-human` tagging, config
+discovery (its Step 0 reads the fixed path
+`~/.claude/commands/profiles/ggx-slack.json` and no-ops silently when
+absent/disabled), and the fail-soft send; it always exits 0 — its
+outcome never affects this step. **Invoke it unconditionally — do NOT
+pre-check the config file yourself and skip the call when you don't
+find it.** `--dry-run` stops at §4.0 and never reaches here, so dry
+runs are naturally Slack-silent.
 
 STOP.
 
@@ -974,7 +978,7 @@ the data).
 - **Lock is released on every exit path.** Including aborts in Step 0/1, empty-tickets in Step 2/3, port config missing in Step 3.5, dry-run in Step 4, partial lock in Step 4.2, and normal completion in Step 6.5.
 - **`branch_prefix: auto` repos require `--team:<KEY>`.** No silent fan-out across teams.
 - **All user-facing output is English.** Per repo convention.
-- **Slack notify points are exclusively §4.2 (batch-abort) and §6.5 (digest).** Both go through `/_slack-notify` (opt-in via `~/.claude/ggx-slack.json`, fail-soft, always exit 0). NEVER insert a notify call between the §4.3 dispatch table and the §5.3 spawns — the table + N `Agent` calls must stay in one assistant message; any tool call in between breaks that contract. No per-ticket or batch-start pings — the §6.5 digest is the batch's single Slack surface.
+- **Slack notify points are exclusively §4.2 (batch-abort) and §6.5 (digest).** Both go through `/_slack-notify` (opt-in via `~/.claude/commands/profiles/ggx-slack.json` — the install.sh symlink to `commands/dev/profiles/ggx-slack.json`; fail-soft, always exit 0). **Invoke the skill unconditionally — NEVER probe the config path yourself to decide whether to call it.** Config discovery, the enabled gate, and the silent no-op all live in `/_slack-notify` Step 0; a caller that hand-checks paths and guesses wrong silently drops the digest (this happened on 2026-06-05 — two stale paths were probed, the run mis-concluded "unconfigured", and the digest was skipped). NEVER insert a notify call between the §4.3 dispatch table and the §5.3 spawns — the table + N `Agent` calls must stay in one assistant message; any tool call in between breaks that contract. No per-ticket or batch-start pings — the §6.5 digest is the batch's single Slack surface.
 - **In-flight labels (Plan X) are managed exclusively by dispatcher + `*:ship`.** `dispatcher-port-in-flight` / `dispatcher-dev-in-flight` are added by §4.1 lock and removed by `/dev:ship` / `/port:ship` on success, by §3.1 PR-exists on stale-state cleanup, and by §4.2 rollback on fresh lanes. They are NEVER added by `/dev:start`, `/port:start`, or any other code path — those routes are for manual users who do not want dispatcher to auto-resume their work. Adding the label outside the dispatcher would silently make manual runs dispatcher-recoverable, breaking the user's expectation of "if I stopped, it stays stopped."
 
 ## Linear label state machine (Plan X)
