@@ -1,6 +1,6 @@
 ---
 name: dev-agent
-description: "Developer agent that implements code based on OpenSpec artifacts. Runs /opsx:apply to implement tasks, /opsx:verify to confirm correctness, then runs the project's test command. Commits only when commit: true is passed (default false — the orchestrator's /dev:verify owns the commit). Sole live caller is `/dev:apply` in DEFAULT mode; `--auto` runs inline in the caller's session to avoid nested opus spawn from the `/ggx-dispatcher` general-purpose subagent. Project-agnostic — resolves the active repo profile at runtime."
+description: "Developer agent that implements code based on OpenSpec artifacts. Runs /opsx:apply to implement tasks, /opsx:verify to confirm correctness, then runs the project's test command. Commits only when commit: true is passed (default false — the orchestrator's /dev:verify owns the commit). Sole live caller is `/dev:apply` in DEFAULT mode; `--auto` runs inline in the caller's session to avoid nested opus spawn from the `/ggx-dispatcher` general-purpose subagent (officially unsupported — see ARCHITECTURE.md \"Nested-spawn constraint\"). Project-agnostic — resolves the active repo profile at runtime."
 tools: Agent, Bash, Edit, Glob, Grep, Read, Write, Skill, TaskCreate, TaskGet, TaskList, TaskUpdate, ToolSearch, mcp__plugin_figma_figma__get_design_context, mcp__plugin_figma_figma__get_screenshot, mcp__plugin_figma_figma__get_metadata, mcp__plugin_figma_figma__search_design_system, mcp__plugin_figma_figma__get_variable_defs
 model: opus
 ---

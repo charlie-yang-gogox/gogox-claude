@@ -8,7 +8,8 @@ description: >
   dev-consult-agent (opus, worktree-isolated) via the Agent tool; --auto runs
   the dev-consult logic inline in the current session (no nested-Agent
   spawn — required because /ggx-dispatcher invokes this via a general-purpose
-  subagent). `--simple` mode runs a lean variant with no worktree, no
+  subagent; officially unsupported, see ARCHITECTURE.md "Nested-spawn
+  constraint"). `--simple` mode runs a lean variant with no worktree, no
   OpenSpec scaffold, and an interactive Q&A loop that posts the final
   analysis as a Linear comment.
 ---
@@ -69,7 +70,7 @@ Parse `$ARGUMENTS`. If `--simple` is present, jump to **Simple mode** below. Oth
    | Mode | Execution path | Why |
    | -- | -- | -- |
    | `default` | spawn `dev-consult-agent` via the `Agent` tool — `subagent_type: dev-consult-agent`, `model: opus`, `isolation: worktree` | Main session has `Agent` available; isolating into a worktree-scoped opus subagent keeps the heavy context out of the orchestrator. |
-   | `--auto` | run the dev-consult logic **inline** in the current session — no `Agent` spawn | `--auto` may run inside a `general-purpose` subagent dispatched by `/ggx-dispatcher`. Nested-Agent spawns from a subagent are unreliable / unavailable — inlining is the only safe path. Same constraint as `/dev:apply` (see `commands/dev/dev/apply.md:15-17`). |
+   | `--auto` | run the dev-consult logic **inline** in the current session — no `Agent` spawn | `--auto` may run inside a `general-purpose` subagent dispatched by `/ggx-dispatcher`. Nested-Agent spawns from a subagent are officially unsupported (see `ARCHITECTURE.md` "Nested-spawn constraint") — inlining is the only safe path. Same constraint as `/dev:apply` (see `commands/dev/dev/apply.md:15-17`). |
 
    **`default` mode — spawn the agent.** Include `mode: "bypassPermissions"` on the call only if any caller passed it through; otherwise omit. Pass this prompt body (verbatim shape — fill placeholders):
 
@@ -254,6 +255,6 @@ The local-yaml write-back uses the same pattern — never write to the yaml in p
 - All Linear MCP calls use `mcp__claude_ai_Linear__*`. Never `mcp__linear-server__*`.
 - All `.port/` writes from this stage are atomic via `mktemp` + `mv`.
 - The labeled-ID convention (R-N, P-N) MUST appear in `dev-notes.md` regardless of execution path — agent spawn (default mode) or inline orchestrator (`--auto` mode). `/spec-lint` Check 8 fires when notes have zero labeled IDs.
-- In `--auto` mode the dev-consult logic runs inline in the current session — do NOT call the `Agent` tool. Nested-Agent spawns from a `/ggx-dispatcher`-spawned `general-purpose` subagent fail (`Task`/`Agent` not available); inline execution is the only working path. Same constraint as `/dev:apply --auto` (see `commands/dev/dev/apply.md:15-17`).
+- In `--auto` mode the dev-consult logic runs inline in the current session — do NOT call the `Agent` tool. Nested-Agent spawns from a `/ggx-dispatcher`-spawned `general-purpose` subagent fail (`Task`/`Agent` not available); inline execution is the only working path. Same constraint as `/dev:apply --auto` (see `commands/dev/dev/apply.md:15-17`); officially unsupported — see `ARCHITECTURE.md` "Nested-spawn constraint".
 - Simple mode posts a comment, never edits the description (full mode owns description writes).
 - Timings JSONL is appended in full mode only; simple mode is best-effort and ephemeral.

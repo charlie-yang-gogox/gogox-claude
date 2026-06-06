@@ -7,7 +7,8 @@ description: >
   `.port/synth-report.md`. Mode-conditional synth execution: default spawns
   synth-agent (opus pinned) via the Agent tool; --auto runs the synth loop
   inline in the current session (no nested-Agent spawn — required because
-  /ggx-dispatcher invokes this via a general-purpose subagent). Findings
+  /ggx-dispatcher invokes this via a general-purpose subagent; officially
+  unsupported, see ARCHITECTURE.md "Nested-spawn constraint"). Findings
   are NOT auto-fixed here — `/port:revise` owns that loop.
 ---
 
@@ -115,7 +116,7 @@ Synthesize OpenSpec artifacts (`proposal.md`, `design.md`, `tasks.md`, `specs/*/
    | Mode | Execution path | Why |
    | -- | -- | -- |
    | `default` | spawn `synth-agent` via the `Agent` tool — `subagent_type: "synth-agent"` (model is pinned to `opus` in the agent frontmatter per D21; do NOT pass a model override) | Main session has `Agent` available; isolating into an opus subagent keeps the hallucination-sensitive synthesis context away from the orchestrator's working memory. |
-   | `--auto` | run the synth loop **inline** in the current session — no `Agent` spawn | `--auto` may run inside a `general-purpose` subagent dispatched by `/ggx-dispatcher`. Nested-Agent spawns from a subagent are unreliable / unavailable — inlining is the only safe path. Same constraint as `/port:explore --auto` and `/dev:apply --auto`. |
+   | `--auto` | run the synth loop **inline** in the current session — no `Agent` spawn | `--auto` may run inside a `general-purpose` subagent dispatched by `/ggx-dispatcher`. Nested-Agent spawns from a subagent are officially unsupported (see `ARCHITECTURE.md` "Nested-spawn constraint") — inlining is the only safe path. Same constraint as `/port:explore --auto` and `/dev:apply --auto`. |
 
    **`default` mode — spawn the agent.** Include `mode: "bypassPermissions"` in `--auto`-propagated callers; otherwise omit. Pass this prompt body (verbatim shape — fill placeholders):
 
@@ -232,7 +233,7 @@ The synth-agent is also bound to atomic writes for every artifact it produces (i
 - **Pre-conditions are non-negotiable.** All three notes files must exist. Missing any → STOP, do NOT run synth (neither spawn nor inline). The error message must point the user at `/port:plan` (which itself points at `/port:explore` if needed).
 - **Synth owns artifact generation; orchestrator owns context.md, validate, lint.** In `default` mode this means the spawned synth-agent fills artifacts and the orchestrator (this stage) handles validate + lint. In `--auto` mode the orchestrator runs synth inline AND handles validate + lint — but the inline synth loop (step 6 `--auto` path) is STILL forbidden from invoking validate or lint inside the loop itself; those run in step 7 / step 8 as separate stages.
 - **synth-agent model is `opus` (D21) in default mode.** Do NOT pass a model override on the Agent call. Trust the agent frontmatter. In `--auto` mode the orchestrator's own model handles synth — the dispatcher path inherits whatever model the parent session runs (currently opus-class). Do not attempt to swap models inline.
-- **In `--auto` mode the synth loop runs inline in the current session — do NOT call the `Agent` tool.** Nested-Agent spawns from a `/ggx-dispatcher`-spawned `general-purpose` subagent fail (`Task`/`Agent` not available); inline execution is the only working path. Same constraint as `/port:explore --auto` and `/dev:apply --auto`.
+- **In `--auto` mode the synth loop runs inline in the current session — do NOT call the `Agent` tool.** Nested-Agent spawns from a `/ggx-dispatcher`-spawned `general-purpose` subagent fail (`Task`/`Agent` not available); inline execution is the only working path. Same constraint as `/port:explore --auto` and `/dev:apply --auto`; officially unsupported — see `ARCHITECTURE.md` "Nested-spawn constraint".
 - **Validate errors do NOT abort.** They are surfaced in the report and the summary. `/port:revise` is the fix point — keeping the synth → revise boundary clean is the whole reason synth and revise are separate commands.
 - **`/spec-lint` is invoked, never reimplemented inline.** All nine checks live in `commands/dev/spec-lint.md`. This command consumes its `.port/synth-report.md` output.
 - **Append validation, do not replace the lint report.** Step 9 reads the existing `.port/synth-report.md` (lint output) and appends a `## openspec validate` section. Atomic-write the merged result back.

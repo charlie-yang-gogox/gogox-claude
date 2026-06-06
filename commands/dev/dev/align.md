@@ -16,7 +16,7 @@ The heavy lifting (full receipt + full artifact prose scan) runs inside `align-s
 
 ## Outputs
 
-- `.dev/align-result.md` (subagent's structured return). **This file is the stage's done marker.**
+- `.dev/align-result.md` (subagent's structured return, or main-session-written on the Step 2b inline fallback). **This file is the stage's done marker.** The inline fallback obeys the same AGENTS.md Result file contract (`Status:`/`Outputs:`/`Summary:`/`Data:`) and marks its origin with a trailing `# Provenance: inline-fallback` comment-line — never inside `Summary:` or `Status:`.
 - On conflict in auto: `claude-reports/<ticket-id>/figma-alignment.md` (subagent-written) and STOP.
 - On conflict in default: HITL prompt with three options.
 
@@ -65,9 +65,10 @@ RESULT=".dev/align-result.md"
 
 if [ ! -f "$RESULT" ]; then
   # Per agents/AGENTS.md §6 failure handling: retry once with prefix instructing
-  # the subagent to write the result file before returning. On second failure,
-  # save its chat output to claude-reports/<ticket_id>/subagent-malformed-align.md and STOP.
-  : retry-or-stop
+  # the subagent to write the result file before returning. Still no file → fall to
+  # the Step 2b inline fallback. (If the Agent call itself errored / was unavailable,
+  # skip the retry and go straight to Step 2b — see the failure ladder there.)
+  : retry-or-fallback
 fi
 
 STATUS=$(grep -m1 '^Status:' "$RESULT" | sed 's/^Status:[[:space:]]*//')
@@ -84,6 +85,26 @@ case "$STATUS" in
     exit 1 ;;
 esac
 ```
+
+### Step 2b: Inline fallback (one-time, on spawn failure)
+
+Nested level-2 spawns are officially unsupported (`agents/AGENTS.md`; sub-agents docs: subagents cannot spawn other subagents). `align-subagent` is a sonnet spawn that works in practice today but is undefined behavior — see `ARCHITECTURE.md` "Nested-spawn constraint" R2. When the spawn does not produce `.dev/align-result.md`, this stage degrades to running the subagent's contract inline. Same failure ladder as `/dev:figma`:
+
+```
+spawn → Agent call itself errors / unavailable?     → inline fallback now (retry is pointless)
+      → returned but no .dev/align-result.md?         → existing retry-once → still no file? → inline fallback
+      → inline also produces no legal result file?    → subagent-malformed-align.md + STOP (no loop)
+```
+
+**Independence note — why align may inline but `/dev:verify` may not (R2 vs R3).** `align` audits the **upstream `/port` artifacts** under `openspec/changes/<n>/` — prose written by a *different* run, not by this session. Running its contract inline is therefore NOT self-audit: the auditor and the author are still different parties. That is exactly why align qualifies for R2's fallback while `verify-agent` (which would be auditing code this same `--auto` session just wrote) stays in R3 with no fallback.
+
+**Inline execution.** In the current session, run the `agents/dev/align-subagent.md` contract verbatim against the same inputs (`receipt_path = .dev/figma-context.md`, `change_dir = $CHANGE_DIR`, `ticket_id = $TICKET_ID`): extract cited node IDs, run the per-node citation + token-grounding (paragraph-scoped verb) checks, decide CLEAR vs CONFLICT, and atomic-write `.dev/align-result.md` in the **exact AGENTS.md Result file contract** (`Status:` / `Outputs:` / `Summary:` / `Data:`). On CONFLICT, also write `claude-reports/<ticket_id>/figma-alignment.md` with the per-node conflict list, identical to the subagent path.
+
+**Provenance — trailing comment-line, never in `Status:`/`Summary:`.** After the contract block, append `# Provenance: inline-fallback` as the file's last line. This is verified inert: Step 2's `grep -m1 '^Status:'` and the walker's `grep -q '^Status: CLEAR'` (`ff.md`) both anchor on the first matching line and never see a trailing comment. Do **not** fold provenance into `Summary:` (the ≤200-char contract that is surfaced to the user verbatim) or `Status:`.
+
+**Re-verify, then proceed.** After the inline write, re-run the Step 2 `Status:` parse on the file you just wrote, then branch on its `Status` exactly as the spawn path would (CLEAR → Step 4; CONFLICT → Step 3).
+
+**One-time guard** (mirrors `commands/dev/dev/apply.md:334`): the inline fallback runs at most once per `/dev:align` invocation. If the inline run also produces no legal result file, save the context to `claude-reports/<ticket_id>/subagent-malformed-align.md` and STOP — do not loop.
 
 ## Step 3: On CONFLICT
 

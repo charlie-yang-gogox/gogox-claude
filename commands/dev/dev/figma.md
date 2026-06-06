@@ -18,7 +18,7 @@ The heavy I/O (per-node MCP calls, raw JSON persistence, receipt assembly) runs 
 ## Outputs
 
 - `.dev/figma-raw/<sanitized-nodeId>.json` — one per fetched node (subagent-written).
-- `.dev/figma-context.md` — receipt + summary (subagent-written). **This file is the stage's done marker.** First line encodes status: `Fetched: <ISO> sha256=...` (success) or `Fetched: FAILED — <error>`.
+- `.dev/figma-context.md` — receipt + summary (subagent-written, or main-session-written on the Step 4b inline fallback). **This file is the stage's done marker.** First line encodes status: `Fetched: <ISO> sha256=...` (success) or `Fetched: FAILED — <error>`. When the inline fallback writes the file, **line 2** carries `Provenance: inline-fallback (figma-subagent contract run in main session; spawn unavailable)` — a legal part of the receipt that every downstream parser ignores (they read either `head -1` or `### <fileKey>:<nodeId>` body sections).
 
 ## Step 0: Inline precondition
 
@@ -73,9 +73,11 @@ Wait for it to return. The subagent writes `.dev/figma-raw/*.json` and `.dev/fig
 CTX=".dev/figma-context.md"
 
 if [ ! -f "$CTX" ]; then
-  # Subagent didn't write it — retry once with prefix instructing it to write the file
-  # before returning. On second failure, save chat to claude-reports/<ticket_id>/subagent-malformed-figma.md and STOP.
-  : retry-or-stop
+  # Subagent returned but wrote no file — retry once with prefix instructing it to write
+  # the file before returning. Still no file → fall to the Step 4b inline fallback.
+  # (If the Agent call itself errored / was unavailable, skip the retry and go straight
+  # to Step 4b — retrying an unavailable spawn is pointless. See the failure ladder there.)
+  : retry-or-fallback
 fi
 
 FIRST=$(head -1 "$CTX")
@@ -100,6 +102,24 @@ case "$FIRST" in
     exit 1 ;;
 esac
 ```
+
+### Step 4b: Inline fallback (one-time, on spawn failure)
+
+Nested level-2 spawns are officially unsupported (`agents/AGENTS.md`; sub-agents docs: subagents cannot spawn other subagents). `figma-subagent` is a sonnet spawn that works in practice today but is undefined behavior — see `ARCHITECTURE.md` "Nested-spawn constraint" R2. When the spawn does not produce a receipt, this stage degrades to running the subagent's contract inline instead of hard-stopping. The failure ladder (the inline fallback is a **sibling branch** of the existing retry, not a replacement):
+
+```
+spawn → Agent call itself errors / unavailable?     → inline fallback now (retry is pointless)
+      → returned but no .dev/figma-context.md?       → existing retry-once → still no file? → inline fallback
+      → inline also produces no legal receipt?        → subagent-malformed-figma.md + STOP (no loop)
+```
+
+**Inline execution.** In the current session, run the `agents/dev/figma-subagent.md` contract verbatim against the same `urls` list: per-node `get_design_context` / `get_screenshot` / `search_design_system` / `get_variable_defs` MCP fetch, persist each raw `get_design_context` body to `.dev/figma-raw/<sanitizedNodeId>.json` (atomic `mktemp` + `mv`), compute sha256, then atomic-write `.dev/figma-context.md` with the **identical first-line format** (`Fetched: <ISO> sha256=<id1>=<hash1>,...` on success, `Fetched: FAILED — <error>` on MCP failure) and the same `### <fileKey>:<nodeId>` body sections (including the `Components used:` / `Design tokens:` lines that `align-subagent` reads). Nothing about the file contract changes — the only difference is which session wrote it.
+
+**Provenance — line 2, never line 1.** Write `Provenance: inline-fallback (figma-subagent contract run in main session; spawn unavailable)` as the receipt's **second** line. This is verified inert against every downstream consumer: `ff.md`'s walker and Step 4a both `head -1` the first line; Step 5's gate greps `### <fileKey>:<nodeId>` body sections and the `sha256=` portion of line 1; `align.md` reads `head -1`. None of them read line 2.
+
+**Re-verify, then proceed.** After the inline write, re-run the Step 4a first-line parse on the file you just wrote, then fall through to Step 5. Step 5's provenance gate (sha256 cross-check + body coverage) runs on the inline output exactly as it would on a subagent's output — it is the natural safety net that catches a malformed inline receipt.
+
+**One-time guard** (mirrors `commands/dev/dev/apply.md:334`): the inline fallback runs at most once per `/dev:figma` invocation. If the inline run also fails to produce a legal receipt, save the context to `claude-reports/<ticket_id>/subagent-malformed-figma.md` and STOP — do not loop.
 
 ## Step 5: Provenance gate (hard block — main session, not subagent)
 
