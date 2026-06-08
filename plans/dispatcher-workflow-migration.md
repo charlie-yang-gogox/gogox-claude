@@ -17,14 +17,28 @@
   §5.2 precondition + allowlist 兩 prefix）。
 - **allowlist（user-global `~/.claude/settings.json`）**：git/gh/openspec/`yq`/flutter… +
   `mcp__claude_ai_Linear__*` + `mcp__linear-server__*` + Jira + figma。
-- **⚠️ workflow 路徑仍 UNVALIDATED**：2026-06-08 的 CAF-548 e2e 是 design bug → 走 inline、零 Workflow 呼叫。
+- **✅ Phase A 真·驗證 — GREEN（2026-06-08，CAF-371）**：四次 `/ggx-dispatcher` 一個 session。run 1 是 default
+  §5.3 路徑（CAF-393 → PR #515）；run 2-4 走 `--workflow --test`。CAF-371 跨 run 3（fresh-port →
+  port-paused）→ 你的 `/spec-review` → run 4（fresh-dev → PR #517）跑完整生命週期。**lifecycle correctness 全綠**：
+  lock swap / in-flight label / status transition / fallback / empty-batch 全部照 spec，無卡 lock、無漏 label、
+  無重複註解。Go-gate 過。
+- **驗證逼出的兩個 workflow-script bug（已修，本批 commit）**：
+  - **P1** — `meta.description` 用了 `"..." + "..."` 串接，非 pure literal → Workflow tool 直接拒絕啟動。收成單一字串。
+  - **P2** — `args` 在此 harness 以 **JSON 字串**抵達（非 live array，§5.2 line 607-608 的文件描述是錯的）；
+    原 `Array.isArray(args)` 直接 fall through 到 empty-roster no-op（0 agent、0 mutation，看起來像「沒工作」）。
+    加 `JSON.parse` fallback 修好，run 4 無 patch 即過。
+- **🟦 P3 澄清（勿再沿用錯誤結論）**：retro 一度宣稱「`--workflow` 讓 verify-agent 變 level-1、修掉 verify 去相關性降級」
+  —— **錯**。script 只 spawn **worker**（level-1）；verify-agent 是 worker 在 `/dev:verify` 裡 spawn 的（level-2），
+  兩條路徑皆然。`--workflow` **不改變 verify-agent 深度**。會被 script 升到 level-1 的只有 **script 直接 spawn 的東西**
+  （= Phase B 的 ui-tweak opus judges）。把 `--workflow` 設預設可以有別的理由（統一路徑、中間狀態不佔 main context），
+  但「修好 verify 去相關性」不是其中之一。另：verify-agent 是 **sonnet**，level-2 sonnet 本該 work（見 R2/R3），run 1
+  是否真降級存疑（報告未附 `.dev/verify-pass.md` Status）。
 
 **接下來（嚴格依序，gate 不過不前進）：**
 
-1. **Phase A 真·驗證 Go-gate**（關鍵路徑）：用一張 **feature/bug 票（非 design bug）**，從 gogox-client-flutter
-   session 以 1-row roster 直呼 workflow script（或 `--workflow --test` 整批）。判準：worker 平行起、**無 30s+ 靜默**
-   （靜默=撞未授權 shell/MCP，立即 TaskStop 記卡點）、結構化回傳、失敗票保留 in-flight label 且不重複貼 Linear、
-   §6.4 表與非-workflow 路徑一致。唯一硬 No-Go = allowlist 蓋不住 ff 全部呼叫。回滾 = 拿掉 flag。
+1. ~~**Phase A 真·驗證 Go-gate**~~ ✅ **DONE（2026-06-08，見上）**。剩餘掃尾：把 P1/P2 修正 commit + push +
+   propagate 到所有 clone（未 propagate 前其他機器的 `--workflow` 是 silent no-op）；修 §5.2 line 607-608 的
+   args 文件描述（改成「stringified，script 負責 parse」）。
 2. **Phase B（A 綠燈後）**：§7 方案 (a) —— `runUiTweak` 由 script 直接平行 spawn `ui-verify-agent`(sonnet) +
    `dev-reviewer`(opus) 兩位 judge（level-1，opus 合法）+ finisher，**消除 §5.0 inline 例外**。
    關鍵證明：opus judge 在 script-spawned context 成功 + tier 未降級。風險：script 重寫 `infer_ui_stage` 部分階段序
