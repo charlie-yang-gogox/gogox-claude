@@ -9,8 +9,11 @@ description: >
   `/ggx-work <ID> --auto` INLINE in the dispatcher main session instead of
   a spawned subagent, because the ui-tweak audit panel spawns an opus
   judge and nested opus spawns from a general-purpose subagent are
-  unreliable. Single-repo, cwd-driven; user-invoked from a Claude session
-  opened in the target repo on its default branch.
+  officially unsupported (sub-agents docs: subagents cannot spawn other
+  subagents) — sonnet nesting works in practice today but is undefined
+  behavior (see ARCHITECTURE.md "Nested-spawn constraint"). Single-repo,
+  cwd-driven; user-invoked from a Claude session opened in the target
+  repo on its default branch.
 Prerequisite: >
   - Linear MCP authenticated; gh CLI authenticated.
   - cwd is the main worktree of a registered Linear repo, on default branch,
@@ -481,10 +484,13 @@ the inline lane executes).
 
 **Why inline.** `/route` resolves a `design bug` ticket to `/ui-tweak:ff`,
 whose audit stage spawns a decorrelated dual-judge panel:
-`ui-verify-agent` (**sonnet**) + `dev-reviewer` (**opus**). Nested sonnet
-spawns from a general-purpose subagent are known to work in practice (see
-the §5.3 `model` rationale below and `commands/dev/dev/apply.md`), but
-**nested opus spawns are not** — inside a spawned worker the opus judge
+`ui-verify-agent` (**sonnet**) + `dev-reviewer` (**opus**). Nested spawns
+are officially unsupported (sub-agents docs: subagents cannot spawn other
+subagents — see `ARCHITECTURE.md` "Nested-spawn constraint"); nested sonnet
+spawns from a general-purpose subagent work in practice today but are
+undefined behavior (see the §5.3 `model` rationale below and
+`commands/dev/dev/apply.md`), and **nested opus spawns do not work at
+all** — inside a spawned worker the opus judge
 would fail, and the panel's tier-decorrelation (`dev-reviewer.md`: the
 tier-pin is why the two judges' misses are not positively correlated) is
 load-bearing: downgrading the judge to sonnet would collapse both judges
@@ -572,9 +578,12 @@ Single message, N parallel `Agent` calls (one per non-ui-tweak ticket):
   the dispatcher-spawned subagent itself — which therefore needs opus
   quality reasoning. The `/port:plan` stage still spawns `pm-agent` /
   `designer-agent` (both sonnet) and `/dev:verify` still spawns
-  `verify-agent` (sonnet) — nested sonnet spawns from a subagent are
-  known to work in practice (see `commands/dev/dev/apply.md`
-  rationale), so those stages are NOT inlined.
+  `verify-agent` (sonnet) — nested spawns are officially unsupported
+  (sub-agents docs: subagents cannot spawn other subagents — see
+  `ARCHITECTURE.md` "Nested-spawn constraint"), but nested sonnet spawns
+  from a subagent work in practice today (undefined behavior; see
+  `commands/dev/dev/apply.md` rationale), so those stages are NOT
+  inlined.
 - `prompt`: the dispatch command plus a short loop-driving framing.
   `/ggx-work` itself owns the per-iteration loop discipline (call
   `/route` → execute → repeat); the framing below exists only so the

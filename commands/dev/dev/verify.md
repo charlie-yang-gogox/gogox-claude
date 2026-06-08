@@ -89,6 +89,8 @@ After the agent returns, read `.dev/verify-pass.md`:
 - **`Status: BLOCKED`** → run BLOCKED recovery (Step 2a).
 - **File missing** → treat as `BLOCKED`. Do NOT fall back to "trust the implementer" — absence of report IS the failure signal.
 
+**No inline fallback here (deliberate, R3).** Unlike `/dev:figma` Step 4b and `/dev:align` Step 2b, `verify-agent` is **excluded** from the spawn-failure → inline degradation. In `--auto` the code under audit was written inline in this same session (`commands/dev/dev/apply.md`), so an inline verify would be the implementer auditing their own work — collapsing the decorrelation this stage exists to provide (the self-audit asymmetry). A spawn failure therefore stays a BLOCKED hard-fail; the dispatcher's §6.2 fallback handles it from there. See `ARCHITECTURE.md` "Nested-spawn constraint" R3.
+
 ### Step 2a: BLOCKED recovery sequence (executed once)
 
 1. For each finding in `.dev/verify-pass.md`, edit the affected files to address it.

@@ -14,6 +14,8 @@ Concretely:
 
 If you need to surface information outside your lane, return it via your result file and let the orchestrator (main session) act on it.
 
+One documented exception: under the R2 spawn-failure fallback (`ARCHITECTURE.md` "Nested-spawn constraint"), the orchestrator may write a subagent-owned `.dev/` file itself when it executes that subagent's contract inline — always marked with the provenance convention defined in `commands/dev/dev/figma.md` Step 4b / `commands/dev/dev/align.md` Step 2b. Lane ownership still means "one writer per run", not "one writer ever".
+
 ## 2. No state.json writes
 
 `state.json` (or any `.dev/state*.json`) is read-write only by the orchestrator. Subagents must never write it. This includes appending to `stage_history`, mutating `current_stage`, or setting any nested field.

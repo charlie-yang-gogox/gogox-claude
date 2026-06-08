@@ -13,7 +13,7 @@ Single-PR mode:
 - `/code-review 228` — review PR #228 remotely without checkout
 - `/code-review https://github.com/gogovan/.../pull/228` — same, extracted from URL
 - `/code-review feat/CAF-100` — review by branch name (looks up the PR)
-- `/code-review --auto` — review the current branch inline (no `Agent` spawn). Required when this command runs inside a `/ggx-dispatcher`-spawned `general-purpose` subagent, where nested-Agent spawns are not available. `/dev:review` passes `--auto` automatically. Can be combined with a PR number / branch name.
+- `/code-review --auto` — review the current branch inline (no `Agent` spawn). Required when this command runs inside a `/ggx-dispatcher`-spawned `general-purpose` subagent, where nested-Agent spawns are officially unsupported (see `ARCHITECTURE.md` "Nested-spawn constraint"). `/dev:review` passes `--auto` automatically. Can be combined with a PR number / branch name.
 
 Batch mode (auto-scans all open PRs of the cwd repo, mirrors the `ca/da-flutter-code-review` claude.ai routines):
 
@@ -47,7 +47,7 @@ If the first argument starts with `--batch`, go to **Batch mode**. Otherwise pro
    | Mode | Execution path | Why |
    | -- | -- | -- |
    | default (no `--auto`) | spawn `git-branch-code-reviewer` via the `Agent` tool. If a PR number was resolved, pass `"Review PR #<number> remotely. Do NOT use local git branch — fetch all information via gh CLI."` in the prompt. If no PR number (local mode), use the existing prompt without a PR number. Wait for the agent's review output. | Main session has `Agent` available; isolating into an opus subagent keeps review-prompt context out of the orchestrator. |
-   | `--auto` | run the review **inline** in the current session — no `Agent` spawn | `--auto` is set by `/dev:review` (auto-only stage) when the entire `/dev:ff` pipeline is running inside a `/ggx-dispatcher`-spawned `general-purpose` subagent. Nested-Agent spawns from a subagent are unreliable / unavailable — inlining is the only safe path. Same constraint as `/port:explore --auto`, `/port:synth --auto`, and `/dev:apply --auto`. |
+   | `--auto` | run the review **inline** in the current session — no `Agent` spawn | `--auto` is set by `/dev:review` (auto-only stage) when the entire `/dev:ff` pipeline is running inside a `/ggx-dispatcher`-spawned `general-purpose` subagent. Nested-Agent spawns from a subagent are officially unsupported (see `ARCHITECTURE.md` "Nested-spawn constraint") — inlining is the only safe path. Same constraint as `/port:explore --auto`, `/port:synth --auto`, and `/dev:apply --auto`. |
 
    **`--auto` mode — inline execution.** Do NOT call the `Agent` tool. The current session executes the git-branch-code-reviewer contract directly:
    1. Read `agents/dev/git-branch-code-reviewer.md` (`<gogox-claude-repo>/agents/dev/git-branch-code-reviewer.md`) once. Treat its `## Modes` / `### Step 0` → `### Step 6` / Output format as binding.

@@ -594,8 +594,9 @@ ticket regardless of lane (see `ggx-dispatcher.md` §5.1) — **with one
 exception**: `design bug` tickets run the ui-tweak lane **inline in the
 dispatcher's main session** instead of in a spawned subagent, because the
 ui-tweak audit panel spawns an opus judge (`dev-reviewer`) and nested
-opus spawns from a general-purpose subagent are unreliable (see
-`ggx-dispatcher.md` §5.0). Inside each spawned subagent, `/ggx-work`
+opus spawns from a general-purpose subagent are officially unsupported
+(see `ggx-dispatcher.md` §5.0 and `ARCHITECTURE.md` "Nested-spawn
+constraint"). Inside each spawned subagent, `/ggx-work`
 calls `/route --non-interactive` to pick `/port:ff` / `/dev:ff` /
 `/bug:ff` / `/ui-tweak:ff` from the classification label plus worktree
 filesystem state.

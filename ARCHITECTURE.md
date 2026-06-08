@@ -83,6 +83,41 @@ Not a platform. Not a service. A git repo + 80 lines of bash. The bet is that **
 | **Pre-committed sunset gates** | Internal tools die from sprawl. Writing the kill criteria up front prevents "give it more time" rationalization later. |
 | **Cross-role co-owners** | Bus factor 2. Forces multi-audience design — if a PM owner can't read a skill's SKILL.md, it doesn't merge. |
 
+## Nested-spawn constraint (subagent depth)
+
+The `--auto` dispatcher pipelines fan work out across nested agents. The official position bounds how deep that nesting may safely go.
+
+**Official stance.** The [sub-agents docs](https://code.claude.com/docs/en/sub-agents) state plainly that "subagents cannot spawn other subagents" — nesting is unsupported. The [multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system) post describes the supported shape: a lead (opus) orchestrator that spawns a flat layer of (sonnet) workers — depth-1, no deeper. Our `--auto` pipelines run one level deeper than that: `/ggx-dispatcher` (main) spawns a `general-purpose` worker (level-1), and a few stages inside that worker still spawn their own (level-2) subagents. We have observed empirically that **nested sonnet spawns work in practice today while nested opus spawns fail** — but that observation is reliance on undefined behavior, not a contract. Any Claude Code update may remove it without notice.
+
+```
+                  DEPTH        AGENT                        STATUS
+─────────────────────────────────────────────────────────────────────────────
+level-0   main / dispatcher    /ggx-dispatcher              supported
+            │
+            ▼  spawns
+level-1   worker               general-purpose (/ggx-work)  supported (depth-1)
+            │
+            ▼  spawns           ┌─────────────────────────────────────────────┐
+level-2   leaf subagent        │ opus  → BROKEN (fails inside a spawned worker)│
+                               │ sonnet→ UNDEFINED but working today           │
+                               └─────────────────────────────────────────────┘
+                                 ↑ the danger zone — officially unsupported
+```
+
+**Why we still rely on level-2 sonnet:** the few remaining level-2 sonnet spawns (`/dev:figma`, `/dev:align`, `/dev:verify`, `/port:plan`) keep heavy per-node I/O out of the worker's main context. The R1–R5 rules below say which spawns were inlined away, which kept a fallback, and which deliberately did not.
+
+| Rule | Scope | Decision | Pointer |
+|---|---|---|---|
+| **R1** | Heavy stages in `--auto` (`/opsx:apply`, `/code-review`, `/port:explore`, `/port:synth`) | Inlined — run in the level-1 worker itself, no level-2 spawn. The worker is opus-class so the reasoning quality is preserved. | `commands/dev/dev/apply.md:15-17`, `commands/dev/code-review.md` step 2, `commands/dev/port/explore.md` step 6, `commands/dev/port/synth.md` step 6 |
+| **R2** | Surviving level-2 sonnet spawns (`/dev:figma`, `/dev:align`) | Kept as spawns, but each carries a **one-time inline fallback**: on spawn-failure the stage runs the subagent's contract inline in the worker, writing the SAME output files with the SAME status encoding so downstream parsers need zero changes. The fallback is not free: the raw payloads the subagent exists to absorb land in the worker's context window (read-once-write-discard mitigates; a high-node-count fallback hit is a data point for R5). | `commands/dev/dev/figma.md` Step 4b, `commands/dev/dev/align.md` Step 2b |
+| **R3** | Independence-load-bearing auditors | NO inline fallback. `verify-agent` audits code the worker itself wrote in `--auto`, so an inline verify would be the implementer self-auditing — collapsing the decorrelation the stage exists to provide. Spawn-failure stays a BLOCKED hard-fail. (`/port:plan` is excluded for a different reason — see the `/port:plan` note directly below this table.) | `commands/dev/dev/verify.md` Step 2 |
+| **R4** | `claude -p` headless spawn | The officially supported non-nested escape hatch when a genuinely separate agent is needed. **Not used today** — documented as the forward-looking path so nobody re-invents an unsupported nesting trick. | — |
+| **R5** | Migrating fan-out to Workflow | Deferred decision. Revisit when: the official docs change the nesting limit, sonnet nesting actually breaks, OR the inline design-bug/figma/align lanes grow large enough to bottleneck. | — |
+
+`/port:plan` is excluded from R2's fallback for its own reason: its parallel-dispatch invariant (two agents in one message) resists inlining, and its existing retry-once + designer-placeholder degradation is already graceful. See `commands/dev/port/plan.md` Step 7.
+
+The machine-checkable subagent invariants (output-file contracts, prohibitions) live in `agents/AGENTS.md`; the per-stage spawn-shape rationale lives in `commands/dev/ggx-dispatcher.md` §5.0 / §5.3.
+
 ## Rollout
 
 ```
