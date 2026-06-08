@@ -39,18 +39,19 @@
 1. ~~**Phase A 真·驗證 Go-gate**~~ ✅ **DONE（2026-06-08，見上）**。剩餘掃尾：把 P1/P2 修正 commit + push +
    propagate 到所有 clone（未 propagate 前其他機器的 `--workflow` 是 silent no-op）；修 §5.2 line 607-608 的
    args 文件描述（改成「stringified，script 負責 parse」）。
-2. **Phase B — 已實作（opt-in，待 flutter-repo 驗證）**：§7 方案 (a) 已落地 ——
-   `workflows/ggx-dispatch.workflow.js` 的 `runUiTweak` 由 script 直接 spawn `ui-verify-agent`(sonnet) +
-   `dev-reviewer`(opus) 兩位 judge（level-1）+ prep/finisher；pipeline stage-1 依 `uiTweak` flag 分流；
-   `runFallback` 對 ui-tweak 失敗也貼 Linear（script 全程擁有此 lane）。markdown：§5.2 改 Phases A+B、roster
-   含 ui-tweak rows、§5.0 標註「default-path only」、step 4/5 改寫。audit.md 頂加 SYNC 註解、ARCHITECTURE R5 更新。
-   - **待蓋章的關鍵證明（只能在 flutter repo 實跑）**：opus judge 在 **script-spawned** context 成功 + tier 未降級。
-     **風險已被 Phase A 大幅降低** —— Phase A 的 worker 本身就是 `model:"opus"` 且 CAF-371 跑成功,證明 script-spawned
-     opus 可行;Phase B 的 judge 只是同一 script 多 spawn 兩隻。剩餘未知 = dual-judge panel 在 script 內的端到端行為
-     （prep 停在 audit 前 → 兩 judge parallel → finisher）。**這個 PR 先不 merge,等一張 design bug 票 `--workflow` 實跑綠燈再 merge。**
-   - 雙寫風險（script vs audit.md）：已互加 SYNC 註解;契約改版需兩邊同步。
-3. **Phase C（B 綠燈後）**：`--workflow` 翻成預設，留 `--no-workflow` 逃生門一個 release；刪 §5.0/§6.1/§6.2 逐張重算。
-   驗 resume（同 session `resumeFromRunId` + 跨 session label 重撿）。
+2. ~~**Phase B**~~ ✅ **VALIDATED + MERGED（PR #55 → main，2026-06-08）**。§7 方案 (a) 落地：
+   `runUiTweak` 由 script 直接 spawn `ui-verify-agent`(sonnet) + `dev-reviewer`(opus) 兩 judge（level-1）+ prep/finisher；
+   pipeline stage-1 依 `uiTweak` flag 分流；`runFallback` 對 ui-tweak 失敗也貼 Linear。markdown §5.2 改 Phases A+B、
+   roster 含 ui-tweak rows、§5.0 標 default-path only；audit.md SYNC 註解、ARCHITECTURE R5 更新。
+   - **關鍵證明已蓋章**：flutter run（CAF-583 ui-tweak + CAF-643 dev，2026-06-08）—— opus judge 從 script level-1 spawn 成功、
+     未降級;CAF-583 被 panel 正確 BLOCKED（mislabel：`unfocus()` 是 logic change）、`--auto` loud-fail、fallback 貼一次、in-flight 保留;
+     CAF-643 → PR #518。lane 路由 / WORK_SCHEMA / barrier-free fallback / no-double-post / Linear 權威 全綠。
+   - **驗證 follow-up（本批 PR）**：P2 加 dispatcher 權限 pre-flight（兩 Linear prefix 皆缺則 loud abort）;P3 加背景 run liveness
+     heartbeat（~5min poll + stall 判斷）;`--max-parallel` 預設 10→3。P1（runWork 回 `stage:"feature"` 而非 infer_dev_stage 值）
+     仍 OPEN（cosmetic）。P4（`--test` 仍發 Slack）/ P5（runUiTweak 與 audit.md 雙寫，靠 SYNC 註解）defer。
+   - CAF-583 已由人 re-route 到 bug lane（mislabel，需邏輯）。
+3. **Phase C（下一步，B 已綠）**：`--workflow` 翻成預設，留 `--no-workflow` 逃生門一個 release；刪 §5.0/§6.1/§6.2 逐張重算。
+   驗 resume（同 session `resumeFromRunId` + 跨 session label 重撿）。**注意**：翻預設**不會**修好 verify-agent 去相關性（它由 worker spawn，恆 level-2）。
 
 **待決**：Linear 連線策略長期是否固定 linear-server（現兩者皆允許）；chained-command prefix-match e2e 實證。
 **不會改善（誠實）**：token 成本同今天；R1 重活仍 inline 在 worker。
