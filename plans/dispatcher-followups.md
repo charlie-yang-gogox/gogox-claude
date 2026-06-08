@@ -5,19 +5,10 @@ _寫於 2026-06-08。來源：ai-expert review（2026-05-19，`dev-dispatcher-wi
 ## 已驗證為 FIXED（不再追）
 
 - **B2** — `/dev:start` Step 4 figma-scan 的 `list_comments` 已有 fail-soft（`commands/dev/dev/start.md:142-143` 設 `COMMENTS_FETCH_OK=0` + 空字串續跑；line 166 條件 skip 尊重該旗標）。
+- **B1** ✅ FIXED（PR #57，2026-06-08）— `/ggx-work` Step 4.3 auto-mode 貼 `<!-- ggx-work-error -->` 前先 `list_comments`（Jira: `getJiraIssue` 讀 comments）掃 marker，存在則 skip。沿用 `_ticket-init` Step 3 list-then-skip。
+- **B3** ✅ FIXED（PR #57，2026-06-08）— `/ggx-work` Step 4.4 由二元改三元：加 "ambiguous-termination"（exit 0 但無 terminal signal、最後一行是 intermediate stage banner）→ 轉 Step 4.3 `reason = pipeline-ambiguous-termination`。含 CAF-370 負例（"Apply complete." / "Verify CLEAR." 非終態）regression guard。
 
 ## 仍開（依嚴重度）
-
-### B1 — `/ggx-work` 錯誤註解無 idempotency（blocker）
-- **檔**：`commands/dev/ggx-work.md` Step 4.3（約 `:345-355`）。
-- **問題**：auto-mode 對「缺 classification label」的票，**無條件** `save_comment` 貼 `<!-- ggx-work-error -->`。每次 dispatcher sweep 重貼一次 → 重複註解累積。
-- **注意**：這與 PR #51 修的 **不同**。#51 修的是 *workflow script* `runFallback` 的重複貼（用 `dispatch-fallback-error` 區隔、只在 worker 死時貼）。B1 是 */ggx-work 主路徑自己* 的 Step 4.3，未被 #49/#50/#51 觸及（驗證者明確標註 NOT overtaken）。
-- **修法**：貼前先 `list_comments` 掃 `<!-- ggx-work-error -->` marker，存在則 skip（沿用 `_ticket-init` Step 3 的 list-then-skip idempotent pattern）。
-
-### B3 — `/ggx-work` Step 4.4 ambiguous-termination 漏接（blocker）
-- **檔**：`commands/dev/ggx-work.md` Step 4.4（約 `:394-410`）。
-- **問題**：成功/失敗只有二元判定。FF wrapper **exit 0 但停在非終態 stage 訊息**（CAF-370 / 2026-05-11 形態）被歸為 success → 4.4a 短路 fall-through → 續迴圈 → 空轉到 iter-cap=5。
-- **修法**：加第三類 "ambiguous-termination"：FF exit 0 但 marker 顯示 stage 未完 → 轉 Step 4.3，`reason = pipeline-ambiguous-termination`（非 success-loop）。配套：把 CAF-370 負例（"Apply complete." / "Verify CLEAR." 不是終態）一行加回 /ggx-work 自己的 Step 4.4 enforcement（原 M1 的精神，dispatcher §5.3 prompt 已不該擁有它）。
 
 ### M2 — `/route --non-interactive` Status-line 解析契約鬆（major）
 - **檔**：`commands/dev/route.md` Step 1 & 3（約 `:76-80`）；caller 解析在 `ggx-work.md:~232` 用未錨定 grep。
