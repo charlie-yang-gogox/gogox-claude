@@ -111,7 +111,7 @@ infer_dev_stage() {
   if [ -n "$n" ] && [ -d "$wt/openspec/changes/archive/$n" ] \
      && [ -n "$id" ] && [ -f "claude-reports/$id/code-review.md" ] \
      && ! grep -qiE '^critical:' "claude-reports/$id/code-review.md" \
-     && gh pr view "$id" --json state -q .state 2>/dev/null | grep -q OPEN; then
+     && gh pr list --head "$(git -C "$wt" branch --show-current 2>/dev/null)" --state all --json state -q '.[0].state' 2>/dev/null | grep -q OPEN; then
     echo done; return; fi
 
   # review complete? (claude-reports has a code-review.md without ^critical:)
@@ -192,7 +192,7 @@ infer_bug_stage() {
   # and skip the entire verify→review→ship chain.
   if [ -n "$id" ] && [ -f "claude-reports/$id/code-review.md" ] \
      && ! grep -qiE '^critical:' "claude-reports/$id/code-review.md" \
-     && gh pr view "$id" --json state -q .state 2>/dev/null | grep -q OPEN; then
+     && gh pr list --head "$(git -C "$wt" branch --show-current 2>/dev/null)" --state all --json state -q '.[0].state' 2>/dev/null | grep -q OPEN; then
     echo done; return; fi
 
   # review complete? (claude-reports has a clean code-review.md)

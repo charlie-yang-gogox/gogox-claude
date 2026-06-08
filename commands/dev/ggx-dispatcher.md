@@ -570,12 +570,25 @@ allowlist**; they have **no way to answer a mid-run permission prompt**, so
 any `git`/`gh`/`openspec`/Linear-MCP call not on the allowlist **silently
 stalls the whole run**. Before relying on `--workflow`, ensure the
 user-global `~/.claude/settings.json` `permissions.allow` covers every
-shell/MCP family the ff pipelines touch (git, gh, openspec, the platform
-test/format toolchain, `mcp__claude_ai_Linear__*`, `mcp__claude_ai_Atlassian_Rovo__*`,
-`mcp__plugin_figma_figma__*`). The allowlist lives user-global, NOT in any
+shell/MCP family the ff pipelines touch (git, gh, openspec, `yq`, the platform
+test/format toolchain). The allowlist lives user-global, NOT in any
 repo's `.claude/settings.json`, because the dispatcher runs in the **target
-repo**, not in gogox-claude. The Phase-A e2e (dummy tickets) is the gate
-that confirms coverage — watch for a background run that goes quiet.
+repo**, not in gogox-claude.
+
+**Linear MCP — BOTH prefixes must be allowlisted.** Per the §"Label ownership
+boundary" rule, the run uses whichever Linear server is connected: it prefers
+`mcp__claude_ai_Linear__*` and **falls back to `mcp__linear-server__*`** when
+the claude.ai connector is not authenticated (both expose identical
+capability). An interactive session resolves this fine, but a **background
+workflow agent cannot fall back interactively** — so the allowlist MUST cover
+**both** `mcp__claude_ai_Linear__*` AND `mcp__linear-server__*`, or a worker
+silently stalls on the first Linear write whenever claude.ai is not authed.
+Also allowlist `mcp__claude_ai_Atlassian_Rovo__*` (Jira) and
+`mcp__plugin_figma_figma__*` (figma stage). The Phase-A e2e (dummy tickets) is
+the gate that confirms coverage — watch for a background run that goes quiet.
+(Observed in the 2026-06-08 CAF-548 run: claude.ai Linear was unauthed and the
+pipeline fell back to `linear-server`; that ran inline so it survived, but a
+workflow worker would have stalled.)
 
 Steps:
 
@@ -833,9 +846,14 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
      `apply` / `verify` / `review` / `ship` / `done`. (Bug-mode tickets
      go through `infer_bug_stage_safe` from the same dispatch, which
      emits a subset of the same vocabulary; treat them uniformly.)
-3. **Query PR state**:
+3. **Query PR state** — resolve by HEAD BRANCH, not ticket id. The worktree
+   branch is `<prefix>/<TICKET-ID>` (e.g. `fix/CAF-548`), so `gh pr view
+   "$TICKET_ID"` cannot find the PR and returns empty — which would make the
+   §6.2 derivation mis-read a shipped ticket as having no PR. Resolve via the
+   worktree's branch (`worktreePath` is the roster field from §4.3):
    ```bash
-   pr_state=$(gh pr view "$TICKET_ID" --json state -q .state 2>/dev/null)
+   branch=$(git -C "$worktreePath" branch --show-current 2>/dev/null)
+   pr_state=$(gh pr list --head "$branch" --state all --json state -q '.[0].state' 2>/dev/null)
    ```
    Possible values: `OPEN` / `MERGED` / `CLOSED` / empty (no PR).
 4. **Derive `outcome`** from the three signals — rules are lane-aware:
@@ -961,7 +979,7 @@ sources below as today.
 | `url`            | from roster (cached at Step 2)                                         | no re-fetch                                                                                     |
 | `outcome`        | §6.2-derived value (`done` / `port-paused` / `failed`) carried in-memory | authoritative — derived from `labels` + walker + PR per the §6.2 algorithm. If §6.2 didn't run (e.g. `--dry-run`), recompute inline from `labels` + walker + PR here. The agent's text is NOT consulted. |
 | `stage_reached` | §6.2-derived walker output (`infer_port_stage` / `infer_dev_stage` / `infer_ui_stage` already ran there) | shared with §6.2 — no extra worktree shell-out. Walker selection follows the lane + ui-tweak flag tagged in §2.1. ui-tweak rows render their stage with a `ui:` prefix (e.g. `ui:audit`) so the table distinguishes them from dev stages. |
-| `pr`             | §6.2-derived `pr_state` (shared) — augmented here with `number,url` via `gh pr view <ticket-id> --json number,url,state` if needed for the link column | shared with §6.2 for the state; non-zero exit ⇒ no PR, render `—`                              |
+| `pr`             | §6.2-derived `pr_state` (shared) — augmented here with `number,url` via `gh pr list --head "$branch" --state all --json number,url,state -q '.[0]'` (branch-based, same as §6.2 step 3 — NOT `gh pr view <ticket-id>`, which fails when the branch is `<prefix>/<TICKET-ID>`) if needed for the link column | shared with §6.2 for the state; non-zero exit ⇒ no PR, render `—`                              |
 
 **Render order**: collect all rows in memory first (parallel MCP+gh calls
 allowed and encouraged), then emit the table in one block. Roster order

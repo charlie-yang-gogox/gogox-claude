@@ -188,7 +188,10 @@ infer_ui_stage() {
     if [ "$direct_ship" = "1" ] && ! grep -q '^Status: PASS' "$wt/.dev/ui-tweak/build-pass" 2>/dev/null; then
       echo preview; return
     fi
-    pr_state=$(gh pr view "$id" --json state -q .state 2>/dev/null)
+    # Resolve the PR by HEAD BRANCH, not by ticket id: the worktree branch is
+    # <prefix>/<TICKET-ID> (e.g. fix/CAF-548), so `gh pr view "$id"` cannot find
+    # it and returns empty — the walker would then mis-walk back to `review`.
+    pr_state=$(gh pr list --head "$(git -C "$wt" branch --show-current 2>/dev/null)" --state all --json state -q '.[0].state' 2>/dev/null)
     [ "$pr_state" = "OPEN" ] && [ -f "claude-reports/$id/code-review.md" ] && { echo done; return; }
     [ "$pr_state" = "OPEN" ] && { echo review; return; }
     if [ -f "$wt/.dev/ui-verify-pass.md" ] && grep -q '^Status: CLEAR' "$wt/.dev/ui-verify-pass.md"; then
