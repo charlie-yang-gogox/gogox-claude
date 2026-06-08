@@ -604,8 +604,15 @@ Steps:
 3. **Print the §4.3 table** (same as §5.3 — the table is the review), then
    **in the same turn** invoke the `Workflow` tool:
    - `scriptPath`: `$HOME/.claude/workflows/ggx-dispatch.workflow.js`
-   - `args`: the `DISPATCH_ROSTER_JSON` value (an actual JSON array, NOT a
-     stringified one — the script reads `args` as a live array).
+   - `args`: the `DISPATCH_ROSTER_JSON` value. Pass it as a JSON array — but
+     note that in THIS harness the `Workflow` tool delivers `args` to the
+     script as a **JSON string** regardless (confirmed 2026-06-08, CAF-371:
+     even a live array arrived stringified). The script tolerates both via a
+     `JSON.parse` fallback, so the roster reaches it either way. **Do not
+     rely on the script seeing a live array.** If `args` carries content yet
+     the script parses zero rows, it returns `error: "roster-parse-failed"`
+     LOUDLY (smoke guard) rather than a silent empty no-op — §6.4 must treat
+     that error field as a batch failure, not "no work".
    The tool returns immediately with a `runId` and runs in the background;
    record the `runId` into `run.json` (second atomic write) so a same-session
    resume can pass `resumeFromRunId`.
@@ -617,8 +624,16 @@ Steps:
 5. **Consume the workflow result** in place of §6.1's wait loop. The
    `Workflow` completion notification carries the script's return value:
    `{ counts, rows }` where each row is the validated `WORK_SCHEMA` object
-   (`ticketId, outcome, prUrl, stage, error`). Merge `rows` with the
-   ui-tweak inline outcomes, then hand the combined set to §6.4 directly —
+   (`ticketId, outcome, prUrl, stage, error`). **First check for a top-level
+   `error` field** (the script's smoke guard, Phase A / P2): a return of
+   `{ error: "roster-parse-failed", ... }` means a non-empty roster reached
+   the script but parsed to zero rows (serialization mismatch — 0 agents
+   spawned). This is a **batch failure, NOT a clean no-op**: do NOT report
+   "0 done / nothing to do"; instead abort-flag the run, leave every locked
+   `dispatcher-*-in-flight` label in place (the tickets were never worked),
+   emit the §6.5 batch-abort Slack alert, and surface the parse mismatch in
+   the §6.4 table. Only when there is no `error` field do you merge `rows`
+   with the ui-tweak inline outcomes, then hand the combined set to §6.4 —
    **do NOT re-derive outcomes via per-ticket `get_issue`** (the script's
    `outcome`/`stage` are authoritative; §6.2's per-ticket Linear failure
    write already ran INSIDE the script's `runFallback` stage). §6.2's

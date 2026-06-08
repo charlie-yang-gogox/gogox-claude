@@ -187,6 +187,27 @@ if (roster.length === 0 && typeof args === "string") {
 }
 
 if (roster.length === 0) {
+  // Smoke guard (Phase A, P2). Distinguish a GENUINELY empty roster (no
+  // actionable tickets — a legitimate no-op) from `args` that DID carry work
+  // but parsed to zero rows. The latter is the P2 silent-failure class: a
+  // serialization/parse mismatch spawned 0 agents and looked identical to
+  // "no work". Assert agent_count >= 1 whenever args carried a roster — and
+  // surface the violation LOUDLY (distinct log + error field the §6.4 caller
+  // inspects) instead of returning a clean no-op.
+  const argsCarriedWork =
+    (typeof args === "string" && args.trim() !== "" && args.trim() !== "[]") ||
+    (Array.isArray(args) && args.length > 0);
+  if (argsCarriedWork) {
+    log(
+      "[ggx-dispatch] ERROR: args carried a roster but parsed to 0 rows — " +
+        "serialization/parse mismatch (P2 class), NOT a no-op. Spawned 0 agents.",
+    );
+    return {
+      error: "roster-parse-failed",
+      counts: { done: 0, "port-paused": 0, failed: 0 },
+      rows: [],
+    };
+  }
   log("[ggx-dispatch] empty roster — nothing to fan out");
   return { counts: { done: 0, "port-paused": 0, failed: 0 }, rows: [] };
 }
