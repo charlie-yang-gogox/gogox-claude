@@ -474,9 +474,16 @@ Column rules:
 
 While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>\t<url>\t<ui-tweak|->`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention; `url` is the issue url cached from Step 2; the 5th field is `ui-tweak` when the §2.1 ui-tweak flag is set, else `-`. **Held in session state only — do NOT write a roster.tsv file.** §6.4 uses this roster to render the end-of-run table (lane lookup, walker selection, Ticket-link column). Rows with the ui-tweak flag render their `command` column as `(inline) /ggx-work <ID> --auto` in the §4.0/§4.3 tables so the spawn shape is visible up-front.
 
-**Under `--workflow` (§5.2):** in addition to the in-memory TSV, serialize the **non-ui-tweak** rows to a JSON array — `[{ "ticketId", "lane", "worktreePath", "url", "uiTweak": false }, ...]` — for the script's `args`. ui-tweak rows are EXCLUDED from this JSON (they still run §5.0-inline in Phase A); they remain in the TSV so §6.4 can still render them. The JSON is the `DISPATCH_ROSTER_JSON` value consumed by §5.2.
+**Under `--workflow` (§5.2):** in addition to the in-memory TSV, serialize **all** rows to a JSON array — `[{ "ticketId", "lane", "worktreePath", "url", "uiTweak" }, ...]` — for the script's `args`. **Design-bug rows are INCLUDED with `uiTweak: true`** (Phase B — the script's `runUiTweak` runs them as a level-1 dual-judge panel; they no longer run §5.0-inline under `--workflow`). The JSON is the `DISPATCH_ROSTER_JSON` value consumed by §5.2.
 
 ### 5.0 Spawn-shape decision — `design bug` tickets run INLINE (ui-tweak lane)
+
+> **Applies to the DEFAULT (non-`--workflow`) path only.** Under `--workflow`
+> (Phase B, §5.2), design-bug rows go INTO the script and run as a
+> script-spawned level-1 dual-judge panel (`runUiTweak`) — the inline
+> exception below is dissolved because the opus judge no longer needs the
+> main session to spawn. Everything in this section describes what happens
+> when `--workflow` is unset.
 
 Tickets whose §2.1 roster row carries the **ui-tweak flag** (`design bug`
 classification label present) are **excluded from the §5.3 parallel spawn**.
@@ -547,22 +554,32 @@ designer dropping a Figma link as a follow-up comment no longer routes
 the ticket through the SKIPPED short-circuit. Dispatcher just passes
 `/ggx-work <ID> --auto`; the rest is determined downstream.
 
-### 5.2 Workflow fan-out (opt-in — `--workflow`, Phase A of the R5 migration)
+### 5.2 Workflow fan-out (opt-in — `--workflow`, Phases A+B of the R5 migration)
 
-When `--workflow` is set, the dev/port/bug lane is driven by a single
-`Workflow` tool call instead of the §5.3 N×`Agent` fan-out. This is the
-Phase-A migration documented in `ARCHITECTURE.md` "Nested-spawn
-constraint" R5. **ui-tweak rows are NOT affected** — they still run
-§5.0-inline in this session (Phase B moves them into the script). When
-`--workflow` is unset, skip this entire section and use §5.3 verbatim.
+When `--workflow` is set, the **entire fan-out — all four lanes** — is driven
+by a single `Workflow` tool call instead of the §5.3 N×`Agent` fan-out + the
+§5.0 inline ui-tweak lane. This is the Phase-A+B migration documented in
+`ARCHITECTURE.md` "Nested-spawn constraint" R5. When `--workflow` is unset,
+skip this entire section and use §5.3 (+ §5.0 inline) verbatim.
+
+**Phase B — ui-tweak joins the script (the §5.0 dissolution).** Under
+`--workflow`, design-bug rows are **no longer excluded**: the script's
+`runUiTweak` runs them as apply/preview → decorrelated dual-judge panel
+(`ui-verify-agent` sonnet + `dev-reviewer` opus) → finisher, with **both
+judges spawned by the SCRIPT**. Because a script-spawned agent is level-1,
+the opus judge spawns cleanly — the exact thing §5.0 went inline to avoid
+(a level-2 opus spawn inside a worker is broken). The tier-pinned
+decorrelation (sonnet vs opus, both-must-be-CLEAR) is preserved verbatim,
+in lock-step with `commands/dev/ui-tweak/audit.md`. **§5.0's inline
+exception therefore applies to the DEFAULT (non-workflow) path only.**
 
 **Why a script, not deeper nesting:** every agent the script spawns is
 level-1 (the nested-spawn constraint does not apply between a workflow
-script and its agents). Phase A does not yet exploit that for ui-tweak —
-it only moves the dev/port/bug fan-out + wait + per-ticket fallback +
-aggregation into deterministic JS so intermediate results stay in script
-variables instead of the dispatcher's context. **R1 is unchanged**: the
-heavy ff stages still inline inside each worker agent.
+script and its agents). This is what lets Phase B spawn the opus judge
+directly. **R1 is unchanged**: the heavy ff stages still inline inside each
+worker agent, and verify-agent (spawned by the worker inside `/dev:verify`)
+stays level-2 in both paths — only what the SCRIPT spawns directly is
+level-1.
 
 **Permissions precondition (load-bearing — read before first use).**
 Workflow agents run at `acceptEdits` and inherit the **session's tool
@@ -592,8 +609,10 @@ workflow worker would have stalled.)
 
 Steps:
 
-1. **Build `DISPATCH_ROSTER_JSON`** — the non-ui-tweak rows from §4.3 as a
-   JSON array (`{ticketId, lane, worktreePath, url, uiTweak:false}`).
+1. **Build `DISPATCH_ROSTER_JSON`** — **all** rows from §4.3 as a JSON array
+   (`{ticketId, lane, worktreePath, url, uiTweak}`), **including design-bug
+   rows with `uiTweak:true`** (Phase B — the script's `runUiTweak` handles
+   them in-lane). Do NOT exclude ui-tweak rows under `--workflow`.
 
 2. **Persist `run.json`** for crash recovery (§4.2 / §5.2-resume). Write
    `claude-reports/dispatcher/run.json` with `{ scriptPath, roster:
@@ -617,9 +636,11 @@ Steps:
    record the `runId` into `run.json` (second atomic write) so a same-session
    resume can pass `resumeFromRunId`.
 
-4. **Run the ui-tweak inline lane** exactly as §5.3/§5.0 describe (each
-   `design bug` ticket sequentially, in this session), concurrent with the
-   background workflow. ui-tweak completions are tracked in-session as today.
+4. **No inline ui-tweak lane under `--workflow` (Phase B).** Design-bug rows
+   were included in `DISPATCH_ROSTER_JSON` at step 1 and run in-script via
+   `runUiTweak` (level-1 dual-judge panel), so there is nothing to run inline
+   here. The §5.0 inline lane is the DEFAULT (non-workflow) path only. Their
+   outcomes come back in the script's `rows` like every other lane (step 5).
 
 5. **Consume the workflow result** in place of §6.1's wait loop. The
    `Workflow` completion notification carries the script's return value:
@@ -632,13 +653,14 @@ Steps:
    "0 done / nothing to do"; instead abort-flag the run, leave every locked
    `dispatcher-*-in-flight` label in place (the tickets were never worked),
    emit the §6.5 batch-abort Slack alert, and surface the parse mismatch in
-   the §6.4 table. Only when there is no `error` field do you merge `rows`
-   with the ui-tweak inline outcomes, then hand the combined set to §6.4 —
-   **do NOT re-derive outcomes via per-ticket `get_issue`** (the script's
-   `outcome`/`stage` are authoritative; §6.2's per-ticket Linear failure
-   write already ran INSIDE the script's `runFallback` stage). §6.2's
-   algorithm still applies as the fallback path for the ui-tweak inline
-   rows only.
+   the §6.4 table. Only when there is no `error` field do you hand `rows`
+   to §6.4 directly — **all lanes (incl. ui-tweak, Phase B) are already in
+   `rows`**, so there is nothing to merge in. **Do NOT re-derive outcomes
+   via per-ticket `get_issue`** (the script's `outcome`/`stage` are
+   authoritative; §6.2's per-ticket Linear failure write already ran INSIDE
+   the script's `runFallback` stage — including the ui-tweak BLOCKED/failed
+   case, which `runFallback` posts because the script owns that flow). Under
+   `--workflow` there is no separate inline-row fallback path.
 
 **Resume (same session only).** If the dispatcher is interrupted and
 re-invoked in the same session, relaunch with
