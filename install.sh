@@ -15,8 +15,9 @@ SKILLS_DIR="$HOME/.claude/skills"
 AGENTS_DIR="$HOME/.claude/agents"
 COMMANDS_DIR="$HOME/.claude/commands"
 LIB_DIR="$HOME/.claude/lib"
+WORKFLOWS_DIR="$HOME/.claude/workflows"
 
-mkdir -p "$SKILLS_DIR" "$AGENTS_DIR" "$COMMANDS_DIR" "$LIB_DIR"
+mkdir -p "$SKILLS_DIR" "$AGENTS_DIR" "$COMMANDS_DIR" "$LIB_DIR" "$WORKFLOWS_DIR"
 
 # Shared shell helpers (lib/*.sh) — sourced by command bodies at runtime.
 # Symlinked file-by-file so a `git pull` picks up edits immediately.
@@ -28,6 +29,22 @@ if [ -d "$REPO_DIR/lib" ]; then
     rm -f "$LIB_DIR/$lib_name"
     ln -s "$lib_file" "$LIB_DIR/$lib_name"
     INSTALLED_LIBS+=("$lib_name")
+  done
+fi
+
+# Workflow scripts (workflows/*.js) — dynamic-workflow scripts invoked by the
+# Workflow tool via an absolute scriptPath. Symlinked file-by-file so a
+# `git pull` picks up edits immediately. Command bodies reference them as
+# ~/.claude/workflows/<name>.workflow.js (stable path, independent of cwd —
+# the dispatcher runs in a target repo, not in gogox-claude).
+INSTALLED_WORKFLOWS=()
+if [ -d "$REPO_DIR/workflows" ]; then
+  for wf_file in "$REPO_DIR/workflows"/*.workflow.js; do
+    [ -f "$wf_file" ] || continue
+    wf_name="$(basename "$wf_file")"
+    rm -f "$WORKFLOWS_DIR/$wf_name"
+    ln -s "$wf_file" "$WORKFLOWS_DIR/$wf_name"
+    INSTALLED_WORKFLOWS+=("$wf_name")
   done
 fi
 
@@ -186,6 +203,14 @@ fi
 if [ "$INSTALLED_SKILL_LIB" = true ]; then
   echo "Skill helpers — called at runtime by skills:"
   echo "  ~/.claude/skills/_lib/"
+  echo
+fi
+
+if [ "${#INSTALLED_WORKFLOWS[@]}" -gt 0 ]; then
+  echo "Workflows (${#INSTALLED_WORKFLOWS[@]}) — invoked at runtime by the Workflow tool:"
+  for w in "${INSTALLED_WORKFLOWS[@]}"; do
+    echo "  ~/.claude/workflows/$w"
+  done
   echo
 fi
 

@@ -31,6 +31,7 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 - `--dry-run` — Print the planned dispatch and STOP. No Linear writes, no agent spawn.
 - `--test` — Skip the default-branch + clean-tree pre-flight checks (still requires main worktree, gh auth, and lockfile).
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `10`, hard cap `20`. Out of range → abort.
+- `--workflow` — **Opt-in (Phase A, R5).** Replace the §5.3 N×`Agent` fan-out + §6.1 wait loop with a single `Workflow` tool call driving the dev/port/bug lane (see §5.2). ui-tweak rows still run §5.0-inline. Unset → today's path verbatim. Requires `~/.claude/workflows/ggx-dispatch.workflow.js` (installed by `install.sh`). See `ARCHITECTURE.md` "Nested-spawn constraint" R5 and the Phase-A migration notes.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
 
 
@@ -473,6 +474,8 @@ Column rules:
 
 While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>\t<url>\t<ui-tweak|->`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention; `url` is the issue url cached from Step 2; the 5th field is `ui-tweak` when the §2.1 ui-tweak flag is set, else `-`. **Held in session state only — do NOT write a roster.tsv file.** §6.4 uses this roster to render the end-of-run table (lane lookup, walker selection, Ticket-link column). Rows with the ui-tweak flag render their `command` column as `(inline) /ggx-work <ID> --auto` in the §4.0/§4.3 tables so the spawn shape is visible up-front.
 
+**Under `--workflow` (§5.2):** in addition to the in-memory TSV, serialize the **non-ui-tweak** rows to a JSON array — `[{ "ticketId", "lane", "worktreePath", "url", "uiTweak": false }, ...]` — for the script's `args`. ui-tweak rows are EXCLUDED from this JSON (they still run §5.0-inline in Phase A); they remain in the TSV so §6.4 can still render them. The JSON is the `DISPATCH_ROSTER_JSON` value consumed by §5.2.
+
 ### 5.0 Spawn-shape decision — `design bug` tickets run INLINE (ui-tweak lane)
 
 Tickets whose §2.1 roster row carries the **ui-tweak flag** (`design bug`
@@ -544,7 +547,86 @@ designer dropping a Figma link as a follow-up comment no longer routes
 the ticket through the SKIPPED short-circuit. Dispatcher just passes
 `/ggx-work <ID> --auto`; the rest is determined downstream.
 
+### 5.2 Workflow fan-out (opt-in — `--workflow`, Phase A of the R5 migration)
+
+When `--workflow` is set, the dev/port/bug lane is driven by a single
+`Workflow` tool call instead of the §5.3 N×`Agent` fan-out. This is the
+Phase-A migration documented in `ARCHITECTURE.md` "Nested-spawn
+constraint" R5. **ui-tweak rows are NOT affected** — they still run
+§5.0-inline in this session (Phase B moves them into the script). When
+`--workflow` is unset, skip this entire section and use §5.3 verbatim.
+
+**Why a script, not deeper nesting:** every agent the script spawns is
+level-1 (the nested-spawn constraint does not apply between a workflow
+script and its agents). Phase A does not yet exploit that for ui-tweak —
+it only moves the dev/port/bug fan-out + wait + per-ticket fallback +
+aggregation into deterministic JS so intermediate results stay in script
+variables instead of the dispatcher's context. **R1 is unchanged**: the
+heavy ff stages still inline inside each worker agent.
+
+**Permissions precondition (load-bearing — read before first use).**
+Workflow agents run at `acceptEdits` and inherit the **session's tool
+allowlist**; they have **no way to answer a mid-run permission prompt**, so
+any `git`/`gh`/`openspec`/Linear-MCP call not on the allowlist **silently
+stalls the whole run**. Before relying on `--workflow`, ensure the
+user-global `~/.claude/settings.json` `permissions.allow` covers every
+shell/MCP family the ff pipelines touch (git, gh, openspec, the platform
+test/format toolchain, `mcp__claude_ai_Linear__*`, `mcp__claude_ai_Atlassian_Rovo__*`,
+`mcp__plugin_figma_figma__*`). The allowlist lives user-global, NOT in any
+repo's `.claude/settings.json`, because the dispatcher runs in the **target
+repo**, not in gogox-claude. The Phase-A e2e (dummy tickets) is the gate
+that confirms coverage — watch for a background run that goes quiet.
+
+Steps:
+
+1. **Build `DISPATCH_ROSTER_JSON`** — the non-ui-tweak rows from §4.3 as a
+   JSON array (`{ticketId, lane, worktreePath, url, uiTweak:false}`).
+
+2. **Persist `run.json`** for crash recovery (§4.2 / §5.2-resume). Write
+   `claude-reports/dispatcher/run.json` with `{ scriptPath, roster:
+   DISPATCH_ROSTER_JSON, ts }` (atomic `mktemp` + `mv`). `ts` comes from a
+   shell `date` call — NOT from inside the script (the script's clock is
+   frozen for resume determinism).
+
+3. **Print the §4.3 table** (same as §5.3 — the table is the review), then
+   **in the same turn** invoke the `Workflow` tool:
+   - `scriptPath`: `$HOME/.claude/workflows/ggx-dispatch.workflow.js`
+   - `args`: the `DISPATCH_ROSTER_JSON` value (an actual JSON array, NOT a
+     stringified one — the script reads `args` as a live array).
+   The tool returns immediately with a `runId` and runs in the background;
+   record the `runId` into `run.json` (second atomic write) so a same-session
+   resume can pass `resumeFromRunId`.
+
+4. **Run the ui-tweak inline lane** exactly as §5.3/§5.0 describe (each
+   `design bug` ticket sequentially, in this session), concurrent with the
+   background workflow. ui-tweak completions are tracked in-session as today.
+
+5. **Consume the workflow result** in place of §6.1's wait loop. The
+   `Workflow` completion notification carries the script's return value:
+   `{ counts, rows }` where each row is the validated `WORK_SCHEMA` object
+   (`ticketId, outcome, prUrl, stage, error`). Merge `rows` with the
+   ui-tweak inline outcomes, then hand the combined set to §6.4 directly —
+   **do NOT re-derive outcomes via per-ticket `get_issue`** (the script's
+   `outcome`/`stage` are authoritative; §6.2's per-ticket Linear failure
+   write already ran INSIDE the script's `runFallback` stage). §6.2's
+   algorithm still applies as the fallback path for the ui-tweak inline
+   rows only.
+
+**Resume (same session only).** If the dispatcher is interrupted and
+re-invoked in the same session, relaunch with
+`Workflow({scriptPath, resumeFromRunId: <runId from run.json>})` — completed
+`agent()` calls return cached results, only unfinished tickets re-run. After
+the session exits, `resumeFromRunId` is dead; recovery falls back to the
+§4.2 / §6.2 label-rescan path (the `dispatcher-*-in-flight` labels are the
+durable resume signal — `run.json` is only a same-session cache). If `run.json`
+has `roster` but no `runId` (the harness died between the `Workflow` call and
+the second atomic write), `resumeFromRunId` is likewise unavailable — recovery
+is exactly the §4.2 label-rescan path. A partially written `run.json` is
+therefore a documented, safe state, not an error.
+
 ### 5.3 Spawn
+
+**(Skip this entire section when `--workflow` is set — see §5.2.)**
 
 **You MUST emit the §4.3 dispatch table and all N `Agent` tool calls in a single assistant message.** Print the table text first, then the N parallel `Agent` calls — back-to-back, no turn break, no intermediate "ready to spawn?" pause. Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. It may also be tempted to end the turn after the table so the user can review — do not. The table is the review; spawning follows immediately in the same turn. Narration belongs after the join in Step 6.
 
@@ -652,6 +734,14 @@ is the §6.4 summary table.
 
 ### 6.1 Wait for completions
 
+**Under `--workflow` (§5.2):** there is no `joined`-counter wait loop for
+the spawned lane — the single `Workflow` tool call returns its
+`{ counts, rows }` when the whole background run finishes, and §5.2 step 5
+feeds it straight to §6.4. The only in-session waiting is for the ui-tweak
+inline lane (which completes synchronously as today). Skip the rest of this
+section for the spawned lane; it applies verbatim only on the non-`--workflow`
+path.
+
 The dispatcher session waits here for every spawned agent's
 background-completion notification. **No sibling poller process.** Each
 notification arrives event-driven from the harness; printing a 30s tick
@@ -706,6 +796,13 @@ Closing the dispatcher session early still kills MCP connections and
 leaves Linear in a half-finalized state — that constraint is unchanged.
 
 ### 6.2 Per-ticket fallback — authoritative outcome derivation
+
+**Under `--workflow` (§5.2): applies to the ui-tweak inline rows only.** The
+spawned dev/port/bug rows get their authoritative `outcome`/`stage` from the
+script's validated `rows[]`, and the per-ticket Linear failure write already
+ran inside the script's `runFallback` stage — do NOT re-run this derivation
+or re-post a failure comment for them. Run the algorithm below only for the
+ui-tweak inline rows (and on the non-`--workflow` path, for all rows as today).
 
 The agent's text from §6.1 is cosmetic. The authoritative classification
 of each ticket's outcome is derived here from three independent signals
@@ -848,6 +945,14 @@ Copies (not symlinks — the worktree may be removed later) every spawned ff age
 ### 6.4 End-of-run summary table
 
 For each ticket in `DISPATCH_ROSTER` (§4.3), collect:
+
+**Under `--workflow` (§5.2):** for the spawned dev/port/bug rows, `outcome`,
+`stage_reached`, and `prUrl` come from the script's returned `rows[]`
+(validated `WORK_SCHEMA` objects) — NOT from a per-ticket `get_issue` /
+walker re-derivation. The `labels` / `status.name` columns may still be
+fetched here if you want the live Linear state for display, but the outcome
+is authoritative from the script. The ui-tweak inline rows use the §6.2
+sources below as today.
 
 | Signal           | Source                                                                 | Notes                                                                                          |
 |------------------|------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
