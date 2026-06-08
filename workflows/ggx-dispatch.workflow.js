@@ -1,22 +1,28 @@
 // ggx-dispatch.workflow.js
 //
-// Phase A of the /ggx-dispatcher fan-out → Workflow migration (R5 in
+// Phases A+B of the /ggx-dispatcher fan-out → Workflow migration (R5 in
 // ARCHITECTURE.md "Nested-spawn constraint"). Replaces the §5.3 N×Agent
 // fan-out + §6.1 wait loop + §6.2 per-ticket fallback + §6.4 aggregation
-// for the dev / port / bug lanes ONLY.
+// for ALL lanes.
 //
-// Scope (Phase A):
-//   - dev / port / bug lane tickets → one /ggx-work --auto agent each.
-//   - ui-tweak (design bug) tickets are NOT handled here. The markdown caller
-//     filters them out of the roster and runs them §5.0-inline as today
-//     (Phase B moves them into runUiTweak — see the design doc). A uiTweak row
-//     reaching this script is a caller bug; it is rejected loudly (see guard).
+// Scope:
+//   - dev / port / bug lane tickets → one /ggx-work --auto agent each (runWork).
+//   - ui-tweak (design bug) tickets → apply/preview → dual-judge → finisher,
+//     all as SCRIPT-spawned level-1 agents (runUiTweak). This is the Phase-B
+//     dissolution of the dispatcher §5.0 inline exception: the opus judge
+//     (dev-reviewer) that could NOT be a level-2 spawn inside a worker
+//     (worker→judge = nested opus, broken) spawns cleanly when the SCRIPT
+//     spawns it. See commands/dev/ui-tweak/audit.md (kept in SYNC).
 //
-// Why this dissolves nothing in Phase A but is still safe: every agent() below
-// is spawned BY THE SCRIPT, so it is level-1 (the nested-spawn constraint does
-// not apply between a workflow script and its agents). The heavy ff stages
-// (R1: /opsx:apply, /code-review, /port:explore, /port:synth) still inline
-// INSIDE each worker agent — migration does not change R1.
+// Why this is safe: every agent() below is spawned BY THE SCRIPT, so it is
+// level-1 (the nested-spawn constraint does not apply between a workflow script
+// and its agents). The heavy ff stages (R1: /opsx:apply, /code-review,
+// /port:explore, /port:synth) still inline INSIDE each worker agent — migration
+// does not change R1.
+//
+// NOTE on level: only what the SCRIPT spawns directly is level-1. Agents the
+// WORKER spawns (e.g. verify-agent inside /dev:verify) remain level-2 in BOTH
+// the default and --workflow paths — Phase B does NOT change their depth.
 //
 // args = DISPATCH_ROSTER: JSON array of
 //   { ticketId, lane, worktreePath, url, uiTweak: boolean }
@@ -25,10 +31,11 @@
 export const meta = {
   name: "ggx-dispatch",
   description:
-    "Phase A: fan out one /ggx-work --auto agent per locked dev/port/bug ticket; structured per-ticket result replaces §6.1 text parsing; per-ticket failure fallback writes Linear immediately. ui-tweak rows are rejected (they run §5.0-inline in the markdown caller until Phase B).",
+    "Fan out one /ggx-work --auto agent per locked dev/port/bug ticket; design-bug tickets run apply->dual-judge(sonnet+opus)->finish as script-spawned level-1 agents (dissolves dispatcher §5.0 inline lane). Structured per-ticket result replaces §6.1 text parsing; per-ticket failure fallback writes Linear immediately.",
   // phases is a pure literal — /workflows progress view only, no exec semantics.
   phases: [
-    { title: "work", detail: "Drive each ticket through /ggx-work --auto" },
+    { title: "work", detail: "Drive each dev/port/bug ticket through /ggx-work --auto" },
+    { title: "ui-judge", detail: "ui-tweak lane: apply/preview, dual-judge panel, finisher" },
     { title: "fallback", detail: "Per-ticket Linear writes on failure" },
     { title: "aggregate", detail: "Collect structured outcomes into summary" },
   ],
@@ -49,6 +56,19 @@ const WORK_SCHEMA = {
     // The final infer_*_stage value, for §6.4's stage_reached column.
     stage: { type: ["string", "null"] },
     error: { type: ["string", "null"] },
+  },
+};
+
+// ── ui-tweak judge verdict — terse CLEAR/BLOCKED + one-line reason. ──
+// Mirrors audit.md's panel contract: each judge returns a single status; the
+// panel BLOCKS unless BOTH return CLEAR (kept in SYNC with audit.md Step 2/3).
+const JUDGE_SCHEMA = {
+  type: "object",
+  required: ["status"],
+  additionalProperties: false,
+  properties: {
+    status: { type: "string", enum: ["CLEAR", "BLOCKED"] },
+    reason: { type: ["string", "null"] },
   },
 };
 
@@ -109,23 +129,163 @@ async function runWork(item) {
   return result; // validated against WORK_SCHEMA
 }
 
-// ── Defensive guard: a uiTweak row must NOT reach the Phase A script. ──
-// In Phase A the markdown caller runs design-bug tickets §5.0-inline and
-// excludes them from the roster. If one slips through, do NOT drive it through
-// runWork — that would route to /ui-tweak:ff, whose opus judge would then be a
-// LEVEL-2 spawn (worker→judge), the exact failure the inline lane avoids.
-// Reject it loudly so the operator sees the misconfiguration.
-function rejectUiTweak(item) {
-  log(`[work] ${item.ticketId} REJECTED — uiTweak row reached Phase A script`);
+// ── ui-tweak lane (Phase B): apply/preview → dual-judge → finisher. ──
+// THE §5.0 DISSOLUTION POINT. The two judges are spawned BY THE SCRIPT, so they
+// are level-1: the opus judge (dev-reviewer) that could NOT be a level-2 spawn
+// inside a worker (worker→judge = nested opus, broken — the reason §5.0 ran the
+// lane inline in the dispatcher main session) spawns cleanly here. Tier-pinned
+// decorrelation is preserved verbatim: ui-verify=sonnet, dev-reviewer=opus,
+// BOTH always run, BOTH must be CLEAR.
+//
+// Honest coupling cost: this re-implements the slice of /ui-tweak:ff's
+// infer_ui_stage walker around the audit (prep stops before audit; the script
+// orchestrates the panel; the finisher resumes at commit→pr→review). The judge
+// contract here is kept in lock-step with commands/dev/ui-tweak/audit.md — there
+// is a SYNC note at the top of audit.md. If audit.md's judge contract changes
+// (figma-context read, WILL-EDIT coverage assertion, loud-fail semantics),
+// change BOTH. Failures set uiTweakFailed so runFallback posts Linear (no
+// sub-pipeline posted its own error — the script owns this flow end-to-end).
+async function runUiTweak(item) {
+  log(`[ui] ${item.ticketId} apply+preview`);
+
+  // Stage 1: /ui-tweak:start → :apply → :preview (R20 direct-ship build-only
+  // gate; --auto never reaches a device preview). STOP before :audit.
+  const prep = await agent(
+    [
+      `For ticket ${item.ticketId} (target worktree ${item.worktreePath}):`,
+      `run /ui-tweak:start FIRST — it creates and enters the ../${item.ticketId}`,
+      `worktree (do not cd there yourself; the worktree may not exist yet).`,
+      `Then run /ui-tweak:apply, then /ui-tweak:preview with --auto semantics`,
+      `(R20 direct-ship → build-only compile gate, no device preview). STOP`,
+      `before /ui-tweak:audit. Leave .dev/ui-tweak/base_ref and`,
+      `.dev/ui-tweak/build-pass in place for the panel.`,
+      `Return { ok: boolean, baseRef: string|null, error: string|null }.`,
+    ].join("\n"),
+    {
+      label: `ui-prep:${item.ticketId}`,
+      phase: "ui-judge",
+      agentType: "general-purpose",
+      model: "opus",
+      schema: {
+        type: "object",
+        required: ["ok"],
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean" },
+          baseRef: { type: ["string", "null"] },
+          error: { type: ["string", "null"] },
+        },
+      },
+    },
+  );
+  if (!prep || !prep.ok) {
+    return {
+      ticketId: item.ticketId,
+      outcome: "failed",
+      prUrl: null,
+      stage: "ui:apply",
+      error: prep?.error || "ui-tweak apply/preview failed (or prep agent returned null)",
+      uiTweakFailed: true,
+    };
+  }
+
+  // Stage 2: decorrelated dual-judge panel — BOTH must be CLEAR (audit.md
+  // Step 2/3). Spawned in parallel; tiers PINNED (sonnet vs opus), no downgrade.
+  log(`[ui] ${item.ticketId} dual-judge (sonnet + opus)`);
+  const judgePrompt = (lens) =>
+    [
+      `Audit the final cumulative diff (git diff ${prep.baseRef}) in`,
+      `${item.worktreePath} for ticket ${item.ticketId}, through the ${lens} lens.`,
+      `Read .dev/ui-tweak/figma-context.md (if present) and assert every`,
+      `WILL-EDIT target is covered — a miss is BLOCKED. Per audit.md: a purely`,
+      `visual/layout/structure change is CLEAR; any logic/behavior change is`,
+      `BLOCKED. Return { status: "CLEAR"|"BLOCKED", reason }.`,
+    ].join("\n");
+
+  const [uiVerify, devReview] = await parallel([
+    () =>
+      agent(judgePrompt("UI-only / visual"), {
+        label: `ui-verify:${item.ticketId}`,
+        phase: "ui-judge",
+        agentType: "ui-verify-agent",
+        model: "sonnet",
+        schema: JUDGE_SCHEMA,
+      }),
+    () =>
+      agent(judgePrompt("behavior / logic, with the deterministic structural pre-pass"), {
+        label: `dev-review:${item.ticketId}`,
+        phase: "ui-judge",
+        agentType: "dev-reviewer",
+        model: "opus",
+        schema: JUDGE_SCHEMA,
+      }),
+  ]);
+
+  // parallel() resolves a failed thunk to null — aligned with audit.md
+  // "missing report / agent error ⇒ BLOCKED". BOTH must be a present CLEAR.
+  const blocked =
+    !uiVerify || uiVerify.status !== "CLEAR" || !devReview || devReview.status !== "CLEAR";
+  if (blocked) {
+    const who = !uiVerify || uiVerify.status !== "CLEAR" ? "ui-verify" : "dev-reviewer";
+    const reason =
+      (!uiVerify || uiVerify.status !== "CLEAR" ? uiVerify?.reason : devReview?.reason) ||
+      "judge error / null verdict";
+    // --auto is loud-fail (audit.md): no repair loop. Mark failed; the
+    // dispatcher-dev-in-flight label stays as the human-resume signal.
+    log(`[ui] ${item.ticketId} BLOCKED by ${who}: ${reason}`);
+    return {
+      ticketId: item.ticketId,
+      outcome: "failed",
+      prUrl: null,
+      stage: "ui:audit",
+      error: `UI-TWEAK BLOCKED (${who}): ${reason}`,
+      uiTweakFailed: true,
+    };
+  }
+
+  // Stage 3: finisher — both judges CLEAR ⇒ commit → pr → review (--auto).
+  log(`[ui] ${item.ticketId} CLEAR -> commit + PR`);
+  const ship = await agent(
+    [
+      `In ${item.worktreePath} for ${item.ticketId}: the dual-judge panel is`,
+      `CLEAR. Run the remaining /ui-tweak:ff stages with --auto semantics:`,
+      `audit (write .dev/ui-verify-pass.md Status: CLEAR) → commit → pr → review.`,
+      `Open a draft PR. Return { prUrl: string|null, stage: string, error: string|null }.`,
+    ].join("\n"),
+    {
+      label: `ui-ship:${item.ticketId}`,
+      phase: "ui-judge",
+      agentType: "general-purpose",
+      model: "opus",
+      schema: {
+        type: "object",
+        required: ["stage"],
+        additionalProperties: false,
+        properties: {
+          prUrl: { type: ["string", "null"] },
+          stage: { type: "string" },
+          error: { type: ["string", "null"] },
+        },
+      },
+    },
+  );
+  if (!ship) {
+    return {
+      ticketId: item.ticketId,
+      outcome: "failed",
+      prUrl: null,
+      stage: "ui:ship",
+      error: "ui-tweak finisher agent returned null (skip / terminal API error)",
+      uiTweakFailed: true,
+    };
+  }
   return {
     ticketId: item.ticketId,
-    outcome: "failed",
-    prUrl: null,
-    stage: null,
-    error:
-      "ui-tweak (design bug) ticket reached the Phase A workflow script; " +
-      "it must run §5.0-inline in the dispatcher main session until Phase B. " +
-      "Caller should have excluded uiTweak rows from the roster.",
+    outcome: ship.error ? "failed" : "done", // ui-tweak has no port-paused
+    prUrl: ship.prUrl ?? null,
+    stage: ship.stage || "ui:review",
+    error: ship.error ?? null,
+    ...(ship.error ? { uiTweakFailed: true } : {}),
   };
 }
 
@@ -141,16 +301,23 @@ function rejectUiTweak(item) {
 async function runFallback(res) {
   if (!res) return res;                       // belt-and-suspenders (should not happen after runWork's null map)
   if (res.outcome !== "failed") return res;   // done / port-paused already wrote their own state
-  if (!res.workerDied) {
-    // /ggx-work completed its own failure path and posted ggx-work-error. No-op.
-    log(`[fallback] ${res.ticketId} failed (worker completed; ggx-work-error already posted) — no double-post`);
+  // Post ONLY when no sub-pipeline wrote its own error comment:
+  //   - workerDied: the worker agent died before /ggx-work could post.
+  //   - uiTweakFailed: the script owns the ui-tweak flow end-to-end (prep →
+  //     panel → finisher), so a BLOCKED/failed run has no /ggx-work and no
+  //     <!-- ggx-work-error --> behind it — the dispatcher must post.
+  // A NORMAL dev/port/bug failure (outcome:"failed", neither flag) already has
+  // /ggx-work's own <!-- ggx-work-error --> comment → no-op (no double-post).
+  if (!res.workerDied && !res.uiTweakFailed) {
+    log(`[fallback] ${res.ticketId} failed (sub-pipeline posted its own error) — no double-post`);
     return res;
   }
-  log(`[fallback] ${res.ticketId} worker died -> post dispatch-fallback-error (distinct marker)`);
+  log(`[fallback] ${res.ticketId} -> post dispatch-fallback-error (distinct marker)`);
   await agent(
     [
-      `Ticket ${res.ticketId}'s worker agent died before /ggx-work could finish,`,
-      `so no <!-- ggx-work-error --> comment was posted.`,
+      `Ticket ${res.ticketId} failed in the dispatcher batch and no sub-pipeline`,
+      `posted its own <!-- ggx-work-error --> comment (worker died, or a`,
+      `script-orchestrated ui-tweak run was BLOCKED/failed by the audit panel).`,
       `Via the connected Linear MCP (find it with ToolSearch): prefer`,
       `mcp__claude_ai_Linear__*, and fall back to mcp__linear-server__* if the`,
       `claude.ai connector is not authenticated — both target the same workspace`,
@@ -214,8 +381,9 @@ if (roster.length === 0) {
 
 const results = await pipeline(
   roster,
-  // stage 1: drive the ticket (or reject if a uiTweak row slipped through).
-  (item) => (item.uiTweak ? rejectUiTweak(item) : runWork(item)),
+  // stage 1: route by lane. design-bug → runUiTweak (script-spawned level-1
+  // dual-judge panel, Phase B); everything else → runWork (/ggx-work --auto).
+  (item) => (item.uiTweak ? runUiTweak(item) : runWork(item)),
   // stage 2: per-item fallback — immediacy comes from pipeline's per-item chaining.
   (res) => runFallback(res),
 );
