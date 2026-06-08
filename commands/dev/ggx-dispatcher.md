@@ -290,7 +290,7 @@ worktree never creates).
 
 ### 2.2 Conflict checks
 
-Three malformed shapes — drop the ticket, post a comment, remove all conflicting labels:
+Four malformed shapes — drop the ticket, post a comment, remove all conflicting labels:
 
 a. **Both fresh labels**: `ready-to-port` AND `ready-to-dev` present →
    > `Dispatcher: skipped — ticket has both ready-to-port and ready-to-dev labels. Cannot determine intent. Re-add the correct single label to retry.`
@@ -301,7 +301,12 @@ b. **Fresh + in-flight on same lane** (e.g. `ready-to-dev` + `dispatcher-dev-in-
 c. **Both in-flight labels**: `dispatcher-port-in-flight` AND `dispatcher-dev-in-flight` →
    > `Dispatcher: skipped — ticket has both port and dev in-flight labels. Cannot route. Inspect and remove one manually.`
 
-All three shapes drop the ticket from the batch.
+d. **Workflow label contradicts classification (M3)**: `ready-to-port` present AND the classification label (§2.1) is NOT `port` (i.e. it is `bug` / `feature` / `design bug`) →
+   > `Dispatcher: skipped — ticket has ready-to-port but its classification label is not 'port'. /route would recommend a non-port lane, and at ship time only the dev-lane in-flight label is cleared — leaving dispatcher-port-in-flight stuck forever. Fix the labels: set classification to 'port', or swap ready-to-port → ready-to-dev.`
+
+   **Do NOT mirror this for `ready-to-dev`.** `ready-to-dev` legitimately pairs with classification `port`: the post-spec-review state, where port already ran, the human flipped `need-spec-review` → `ready-to-dev`, and the ticket now goes through the dev lane while still classified `port`. Only the `ready-to-port` + non-`port` direction is the stuck-label hazard.
+
+All four shapes drop the ticket from the batch.
 
 ### 2.3 Priority sort + cap
 
