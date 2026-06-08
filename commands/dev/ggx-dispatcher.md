@@ -30,7 +30,7 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 
 - `--dry-run` — Print the planned dispatch and STOP. No Linear writes, no agent spawn.
 - `--test` — Skip the default-branch + clean-tree pre-flight checks (still requires main worktree, gh auth, and lockfile).
-- `--max-parallel:<N>` — Concurrent dispatch cap. Default `10`, hard cap `20`. Out of range → abort.
+- `--max-parallel:<N>` — Concurrent dispatch cap. Default `3`, hard cap `20`. Out of range → abort. (Under `--workflow` this bounds the roster handed to the script; the script's `pipeline()` self-caps concurrency at `min(16, cores-2)` on top.)
 - `--workflow` — **Opt-in (Phase A, R5).** Replace the §5.3 N×`Agent` fan-out + §6.1 wait loop with a single `Workflow` tool call driving the dev/port/bug lane (see §5.2). ui-tweak rows still run §5.0-inline. Unset → today's path verbatim. Requires `~/.claude/workflows/ggx-dispatch.workflow.js` (installed by `install.sh`). See `ARCHITECTURE.md` "Nested-spawn constraint" R5 and the Phase-A migration notes.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
 
@@ -307,7 +307,7 @@ All three shapes drop the ticket from the batch.
 
 Sort by priority (`urgent` > `high` > `medium` > `low` > `none`), then by `createdAt` ascending.
 
-Cap to `--max-parallel`. Validate the value: `1 <= N <= 20`. Out of range → abort. Default `10`.
+Cap to `--max-parallel`. Validate the value: `1 <= N <= 20`. Out of range → abort. Default `3`.
 
 If the surviving list is empty:
 
@@ -620,8 +620,18 @@ Steps:
    shell `date` call — NOT from inside the script (the script's clock is
    frozen for resume determinism).
 
-3. **Print the §4.3 table** (same as §5.3 — the table is the review), then
-   **in the same turn** invoke the `Workflow` tool:
+3. **Permission pre-flight (P2), then launch.** BEFORE invoking the tool,
+   assert the allowlist covers the Linear MCP **both ways** — a workflow agent
+   runs at `acceptEdits` and **cannot answer a mid-run prompt**, so a missing
+   Linear permission is a *silent stall*, not a surfaced error:
+   ```bash
+   grep -qE 'mcp__claude_ai_Linear__|mcp__linear-server__' ~/.claude/settings.json \
+     || { echo "ABORT: neither Linear MCP prefix is in ~/.claude/settings.json permissions.allow — a --workflow worker will stall silently on its first Linear write"; exit 1; }
+   ```
+   If neither prefix is present, **abort loudly and do NOT launch** (release the
+   lock, leave labels untouched — nothing was dispatched). Then **print the
+   §4.3 table** (same as §5.3 — the table is the review) and **in the same
+   turn** invoke the `Workflow` tool:
    - `scriptPath`: `$HOME/.claude/workflows/ggx-dispatch.workflow.js`
    - `args`: the `DISPATCH_ROSTER_JSON` value. Pass it as a JSON array — but
      note that in THIS harness the `Workflow` tool delivers `args` to the
@@ -636,11 +646,29 @@ Steps:
    record the `runId` into `run.json` (second atomic write) so a same-session
    resume can pass `resumeFromRunId`.
 
-4. **No inline ui-tweak lane under `--workflow` (Phase B).** Design-bug rows
-   were included in `DISPATCH_ROSTER_JSON` at step 1 and run in-script via
-   `runUiTweak` (level-1 dual-judge panel), so there is nothing to run inline
-   here. The §5.0 inline lane is the DEFAULT (non-workflow) path only. Their
-   outcomes come back in the script's `rows` like every other lane (step 5).
+4. **Watch the background run for liveness (P3 heartbeat); no inline lane.**
+   Design-bug rows are in the roster and run in-script via `runUiTweak`
+   (level-1 dual-judge panel), so there is **nothing to run inline** here (the
+   §5.0 inline lane is the default-path only). The single `Workflow` call is
+   opaque until completion, so while it runs in the background, poll it on a
+   **long interval (~5 min)** as a liveness + stall detector — the script
+   emits a `log()` line per ticket-stage transition (`[work]`, `[ui]
+   apply+preview`, `[ui] dual-judge`, `[ui] CLEAR -> commit`, `[fallback]`,
+   `[aggregate]`):
+   - Tail the workflow task's output (`TaskOutput`, tail only — keep main
+     context lean; not accumulating per-ticket context is the whole point of
+     `--workflow`) every ~5 min and surface a **one-line heartbeat** to the
+     user: agents active + the latest `log()` line.
+   - **Stall judgment:** a *single* worker can legitimately run >10 min with no
+     new script `log()` line (the work is inside the worker agent), so do NOT
+     treat log-line age alone as a stall. A stall is an agent **in-progress
+     with no forward tool-use activity** for an extended window (~10 min) — the
+     P2 failure mode (waiting on a prompt no one can answer). On that, **warn
+     the user** and consider `TaskStop`; the stuck ticket's
+     `dispatcher-*-in-flight` label keeps it re-pickable next sweep. With
+     `--max-parallel` defaulting to **3**, a stall blocks at most a small
+     batch.
+   Outcomes come back in the script's `rows` (step 5).
 
 5. **Consume the workflow result** in place of §6.1's wait loop. The
    `Workflow` completion notification carries the script's return value:
