@@ -337,7 +337,19 @@ Exit non-zero.
 
 **Auto mode**:
 
-Post a ticket comment (system-aware — Step 2's `<ticket-system>` value):
+**Idempotency gate (B1) — check before posting.** A dispatcher sweep can
+re-pick the same ticket (e.g. an in-flight label that survived a prior
+abort), so an unconditional post accumulates duplicate `<!-- ggx-work-error
+-->` comments. Before posting, fetch existing comments and scan for the
+marker — same list-then-skip pattern as `/_ticket-init` Step 3:
+
+- **Linear**: `mcp__claude_ai_Linear__list_comments --issueId <ticket-id>`
+- **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue --cloudId <jira-cloud-id> --issueIdOrKey <ticket-id>` (read its comments)
+
+If any existing comment contains `<!-- ggx-work-error -->`, **SKIP the post**
+(a prior run already flagged this ticket). Still print the stdout outcome
+line below and exit non-zero. Otherwise, post a ticket comment (system-aware
+— Step 2's `<ticket-system>` value):
 
 - **Linear**: `mcp__claude_ai_Linear__save_comment --issueId <ticket-id> --body <markdown>`
 - **Jira**: `mcp__claude_ai_Atlassian_Rovo__addCommentToJiraIssue --cloudId <jira-cloud-id> --issueIdOrKey <ticket-id> --commentBody <markdown>`
@@ -391,17 +403,34 @@ Print before spawn:
   lane=<lane> phase=<phase>
 ```
 
-When the spawned pipeline terminates:
+When the spawned pipeline terminates, classify the result into **one of
+three** outcomes (B3 — do NOT collapse to a binary success/failure; an exit
+0 alone is not success):
 
-- **Success** (the FF wrapper reported `done` and exited cleanly, OR
-  reported a designed pause like `Status: BLOCKED` for `need-spec-review`
-  handoff that `/port:ship` writes):
+- **Success** — the FF wrapper emitted a recognized **terminal** signal: its
+  own `done` marker, OR a designed pause (`Status: BLOCKED` for the
+  `need-spec-review` handoff `/port:ship` writes, or an explicit
+  port-paused/pause line). Then:
     1. If the spawned pipeline was `/port:ff`, run the **port → spec-review
        short-circuit** (Step 4.4a) before looping. This catches the
        canonical port-handoff state — `/port:ship` has added the
        `need-spec-review` label and posted its own user-facing comment —
        and exits the loop cleanly without a second `/route` call.
     2. Otherwise, continue loop (go to Step 3.1).
+
+- **Ambiguous-termination (B3)** — the FF wrapper exited 0 but emitted **no
+  recognized terminal signal**: its last output is an *intermediate stage*
+  message and no terminal marker / pause line is present. An intermediate
+  stage message is NOT terminal — e.g. `Apply complete.`, `Verify CLEAR.`,
+  `Detect: state B`, or any `/dev:*` / `/port:*` stage banner that is not the
+  pipeline's own `done`/pause. (Regression guard, CAF-370 / 2026-05-11: that
+  run treated `Apply complete.` as success → fell through to a no-progress
+  loop that span to the iter-cap.) Treating this as success would either
+  fall through Step 4.4a or re-loop with no state change — burning iterations
+  to `<iter-cap>`. Instead, **jump to Step 4.3 with `reason =
+  pipeline-ambiguous-termination: <spawn-cmd>`** (NOT a success-loop, NOT
+  `pipeline-failed`), and include the pipeline's last 20 lines so a human can
+  see where it stopped. Do NOT re-spawn.
 
 - **Failure** (FF wrapper exited non-zero, raised an error, hit its own
   abort path, or a stage marker file shows `Status: FAILED` / `ABORTED`) →
