@@ -25,10 +25,7 @@
 export const meta = {
   name: "ggx-dispatch",
   description:
-    "Phase A: fan out one /ggx-work --auto agent per locked dev/port/bug " +
-    "ticket; structured per-ticket result replaces §6.1 text parsing; " +
-    "per-ticket failure fallback writes Linear immediately. ui-tweak rows " +
-    "are rejected (they run §5.0-inline in the markdown caller until Phase B).",
+    "Phase A: fan out one /ggx-work --auto agent per locked dev/port/bug ticket; structured per-ticket result replaces §6.1 text parsing; per-ticket failure fallback writes Linear immediately. ui-tweak rows are rejected (they run §5.0-inline in the markdown caller until Phase B).",
   // phases is a pure literal — /workflows progress view only, no exec semantics.
   phases: [
     { title: "work", detail: "Drive each ticket through /ggx-work --auto" },
@@ -177,7 +174,17 @@ async function runFallback(res) {
 // pipeline() runs each row through both stages with NO batch barrier: a failed
 // ticket's fallback runs as soon as its work stage returns (the §6.2 immediacy
 // requirement), while other tickets are still in their work stage.
-const roster = Array.isArray(args) ? args : [];
+let roster = Array.isArray(args) ? args : [];
+// Tolerate a stringified array: the Workflow tool's `args` is delivered to the
+// script as a JSON STRING in this harness (confirmed 2026-06-08 CAF-371 run —
+// passing a live array still arrived as a string), so parse-and-retry rather
+// than silently falling through to the empty-roster no-op.
+if (roster.length === 0 && typeof args === "string") {
+  try {
+    const parsed = JSON.parse(args);
+    if (Array.isArray(parsed)) roster = parsed;
+  } catch (_) { /* not JSON — fall through to empty-roster handling */ }
+}
 
 if (roster.length === 0) {
   log("[ggx-dispatch] empty roster — nothing to fan out");
