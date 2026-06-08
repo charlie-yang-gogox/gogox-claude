@@ -15,7 +15,8 @@ Run tests with platform-appropriate incremental detection.
 
 - `--all` — run the full test suite (ignores incremental detection).
 - `--fix` — automatically diagnose and fix failures, then re-run until green.
-- Arguments can be combined: `--all --fix`.
+- `--no-escalate` — incremental mode only: when a changed file is "widely-used" (imported by many test files), do **NOT** fall back to the full suite — cap at the directly-affected tests (the file's mirror test + same-feature-dir tests) and note that the full suite is deferred to CI. For callers that re-test only because *base* moved (a rebase), not because the branch diff changed — e.g. `/ggx-pr-resolver`'s rebase stage — where the full-suite escalation buys little over what CI already runs. Ignored under `--all`.
+- Arguments can be combined: `--all --fix`, `--fix --no-escalate`.
 
 ---
 
@@ -72,7 +73,7 @@ b. Map source files to test files:
      - General pattern: replace `lib/` with `test/` and `.dart` with `_test.dart`.
      - Examples: `lib/features/foo/bar.dart` → `test/features/foo/bar_test.dart`; `lib/router/foo.dart` → `test/router/foo_test.dart`.
    - **A `lib/` file changed but no direct mirror test exists** → use `grep -rl` to find test files that import the changed file (search within `test/`).
-   - **A widely-used file changed** (e.g. `lib/core/`, `lib/theme/`, `lib/common/`, providers, models imported by 10+ test files) → fall back to **Full mode** and inform the user why.
+   - **A widely-used file changed** (e.g. `lib/core/`, `lib/theme/`, `lib/common/`, providers, models imported by 10+ test files) → fall back to **Full mode** and inform the user why. **Exception — `--no-escalate`:** do NOT escalate; cap `TEST_FILES` at the file's direct mirror test plus the `_test.dart` files in the same feature directory, and print `note: --no-escalate — skipping full-suite escalation for widely-used file <f>; the full suite is deferred to CI`. (2026-06-08: a `lib/router/app_router.dart` touch, imported by 29 test files, escalated a rebase-stage check to the full 4379-test suite (~350s) and dominated wall-clock — pure waste when only `base` moved, since CI re-runs the full suite on push anyway.)
 
 c. Collect into `TEST_FILES`. If empty (only non-code files changed), report "No affected tests found" and succeed.
 
