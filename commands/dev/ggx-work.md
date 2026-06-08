@@ -218,18 +218,22 @@ Invoke `<route-cmd>` inline. Parse its output for:
 - `phase` — from the `Phase:` line
 - `lane` — from the `Lane:` line (for logging)
 
-`/route` failure dispatch:
+`/route` failure dispatch. Parse the **first line-anchored** `Status:` line
+only — `route_status=$(grep -m1 '^Status:' <route-stdout>)` — per `/route`'s
+`--non-interactive` Status contract (it emits the `Status:` line as the first
+non-empty stdout line). **Do NOT use an unanchored grep**: a `Status:`
+substring appearing later in prose would mis-classify the outcome (M2). Then:
 
-- Exit non-zero with `Status: UNKNOWN_LANE` on stdout → STOP per the
-  `<auto-mode>` rules in Step 4.3 with
+- `route_status` is `Status: UNKNOWN_LANE` → STOP per the `<auto-mode>`
+  rules in Step 4.3 with
   `reason = unknown-lane: missing classification label`. Auto mode posts
   the standard ggx-work-error Linear comment so a human can attach the
   right classification label and re-invoke.
-- Exit non-zero with `Status: MISSING_TICKET_ID` → should not happen
+- `route_status` is `Status: MISSING_TICKET_ID` → should not happen
   (`/ggx-work` always passes an explicit ticket id), but if it does →
   STOP via Step 4.3 with `reason = route-internal: missing-ticket-id`.
-- Any other failure (exit non-zero with no recognized `Status:` line, or
-  malformed output) → STOP via Step 4.3 with `reason = route-call-failed`.
+- Any other failure (exit non-zero with no line-anchored `^Status:` match,
+  or malformed output) → STOP via Step 4.3 with `reason = route-call-failed`.
 
 #### Step 3.3: Classify `recommended_command` → branch
 

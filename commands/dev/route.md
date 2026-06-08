@@ -417,5 +417,14 @@ STOP. Do not execute the recommended command.
   No other prompts. With `--non-interactive`, both paths convert to
   structured `Status:` errors + non-zero exit; the caller (typically
   `/ggx-work --auto`) is responsible for surfacing the gate.
+- **`--non-interactive` Status contract (M2).** Every `--non-interactive`
+  STOP emits its `Status:` line as the **FIRST non-empty line of stdout** —
+  nothing (no banner, no log, no leading blank-stripped prose) is printed
+  before it. The line matches exactly
+  `^Status: (MISSING_TICKET_ID|UNKNOWN_TICKET_SYSTEM|UNKNOWN_LANE)$`. This
+  lets the caller classify the outcome with `grep -m1 '^Status:'` — an
+  anchored, first-match parse — instead of an unanchored scan that could
+  match a `Status:` substring appearing later in prose. On the success path
+  the recommendation block (Step 5) carries no `Status:` line at all.
 - **Idempotent.** Re-running `/route` on the same ticket with no state
   changes returns the same recommendation.
