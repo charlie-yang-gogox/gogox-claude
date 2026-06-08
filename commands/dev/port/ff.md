@@ -62,7 +62,8 @@ infer_port_stage() {
   n=$(ls "$wt/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
 
   # ship complete?
-  if [ -n "$id" ] && gh pr view "$id" --json state -q .state 2>/dev/null | grep -q OPEN; then
+  # Resolve PR by HEAD BRANCH, not ticket id (branch is <prefix>/<TICKET-ID>).
+  if [ -n "$id" ] && gh pr list --head "$(git -C "$wt" branch --show-current 2>/dev/null)" --state all --json state -q '.[0].state' 2>/dev/null | grep -q OPEN; then
     echo done; return; fi
 
   if [ -n "$n" ]; then

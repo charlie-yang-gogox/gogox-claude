@@ -135,7 +135,7 @@ Body (identical for both trackers):
 
 No state mutation. The done markers are:
 
-- Feature mode: (1) `openspec/changes/archive/$N/` exists, (2) `gh pr view $TICKET_ID --json state -q .state` returns `OPEN`, (3) tracker status is `In Review` (Linear) or matched transition applied (Jira), (4) `dispatcher-dev-in-flight` label absent on the ticket (Linear only — per Step 3 + `commands/dev/ggx-dispatcher.md` Plan X; Jira tickets do not have this label).
+- Feature mode: (1) `openspec/changes/archive/$N/` exists, (2) the PR for the worktree branch is `OPEN` — resolve by head branch (`gh pr list --head "$(git branch --show-current)" --state all --json state -q '.[0].state'`), NOT `gh pr view $TICKET_ID` which fails when the branch is `<prefix>/<TICKET-ID>`, (3) tracker status is `In Review` (Linear) or matched transition applied (Jira), (4) `dispatcher-dev-in-flight` label absent on the ticket (Linear only — per Step 3 + `commands/dev/ggx-dispatcher.md` Plan X; Jira tickets do not have this label).
 - Bug mode: (2)–(4) above. Step (1) is intentionally absent — there is no OpenSpec change in bug mode, so the walker derives `done` from PR-open + tracker `In Review` alone.
 
 Print: `Pipeline complete. PR: <PR URL>.`

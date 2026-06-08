@@ -191,7 +191,9 @@ delegates to `/bug:ff`'s own `infer_bug_stage` walker.
 ```
 locate worktree at ../<ticket-id> (case-insensitive, via `git worktree list`
 or fallback to ../<ticket-id> directly)
-check: is the ticket already shipped? (gh pr view <id> state == OPEN, OR
+check: is the ticket already shipped? (PR for the worktree branch is OPEN —
+       resolve by head branch: `gh pr list --head <branch> --state all`, NOT
+       `gh pr view <id>` which fails when branch is <prefix>/<id> — OR
        Linear status == In Review). If yes:
   recommended_command  = "(none — /bug:ff terminates at /dev:ship)"
   phase                = "done"
@@ -235,7 +237,9 @@ Same done-detection shape as Step 4.bug: the only phase information
 everything else delegates to `/ui-tweak:ff`'s own `infer_ui_stage` walker.
 
 ```
-check: is the ticket already shipped? (gh pr view <id> state == OPEN, OR
+check: is the ticket already shipped? (PR for the worktree branch is OPEN —
+       resolve by head branch: `gh pr list --head <branch> --state all`, NOT
+       `gh pr view <id>` which fails when branch is <prefix>/<id> — OR
        Linear status == In Review). If yes:
   recommended_command  = "(none — /ui-tweak:ff terminates at its draft PR)"
   phase                = "done"
