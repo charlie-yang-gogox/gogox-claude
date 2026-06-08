@@ -1,6 +1,6 @@
 # Port skill centralization & atomization
 
-**Status**: Design — awaiting approval before implementation
+**Status**: IMPLEMENTED — atomic stages live at `commands/dev/port/{start,explore,plan,synth,revise,ship,ff}.md`. Kept as the design rationale / decision record (referenced from `README.md` + `USER_GUIDE.zh-TW.md`).
 **Owner**: Charlie
 **Source**: flutter `.claude/skills/port/SKILL.md` (879 lines, v6.0)
 **Target**: `gogox-claude` (this repo), platform-agnostic via profile yaml
