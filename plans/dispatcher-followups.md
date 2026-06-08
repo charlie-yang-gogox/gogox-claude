@@ -8,23 +8,17 @@ _寫於 2026-06-08。來源：ai-expert review（2026-05-19，`dev-dispatcher-wi
 - **B1** ✅ FIXED（PR #57，2026-06-08）— `/ggx-work` Step 4.3 auto-mode 貼 `<!-- ggx-work-error -->` 前先 `list_comments`（Jira: `getJiraIssue` 讀 comments）掃 marker，存在則 skip。沿用 `_ticket-init` Step 3 list-then-skip。
 - **B3** ✅ FIXED（PR #57，2026-06-08）— `/ggx-work` Step 4.4 由二元改三元：加 "ambiguous-termination"（exit 0 但無 terminal signal、最後一行是 intermediate stage banner）→ 轉 Step 4.3 `reason = pipeline-ambiguous-termination`。含 CAF-370 負例（"Apply complete." / "Verify CLEAR." 非終態）regression guard。
 
-## 仍開（依嚴重度）
+- **M2** ✅ FIXED（PR #57，2026-06-08）— route.md 加 `--non-interactive` Status contract guardrail（`Status:` 行必為 stdout 第一個非空白行，`^Status: (MISSING_TICKET_ID|UNKNOWN_TICKET_SYSTEM|UNKNOWN_LANE)$`）；`/ggx-work` 的 `/route` failure dispatch 改用錨定 `grep -m1 '^Status:'`。
+- **M3** ✅ FIXED（PR #57，2026-06-08）— dispatcher §2.2 加 conflict check (d)：`ready-to-port` 在 + classification ≠ `port` → skip + 解釋註解。**未**對 `ready-to-dev` 鏡像（它可合法搭 classification=port，post-spec-review 狀態）。
 
-### M2 — `/route --non-interactive` Status-line 解析契約鬆（major）
-- **檔**：`commands/dev/route.md` Step 1 & 3（約 `:76-80`）；caller 解析在 `ggx-work.md:~232` 用未錨定 grep。
-- **問題**：emit `Status: MISSING_TICKET_ID` / `UNKNOWN_LANE` 但沒規定「必須是 stdout 第一行」。caller 用無錨 grep → 若 Status 字串出現在後段輸出會誤判。
-- **修法**：route.md 明訂「`Status:` 行必為 stdout 第一個非空白行；caller 以 `grep -m1 '^Status:'` 解析」，並把 `/ggx-work` 的 parse 改成錨定 `^Status:`。
+## 仍開
 
-### M3 — workflow-label vs classification-label 衝突未檢（major）
-- **檔**：`commands/dev/ggx-dispatcher.md` §2.2（約 `:291-304`，現有 conflict check a/b/c）。
-- **問題**：`ready-to-port` + classification ≠ `port` → dispatcher 鎖 `dispatcher-port-in-flight` 但 `/route` 推薦 `/dev:ff`；`/dev:ship` 只移除 `dispatcher-dev-in-flight` → port in-flight label 永久卡住。
-- **修法**：加 conflict check (d)：`ready-to-port ∈ labels 且 port ∉ classification → skip + 解釋註解`。**不要**對 `ready-to-dev` 鏡像（它可合法搭 classification=port，即 post-spec-review 狀態）。
-- **備註**：若未來做 `ready-to-dispatch` label 合併（見下方 deferred），M3 自動消失。
+（無 —— B1/B2/B3/M1/M2/M3 皆已修。下列 minor 已決議不做。）
 
-### parse.py 重複（minor cleanup）
-- **檔**：`skills/shared/daily-summary/parse.py`（2276 行）vs `skills/_lib/parse.py`（2280 行，canonical）。
-- **問題**：僅 docstring 差異，但 daily-summary 的 SKILL.md 呼叫自己的 stale copy（`~/.claude/skills/daily-summary/parse.py`），monthly-summary 正確呼叫 `_lib`。
-- **修法**：刪 daily-summary 的 copy、改呼叫 `_lib`（或 symlink）。統一單一 canonical 路徑。
+## 不做（out of scope）
+
+- **parse.py 重複**：`skills/shared/daily-summary/parse.py` vs `skills/_lib/parse.py` 的 dedup —— **user 決議 out of scope（2026-06-08），不做。**
+- **N1-N3 minors**（ai-expert review 的 nice-to-have wording 修補）：未排程。
 
 ## Deferred 架構決策（記錄，非本輪）
 
