@@ -1,0 +1,26 @@
+# Prompt platform profile.
+# Read by gogox-claude commands at runtime when the resolved platform is "prompt".
+#
+# Used by repos whose "code" is prompts (commands/*.md), markdown-embedded bash,
+# and workflow scripts (workflows/*.js) — there is NO compiler and NO app to build.
+# gogox-claude (this repo) is the first such target.
+#
+# Why a dedicated platform instead of reusing `node`: node.yaml's commands
+# (`npm ci` / `npm test` / `eslint`) all fail here — there is no package.json,
+# no test runner, no eslint config. `platform` is also a semantic signal other
+# commands branch on (check-test forks flutter/android/ios), so mislabelling this
+# repo as `node` would route it into node-shaped assumptions. `prompt` is honest.
+#
+# Verification model (there is no build):
+#   1. prompt-lint.sh — deterministic structural checks (JS/shell syntax,
+#      command/skill frontmatter, markdown-bash footguns like macOS `timeout`).
+#   2. dogfooding     — run the changed skill on a real ticket in a target app
+#      repo (manual, pre-merge HITL gate). NOT wired into --auto: dogfooding needs
+#      a global install-switch (./install.sh from the worktree) and can self-pollute
+#      the live tooling, so it must stay human-driven. See
+#      plans/ggx-claude-self-dev-workflow.md.
+
+deps_install: ""                        # no package manager — nothing to install
+test_cmd: bash scripts/prompt-lint.sh   # the "build" surrogate. NOT /check-test (it has no prompt branch); a direct command, like node.yaml's `npm test`.
+format_cmd: ""                          # no formatter wired yet (candidate: npx prettier --write '**/*.md')
+ide_open_hint: "open the worktree in VS Code, or /list-worktrees to see all active worktrees"

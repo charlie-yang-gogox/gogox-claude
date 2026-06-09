@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gogox-claude 自身開發工作流程 — 架構規劃</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --red:#f85149; --purple:#bc8cff; --cyan:#39c5cf;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,"PingFang TC","Microsoft JhengHei",Segoe UI,sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1100px;margin:0 auto;padding:32px 24px 80px}
+  h1{font-size:30px;margin:0 0 4px;letter-spacing:-.5px}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 28px}
+  h2{font-size:21px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:8px}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--cyan)}
+  p{margin:8px 0}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13px;color:#ffd9a0}
+  .lead{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);
+    border-radius:8px;padding:16px 20px;margin:18px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+  .card h4{margin:0 0 8px;font-size:14px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--border);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--fg);font-weight:600}
+  td code{font-size:12.5px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;
+    letter-spacing:.03em;white-space:nowrap}
+  .t-apply{background:rgba(63,185,80,.15);color:var(--green);border:1px solid rgba(63,185,80,.4)}
+  .t-adapt{background:rgba(210,153,34,.15);color:var(--amber);border:1px solid rgba(210,153,34,.4)}
+  .t-skip{background:rgba(248,81,73,.13);color:var(--red);border:1px solid rgba(248,81,73,.4)}
+  .t-new{background:rgba(188,140,255,.15);color:var(--purple);border:1px solid rgba(188,140,255,.4)}
+  /* flow diagram */
+  .flow{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px 20px;margin:18px 0;overflow-x:auto}
+  .flowrow{display:flex;align-items:stretch;gap:0;min-width:760px}
+  .stage{flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px 12px;position:relative;text-align:center}
+  .stage .who{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .stage .cmd{font-family:var(--mono);font-size:12.5px;color:var(--accent);margin:6px 0 4px;font-weight:600}
+  .stage .desc{font-size:11.5px;color:var(--fg)}
+  .arrow{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:20px;padding:0 6px;flex:0 0 auto}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 0;font-size:12.5px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:50%}
+  .ascii{font-family:var(--mono);font-size:12.5px;white-space:pre;background:var(--panel);border:1px solid var(--border);
+    border-radius:10px;padding:18px;overflow-x:auto;color:var(--fg);line-height:1.45}
+  .warn{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.35);border-left:3px solid var(--red);
+    border-radius:8px;padding:14px 18px;margin:14px 0}
+  .ok{background:rgba(63,185,80,.07);border:1px solid rgba(63,185,80,.35);border-left:3px solid var(--green);
+    border-radius:8px;padding:14px 18px;margin:14px 0}
+  .num{counter-reset:step}
+  ol{padding-left:20px}
+  ol li{margin:6px 0}
+  ul li{margin:4px 0}
+  .pill{font-family:var(--mono);font-size:12px;background:#21262d;border:1px solid var(--border);
+    padding:1px 7px;border-radius:6px;color:var(--cyan)}
+  .q{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:4px 18px 14px;margin:12px 0}
+  .q h4{color:var(--accent);margin:14px 0 4px}
+  .foot{margin-top:50px;padding-top:16px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
+  .kbd{font-family:var(--mono);background:#21262d;border:1px solid var(--border);border-bottom-width:2px;
+    border-radius:5px;padding:1px 6px;font-size:12px}
+  b.hl{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>gogox-claude 自身的 Linear → dev → PR 工作流程</h1>
+  <p class="sub">把既有的 app-repo 開發 pipeline，改造成能開發「skills 倉庫本身」的架構規劃 · 2026-06-09</p>
+
+  <div class="lead">
+    <b>一句話：</b>你要的流程（Linear → 確認完整度 → 確認相依 → 平行做 → PR）已經存在，
+    由 <code>/ticket-analyze</code> → <code>/ggx-dispatcher</code> → <code>/ggx-work</code> → <code>/route</code> →
+    ff pipeline 組成。但它是<b class="hl">為 flutter app repo（CAF/DAF team）設計的</b>。要讓它跑在
+    <b class="hl">gogox-claude 自己</b>身上，缺三塊地基：<b>(1) 這個 repo 沒有 profile</b>、
+    <b>(2) 「build / test / verify」對 prompt 倉庫沒有意義</b>、<b>(3) 你在修的正是 pipeline 自己（自我修改風險）</b>。
+    本頁規劃如何補齊，並逐一對應現有 skill 哪些直接用、哪些要改、哪些跳過。
+  </div>
+
+  <!-- ───────────────────────────── 1 ───────────────────────────── -->
+  <h2><span class="n">1</span>app-repo vs. meta-repo：差在哪</h2>
+  <p>現有 pipeline 的每個假設，放到 gogox-claude 上幾乎都要重新定義：</p>
+  <table>
+    <tr><th style="width:22%">面向</th><th>flutter app repo（CAF/DAF）</th><th>gogox-claude（本 repo）</th></tr>
+    <tr><td>「程式碼」是什麼</td><td>Dart / Kotlin / Swift</td><td><code>commands/*.md</code> prompt + markdown 內嵌 bash + <code>workflows/*.js</code></td></tr>
+    <tr><td>build</td><td><code>flutter build</code> / gradle / xcodebuild</td><td><b class="hl">無 build</b>（prompt 不編譯）</td></tr>
+    <tr><td>test / verify</td><td>flutter test、device preview、Figma 比對</td><td>無自動測試 → 真正驗證是<b class="hl">在 app repo 上 dogfood 這個 skill</b>（如 CAF-609 驗 ui-tweak）</td></tr>
+    <tr><td>OpenSpec</td><td><code>/dev:ff</code> 全套 spec 產製</td><td>改一段 prose / bash，<b class="hl">不需要 spec</b></td></tr>
+    <tr><td>profile</td><td>registry 有 7 個 entry</td><td><b class="hl">完全沒有</b>（無 <code>.gogox-claude.yaml</code>、無 registry）</td></tr>
+    <tr><td>Linear team</td><td>CAF / DAF</td><td><span class="pill">GGC</span>（gogox-claude team，今天剛建）</td></tr>
+    <tr><td>改完怎麼生效</td><td>app 重 build 即生效</td><td><code>install.sh</code> 把 repo symlink 進 <code>~/.claude</code> → <b class="hl">沒重裝就不生效</b></td></tr>
+    <tr><td>風險</td><td>改壞 app</td><td><b class="hl">改壞的是 pipeline 自己</b>（dispatcher 改 dispatcher）</td></tr>
+  </table>
+
+  <!-- ───────────────────────────── 2 ───────────────────────────── -->
+  <h2><span class="n">2</span>目標流程（改造後）</h2>
+  <div class="flow">
+    <div class="flowrow">
+      <div class="stage">
+        <div class="who">上游 gate</div>
+        <div class="cmd">/ticket-analyze</div>
+        <div class="desc">判內容完整度<br>建相依 DAG<br>標 ready / 擋住</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="stage">
+        <div class="who">平行 fan-out</div>
+        <div class="cmd">/ggx-dispatcher<br>--team:GGC</div>
+        <div class="desc">sweep <code>ready-to-dev</code><br>race-lock<br>平行派工</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="stage">
+        <div class="who">單票 orchestrator</div>
+        <div class="cmd">/ggx-work → /route</div>
+        <div class="desc">分類 → 選 lane<br>（skill 編輯走<br>OpenSpec-free 路徑）</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="stage">
+        <div class="who">改 + 驗 + 出 PR</div>
+        <div class="cmd">start→edit→<br>verify→review→ship</div>
+        <div class="desc">worktree 改檔<br>跑 prompt-lint<br>開 draft PR</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="stage">
+        <div class="who">人工關卡</div>
+        <div class="cmd">review + merge<br>+ install.sh</div>
+        <div class="desc">dogfood 確認<br>merge → 解鎖<br>下一波</div>
+      </div>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--green)"></span>直接沿用</span>
+      <span><span class="dot" style="background:var(--amber)"></span>需改造</span>
+      <span><span class="dot" style="background:var(--purple)"></span>要新建</span>
+      <span><span class="dot" style="background:var(--red)"></span>跳過</span>
+    </div>
+  </div>
+  <p>核心保持不變：<b>analyze 已把「有相依」的票擋在 <code>need-dependency</code>，所以 dispatcher 一個 sweep 派出去的票，by construction 彼此獨立 → 平行安全。</b>
+  「跨波次」由你 merge 完 PR 後重跑 analyze 觸發（draft PR 的人工 review 本來就是天然的波次檢查點）。</p>
+
+  <!-- ───────────────────────────── 3 ───────────────────────────── -->
+  <h2><span class="n">3</span>現有 skill 對應表：用 / 改 / 跳 / 新建</h2>
+  <table>
+    <tr><th style="width:20%">Skill / flow</th><th style="width:13%">狀態</th><th>在 gogox-claude 上怎麼用</th></tr>
+    <tr><td><code>/ticket-analyze</code></td><td><span class="tag t-adapt">改造</span></td><td>邏輯沿用（completeness + 相依 DAG + topo order）。<b>要改 lane checklist</b>：新增「skill-edit」清單——改哪個檔、改什麼、驗收方式；不要求 Figma / repro steps。</td></tr>
+    <tr><td><code>/ggx-dispatcher</code></td><td><span class="tag t-apply">沿用</span></td><td>Step 0 只要 profile 解析得到 <code>team_key=GGC</code> 就能跑。平行 fan-out、race-lock、recovery 全部照用。<code>--workflow</code> 路徑也可用。</td></tr>
+    <tr><td><code>/ggx-work</code> + <code>/route</code></td><td><span class="tag t-apply">沿用</span></td><td>照常 route。關鍵是分類 label 決定 lane（見下方「OpenSpec 政策」）。</td></tr>
+    <tr><td><code>/bug:ff</code></td><td><span class="tag t-apply">沿用</span></td><td><b class="hl">最契合 skill 編輯</b>：它 <em>跳過</em> OpenSpec 全部 stage（figma/detect/align/apply），只有 start → 改檔 → verify → review → ship。改一段 prompt/bash 正好。</td></tr>
+    <tr><td><code>/dev:ff</code>（OpenSpec 全套）</td><td><span class="tag t-skip">多半跳過</span></td><td>figma / detect / align / apply（spec 產製）對「改 prose」是 overkill。只有少數真要設計新 skill 行為時才值得。</td></tr>
+    <tr><td><code>/dev:verify</code></td><td><span class="tag t-adapt">改造</span></td><td>骨架沿用（跑 test_cmd + verify-agent 審 diff + commit gate）。但 <code>test_cmd</code> 要換成 <b>prompt-lint</b>（見 §4）。verify-agent 改審「prompt/契約是否自洽」而非編譯。</td></tr>
+    <tr><td><code>/dev:figma</code> · ui-tweak preview/demo</td><td><span class="tag t-skip">跳過</span></td><td>無 UI、無裝置、無 Figma。整條 design/device 路徑 N/A。</td></tr>
+    <tr><td><code>/code-review</code> · <code>/review</code></td><td><span class="tag t-apply">沿用</span></td><td>對 .md / .js diff 照樣有效——尤其抓 bash 陷阱、契約漂移、跨檔 stale 引用。</td></tr>
+    <tr><td><code>/spec-lint</code></td><td><span class="tag t-skip">跳過</span></td><td>是 OpenSpec change-dir 的 linter，與 skills 無關。</td></tr>
+    <tr><td><code>/dev:ship</code> · <code>/pull-request</code></td><td><span class="tag t-apply">沿用</span></td><td>commit → push → draft PR → 票轉 In Review。OpenSpec archive 步驟在 bug lane 自動跳過。</td></tr>
+    <tr><td><code>/add-worktree</code></td><td><span class="tag t-adapt">改造</span></td><td>沿用 <code>../GGC-N</code> worktree 慣例，但 deps-install 對本 repo 是 no-op（無 npm ci）。profile 的 <code>deps_install</code> 設空。</td></tr>
+    <tr><td>profile（registry / platform）</td><td><span class="tag t-new">新建</span></td><td>本 repo 無 profile。要建 <code>gogox-claude</code> 的 repo profile + 一個新的 <span class="pill">prompt</span> platform（§4）。</td></tr>
+    <tr><td>prompt-lint 驗證層</td><td><span class="tag t-new">新建</span></td><td>shellcheck 內嵌 bash + <code>node --check</code> workflows + <code>bash -n install.sh</code> + frontmatter 檢查（§4）。<b>F1 那種 macOS <code>timeout</code> bug 正是它要擋的。</b></td></tr>
+  </table>
+
+  <!-- ───────────────────────────── 4 ───────────────────────────── -->
+  <h2><span class="n">4</span>要新建的地基（3 件）</h2>
+
+  <div class="grid2">
+    <div class="card">
+      <h4>① repo profile</h4>
+      <p>放 <code>&lt;repo&gt;/.gogox-claude.yaml</code>（committed → co-owner 共用，符合 ARCHITECTURE.md「shared repo」精神）：</p>
+      <div class="ascii">ticket_system: linear
+branch_prefix: GGC
+platform: prompt        # 新 platform
+product: gogox-claude</div>
+    </div>
+    <div class="card">
+      <h4>② <span class="pill">prompt</span> platform profile</h4>
+      <p><code>commands/dev/profiles/platform/prompt.yaml</code>——因為 <code>node.yaml</code> 的 <code>npm ci / npm test / eslint</code> 本 repo 都沒有：</p>
+      <div class="ascii">deps_install: ""              # no-op
+test_cmd: ./scripts/prompt-lint.sh
+format_cmd: ""                # 或 prettier --write '**/*.md'
+ide_open_hint: "open in VS Code"</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h4>③ prompt-lint 驗證腳本（取代「build」）</h4>
+    <p>prompt 倉庫沒有編譯器，但有可機器檢查的東西。<code>scripts/prompt-lint.sh</code> 對「本次 diff 改到的檔」跑：</p>
+    <div class="ascii">1. shellcheck   — 抽出 .md 內嵌 ```bash 區塊做靜態檢查   ← 會擋 F1（macOS 無 timeout）
+2. node --check workflows/*.js                          ← 語法錯立刻現形
+3. bash -n install.sh                                    ← 安裝腳本不破
+4. frontmatter lint — 改到的 command/skill .md 有合法 name/description
+   （ARCHITECTURE.md「待辦」清單裡的 SKILL.md 驗證，這裡順手補上）</div>
+    <p class="muted" style="color:var(--muted);font-size:13px;margin-top:8px">注意：自動 lint 只能擋「語法 / 形狀」級的錯。<b>prompt 真的有沒有照預期跑，唯一證明是 dogfood</b>——見 §6。</p>
+  </div>
+
+  <h3>OpenSpec 政策（建議拍板）</h3>
+  <div class="ok">
+    skill 編輯預設走 <b>bug lane（<code>/bug:ff</code>）</b>，它原生跳過 OpenSpec。
+    GGC 票照 <code>bug</code> / <code>feature</code> 分類即可——大多數「修 prompt/bash」的票標 <code>bug</code> 就能吃到 OpenSpec-free 的最短路徑；
+    只有「設計一個全新 skill 行為」才值得走 <code>/dev:ff</code> 全套。
+  </div>
+
+  <!-- ───────────────────────────── 5 ───────────────────────────── -->
+  <h2><span class="n">5</span>相依 + 波次：套到 GGC-1~9</h2>
+  <p>相依偵測<b>優先讀 Linear 原生 <code>blockedBy</code> relations</b>（文字推斷在 <code>--non-interactive</code> 下只當參考）。
+  目前 GGC 票只設了 parent/sub-issue（<b>不是</b> blocking edge）→ 不設 relation 的話 analyze 會把它們全判獨立、全部平行。實際相依只有一條：</p>
+  <div class="ascii">                ┌──────────────────────── 第 1 波（平行）────────────────────────┐
+   GGC-2 F1 ─┐    GGC-3 F2     GGC-5 D      GGC-6 C      GGC-7 B+     GGC-8 A2    GGC-9 E
+   (timeout) │    (lock污染)   (審查並行)   (demo抓對頁) (flavor偵測) (HMR)       (cursor)
+             │
+             │  blockedBy（F1 沒修好 → iOS device 偵測壞 → 無法量測 iOS 啟動時間）
+             ▼
+   GGC-4 Phase 1.5 iOS spike  ───────────────── 第 2 波（GGC-2 的 PR merge 後解鎖）</div>
+  <p>於是波次自然成形：</p>
+  <ol>
+    <li>(一次性) 設 <code>GGC-4 blockedBy GGC-2</code>；其餘維持獨立。</li>
+    <li><code>/ticket-analyze</code>（GGC team）→ F1/F2/D/C/B+/A2/E 標 <code>ready-to-dev</code>，Phase 1.5 標 <code>need-dependency</code>。</li>
+    <li><code>/ggx-dispatcher --team:GGC</code> → 第 1 波 7 張票平行開 draft PR。</li>
+    <li>你 review + merge <b>GGC-2 (F1)</b> 的 PR → 重跑 <code>/ticket-analyze</code> → GGC-4 自動翻 <code>ready-to-dev</code> → 再 dispatch（第 2 波）。</li>
+  </ol>
+
+  <!-- ───────────────────────────── 6 ───────────────────────────── -->
+  <h2><span class="n">6</span>本 repo 獨有的兩個陷阱</h2>
+
+  <div class="warn">
+    <h3 style="margin-top:0;color:var(--red)">⚠ 自我修改（self-modification）</h3>
+    <p>你在修的檔（<code>commands/dev/ggx-dispatcher.md</code>、<code>/dev:verify</code> …）<b>就是正在驅動這次工作的 pipeline 本身</b>。兩件事保護你、一件事要小心：</p>
+    <ul>
+      <li><b>✓ worktree 隔離</b>：agent 在 <code>../GGC-N</code> 自己的 copy 改檔，不動 main worktree。</li>
+      <li><b>✓ 執行用的是 installed 版</b>：跑中的 orchestrator 讀 <code>~/.claude</code>（symlink 到 main worktree），不讀 agent 的 worktree copy → 改 dispatcher 不會在半途改變正在跑的 dispatcher 行為。</li>
+      <li><b>⚠ 但這也代表：改完的 skill 要「真的測」，必須先 <code>install.sh</code>（或把 <code>~/.claude</code> 指向該 worktree）才生效</b>。沒重裝＝你 review 的是新碼、跑的是舊碼。</li>
+    </ul>
+  </div>
+
+  <div class="warn">
+    <h3 style="margin-top:0;color:var(--red)">⚠ dogfooding 需要一個「靶場」app repo</h3>
+    <p>像 <code>/ggx-dispatcher</code>、<code>/ui-tweak</code>、<code>/dev:ff</code> 這種 skill，<b>真正的驗收是拿它去跑一張真 app 票</b>（F1 是在 CAF-609 上才現形的）。
+    所以本 repo 的「verify」是兩段：<b>(a) prompt-lint</b>（自動、擋語法/bash 陷阱）+ <b>(b) dogfood</b>（半人工、在 gogox-client-flutter 上跑一遍，HITL 確認後才 merge）。
+    建議把 (b) 設成 ship 前的人工 gate，而不是塞進 <code>--auto</code>。</p>
+  </div>
+
+  <!-- ───────────────────────────── 7 ───────────────────────────── -->
+  <h2><span class="n">7</span>需要你拍板</h2>
+  <div class="q">
+    <h4>Q1 · profile 放哪</h4>
+    <p>建議 <b>in-repo <code>.gogox-claude.yaml</code>（committed）</b>，co-owner clone 即得；而非只放個人 registry。</p>
+    <h4>Q2 · 新 <span class="pill">prompt</span> platform vs. 硬套 node</h4>
+    <p>建議<b>新建 prompt platform</b>，配 <code>scripts/prompt-lint.sh</code>。node.yaml 的 npm/eslint 對本 repo 全部不適用。</p>
+    <h4>Q3 · verify 的最低門檻</h4>
+    <p>建議 <code>test_cmd</code> = shellcheck(內嵌bash) + node --check + bash -n + frontmatter；dogfood 設成 <b>ship 前人工 gate</b>（不進 --auto）。</p>
+    <h4>Q4 · GGC 票的分類慣例</h4>
+    <p>「修 prompt/bash」標 <code>bug</code>（吃 OpenSpec-free bug lane）；「設計新 skill 行為」才標 <code>feature</code>。要不要採這個慣例？</p>
+    <h4>Q5 · 我現在可以動手的</h4>
+    <p>(a) 建 <code>.gogox-claude.yaml</code> + <code>prompt.yaml</code> + <code>scripts/prompt-lint.sh</code> 骨架；
+       (b) 設 <code>GGC-4 blockedBy GGC-2</code>；
+       (c) 把本 HTML 規劃同步寫一份 <code>plans/*.md</code> 給 review。</p>
+  </div>
+
+  <div class="foot">
+    來源：<code>commands/dev/{ggx-dispatcher,ticket-analyze,route,spec-review}.md</code>、<code>ARCHITECTURE.md</code>、
+    <code>commands/dev/profiles/platform/*.yaml</code>、<code>plans/ui-tweak-designer-feedback-v2.md</code>。
+    本頁為規劃提案，未做任何 Linear / repo 變更。
+  </div>
+
+</div>
+</body>
+</html>

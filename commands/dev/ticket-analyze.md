@@ -101,7 +101,8 @@ timestamp is shared across all tickets in the run.
 ### Step 1.5: Batch fetch (batch mode only)
 
 1. **Resolve project profile** per `_ticket-lib.md` to obtain
-   `ticket_system` and `<team_key>`:
+   `ticket_system`, `<team_key>`, and `<platform>` (the latter feeds the
+   Step 3 platform overlay):
    - `<repo-root>/.gogox-claude.yaml`, else the registry entry
      `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml`.
    - Neither resolves → STOP with:
@@ -275,6 +276,23 @@ explanation each]}`.
 Figma is conditionally required so non-UI tickets are not falsely flagged.
 When in doubt whether UI is implied, do not flag — a missing Figma link
 surfaces again at `/dev:figma` with a better error.
+
+**Platform overlay — `platform: prompt` repos (e.g. gogox-claude itself).**
+When the resolved `<platform>` (Step 1.5.1) is `prompt`, the artifacts are
+prompts / skill bodies / workflow scripts, NOT an app — so the lane checklists
+above are reinterpreted, and several items simply do not apply:
+
+- **Drop**: device / build / version / OS-environment (there is no build), and
+  Figma / before-after references (there is no UI). Do NOT flag their absence.
+- **Require instead, for every lane** (this replaces the lane-specific items):
+  - [ ] **Where** — which command / skill / workflow file or area changes
+        (e.g. `commands/design/ui-tweak/preview.md`).
+  - [ ] **What** — the concrete change (the fix, the new behavior, the delta).
+  - [ ] **≥ 1 testable acceptance / done-when** statement.
+- Lane derivation is unchanged (`bug` / `feature` still routes via `/route`);
+  only the *completeness* lens changes. A gogox-claude `Bug` like a macOS
+  `timeout` regression is "complete" when it names the file, the defect, and how
+  to confirm the fix — not when it lists repro-env or a Figma link.
 
 ### Step 4: Dependency inference + confirmation
 

@@ -81,6 +81,15 @@ Use the **Agent** tool with `subagent_type: "verify-agent"`, `mode: "bypassPermi
 - `change name` — `$N` if non-empty, else pass `(bug-mode: no openspec change)` so the auditor knows to skip openspec cross-checks and rely on diff + tests alone.
 - `figma raw directory` — `$FIGMA_RAW` if non-empty, else omit
 
+**Prompt-platform repos (`{platform}` = `prompt`, e.g. gogox-claude).** Also tell
+the auditor the diff is prompts / markdown / bash / workflow JS, NOT app code — so
+"changed identifiers / call sites" means slash-command names, `.dev/*` marker
+paths, profile keys, and cross-file references (grep for stale references to
+those, not code symbols). The "build" that confirms compilation is
+`scripts/prompt-lint.sh`, already run in Step 1 via `{test_cmd}`. There are no
+openspec artifacts on this platform (skill-edits use the bug lane), so pass the
+`(bug-mode: no openspec change)` change-name form.
+
 **Pass the raw dir, not the receipt path.** The auditor must read `.dev/figma-raw/*.json` directly, not `.dev/figma-context.md`. The receipt is a curated summary written by the implementing pipeline — sharing it with the auditor would re-converge auditor and implementer onto the same filtered view, defeating the whole point of the split. The receipt is referenced internally by verify-agent only for sha256 cross-check.
 
 After the agent returns, read `.dev/verify-pass.md`:
