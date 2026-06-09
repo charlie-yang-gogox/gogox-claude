@@ -45,23 +45,37 @@ else the platform default.
 as-is — no flutter resolution, no flutter tooling, nothing here may fail a native-platform run:
 
 ```bash
-# /ui-tweak:start writes this marker; inline fallback covers a stale worktree from before the marker.
-# Probe-based, mirroring start.md: candidates by priority (pinned → fvm first; fvm resolved by
-# absolute path since it is often off the agent shell's PATH, e.g. ~/.pub-cache/bin/fvm), each
-# verified with one `--version` run; the first that WORKS is persisted. Never guess from config
-# alone — some machines have only fvm (no bare flutter), others only bare flutter (fvm off PATH).
+# /ui-tweak:start writes the worktree-local marker; this inline fallback covers a stale worktree from
+# before the marker. It MIRRORS start.md (a): prefer the per-machine shared cache (a relative token),
+# else probe by priority (direct SDK binary → fvm wrapper → bare). Cache file: line1=CACHE_FMT,
+# line2=token (sdk-rel|<rel> / fvm-abs|<abs fvm> / bare). Tokens are re-expanded against THIS $WT —
+# never a stale $WT-absolute path. Never guess from config alone (some machines have only fvm).
 if [ -f "$WT/.dev/ui-tweak/flutter-bin" ]; then FLUTTER_BIN=$(cat "$WT/.dev/ui-tweak/flutter-bin"); else
+  TRUNK=$(dirname "$(git rev-parse --git-common-dir)"); CACHE_DIR="$HOME/.cache/ui-tweak/$(basename "$TRUNK")"; CACHE_FMT=v1
   probe() { eval "$1 --version" >/dev/null 2>&1; }
-  FVM_BIN=$(command -v fvm 2>/dev/null || true)
-  [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
-  PINNED=0; { [ -f "$WT/.fvmrc" ] || [ -f "$WT/.fvm/fvm_config.json" ]; } && PINNED=1
+  expand_token() { case "$1" in
+      "sdk-rel|"*) printf '%s' "$WT/${1#sdk-rel|}";;
+      "fvm-abs|"*) printf '%s flutter' "${1#fvm-abs|}";;
+      bare)        printf 'flutter';;
+    esac; }
+  bin_exists() { h=${1% flutter}; case "$h" in /*) [ -x "$h" ];; *) command -v "$h" >/dev/null 2>&1;; esac; }
   FLUTTER_BIN=""
-  if [ "$PINNED" = 1 ] && [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then FLUTTER_BIN="$FVM_BIN flutter"
-  elif probe flutter; then FLUTTER_BIN="flutter"
-  elif [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then FLUTTER_BIN="$FVM_BIN flutter"
+  if [ -f "$CACHE_DIR/flutter-kind" ] && [ "$(sed -n 1p "$CACHE_DIR/flutter-kind")" = "$CACHE_FMT" ]; then
+    cand=$(expand_token "$(sed -n 2p "$CACHE_DIR/flutter-kind")"); [ -n "$cand" ] && bin_exists "$cand" && FLUTTER_BIN="$cand"
   fi
-  [ -z "$FLUTTER_BIN" ] && { echo "FAIL: no working flutter found (tried fvm + bare flutter)." >&2; exit 1; }
-  printf '%s\n' "$FLUTTER_BIN" > "$WT/.dev/ui-tweak/flutter-bin"
+  if [ -z "$FLUTTER_BIN" ]; then
+    FVM_BIN=$(command -v fvm 2>/dev/null || true); [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
+    PINNED=0; { [ -f "$WT/.fvmrc" ] || [ -f "$WT/.fvm/fvm_config.json" ]; } && PINNED=1
+    SDK_REL=".fvm/flutter_sdk/bin/flutter"; KIND=""
+    if   [ "$PINNED" = 1 ] && [ -x "$WT/$SDK_REL" ] && probe "$WT/$SDK_REL"; then FLUTTER_BIN="$WT/$SDK_REL"; KIND="sdk-rel|$SDK_REL"
+    elif [ "$PINNED" = 1 ] && [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter";  then FLUTTER_BIN="$FVM_BIN flutter"; KIND="fvm-abs|$FVM_BIN"
+    elif probe flutter; then FLUTTER_BIN="flutter"; KIND="bare"
+    elif [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then FLUTTER_BIN="$FVM_BIN flutter"; KIND="fvm-abs|$FVM_BIN"
+    fi
+    [ -z "$FLUTTER_BIN" ] && { echo "FAIL: no working flutter found (tried fvm + bare flutter)." >&2; exit 1; }
+    mkdir -p "$CACHE_DIR"; [ -n "$KIND" ] && printf '%s\n%s\n' "$CACHE_FMT" "$KIND" > "$CACHE_DIR/flutter-kind"
+  fi
+  mkdir -p "$WT/.dev/ui-tweak"; printf '%s\n' "$FLUTTER_BIN" > "$WT/.dev/ui-tweak/flutter-bin"
 fi
 ```
 

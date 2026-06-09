@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Stage 1 of the /ui-tweak pipeline — the up-front worktree split (R19), mirroring /dev:start and /port:start. Resolves the platform profile, fetches+caches the ticket (read-only), creates+enters the ../<ticket-id> worktree via /add-worktree, and writes the worktree-ready marker so the orchestrator never re-splits. On flutter repos it also writes the resolved-env block: the fvm-aware flutter binary marker (.dev/ui-tweak/flutter-bin) + a non-blocking iOS-simulator pre-warm, so preview never rediscovers fvm or cold-boots on the critical path. Invoked by /ui-tweak:ff Step 0 before the first edit (every run splits up-front — there is no in-place path, B3). Designers never type it directly (a misdirect guard routes them back to /ui-tweak). Does NOT touch ticket status/assignee (no /_ticket-init)."
+description: "Stage 1 of the /ui-tweak pipeline — the up-front worktree split (R19), mirroring /dev:start and /port:start. Resolves the platform profile, fetches+caches the ticket (read-only), creates+enters the ../<ticket-id> worktree via /add-worktree, and writes the worktree-ready marker so the orchestrator never re-splits. On flutter repos it also writes the resolved-env block: the fvm-aware flutter binary marker (.dev/ui-tweak/flutter-bin), backed by a per-machine token cache (~/.cache/ui-tweak/<repo>/flutter-kind) so a fresh per-ticket worktree skips the fvm probe, + a non-blocking iOS-simulator pre-warm, so preview never rediscovers fvm or cold-boots on the critical path. Invoked by /ui-tweak:ff Step 0 before the first edit (every run splits up-front — there is no in-place path, B3). Designers never type it directly (a misdirect guard routes them back to /ui-tweak). Does NOT touch ticket status/assignee (no /_ticket-init)."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -57,27 +57,60 @@ designer never types `/ui-tweak:start`.
 5. **Resolved-env block (flutter platform only — skip for android/ios)** — resolve the build tooling
    ONCE here so no later stage rediscovers it per run:
    ```bash
-   # (a) flutter binary resolution — PROBE, don't guess. Real machines break config-only detection
-   #     in BOTH directions: an engineer's machine may have only bare `flutter` on PATH (fvm hidden
-   #     in ~/.pub-cache/bin), while a designer's machine may have ONLY fvm (bare `flutter` =
-   #     command-not-found). So: build candidates by priority, run each ONCE (`--version`), persist
-   #     the first that actually works. Every later flutter/dart invocation (preview's
-   #     devices/run/build, audit's /format) reads this marker — nothing downstream guesses again.
+   # (a) flutter binary resolution — resolve ONCE PER MACHINE, cache a RELATIVE token (never a
+   #     $WT-absolute path), reuse across every ticket's worktree. Real machines break config-only
+   #     detection in BOTH directions: an engineer may have only bare `flutter` (fvm hidden in
+   #     ~/.pub-cache/bin); a designer may have ONLY fvm (bare `flutter` = command-not-found). Probe
+   #     each candidate ONCE (`--version`); persist the winner as a token in a per-machine shared
+   #     cache so the NEXT ticket's fresh worktree skips the probe. Every later flutter/dart call
+   #     reads the expanded worktree-local marker — nothing downstream guesses again.
+   WT=$(git rev-parse --show-toplevel)
+   TRUNK=$(dirname "$(git rev-parse --git-common-dir)")     # main checkout; stable across all worktrees
+   CACHE_DIR="$HOME/.cache/ui-tweak/$(basename "$TRUNK")"   # basename collision = known debt (deferred)
+   CACHE_FMT=v1                                             # bump to self-invalidate every cached token if the grammar changes
    probe() { eval "$1 --version" >/dev/null 2>&1; }
-   FVM_BIN=$(command -v fvm 2>/dev/null || true)
-   [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
-   PINNED=0; { [ -f .fvmrc ] || [ -f .fvm/fvm_config.json ]; } && PINNED=1
+   # cache token grammar (file: line1=CACHE_FMT, line2=token):
+   #   sdk-rel|<relpath>  → $WT/<relpath>      (fvm SDK symlink; worktree-RELATIVE → re-expanded per ticket)
+   #   fvm-abs|<fvmpath>  → <fvmpath> flutter  (fvm binary is machine-stable → absolute is safe to cache)
+   #   bare               → flutter
+   expand_token() { case "$1" in
+       "sdk-rel|"*) printf '%s' "$WT/${1#sdk-rel|}";;
+       "fvm-abs|"*) printf '%s flutter' "${1#fvm-abs|}";;
+       bare)        printf 'flutter';;
+     esac; }
+   bin_exists() { h=${1% flutter}; case "$h" in /*) [ -x "$h" ];; *) command -v "$h" >/dev/null 2>&1;; esac; }  # space-safe head check
    FLUTTER_BIN=""
-   if [ "$PINNED" = 1 ] && [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then
-     FLUTTER_BIN="$FVM_BIN flutter"                  # pinned repo + working fvm → correct SDK
-   elif probe flutter; then
-     FLUTTER_BIN="flutter"
-     [ "$PINNED" = 1 ] && echo "WARN: repo pins its SDK via fvm but fvm did not run — using system flutter (may drift from CI)." >&2
-   elif [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then
-     FLUTTER_BIN="$FVM_BIN flutter"                  # no bare flutter at all → fvm-managed machine
+   # (a.1) explicit override in <repo>/.gogox-claude.yaml — RELATIVE paths only (an absolute path would
+   #       leak a per-machine path into a committed, shared file). Resolve against $WT.
+   OV=$(sed -n 's/^flutter_bin:[[:space:]]*//p' "$WT/.gogox-claude.yaml" 2>/dev/null | head -1)
+   if [ -n "$OV" ]; then case "$OV" in
+       /*) echo "WARN: .gogox-claude.yaml flutter_bin is absolute ('$OV') — ignored (commit only relative paths)." >&2;;
+       *)  [ -x "$WT/$OV" ] && FLUTTER_BIN="$WT/$OV";;
+     esac; fi
+   # (a.2) per-machine shared cache hit → 0 probes (validate cheaply; never run --version on a hit)
+   if [ -z "$FLUTTER_BIN" ] && [ -f "$CACHE_DIR/flutter-kind" ] \
+      && [ "$(sed -n 1p "$CACHE_DIR/flutter-kind")" = "$CACHE_FMT" ]; then
+     cand=$(expand_token "$(sed -n 2p "$CACHE_DIR/flutter-kind")")
+     [ -n "$cand" ] && bin_exists "$cand" && FLUTTER_BIN="$cand"
+   fi
+   # (a.3) cache miss → probe by priority, set KIND alongside; direct SDK binary beats the fvm wrapper
+   if [ -z "$FLUTTER_BIN" ]; then
+     FVM_BIN=$(command -v fvm 2>/dev/null || true)
+     [ -z "$FVM_BIN" ] && [ -x "$HOME/.pub-cache/bin/fvm" ] && FVM_BIN="$HOME/.pub-cache/bin/fvm"
+     PINNED=0; { [ -f "$WT/.fvmrc" ] || [ -f "$WT/.fvm/fvm_config.json" ]; } && PINNED=1
+     SDK_REL=".fvm/flutter_sdk/bin/flutter"; KIND=""
+     if   [ "$PINNED" = 1 ] && [ -x "$WT/$SDK_REL" ] && probe "$WT/$SDK_REL"; then FLUTTER_BIN="$WT/$SDK_REL"; KIND="sdk-rel|$SDK_REL"
+     elif [ "$PINNED" = 1 ] && [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter";  then FLUTTER_BIN="$FVM_BIN flutter"; KIND="fvm-abs|$FVM_BIN"
+     elif probe flutter; then FLUTTER_BIN="flutter"; KIND="bare"
+       [ "$PINNED" = 1 ] && echo "WARN: repo pins its SDK via fvm but fvm did not run — using system flutter (may drift from CI)." >&2
+     elif [ -n "$FVM_BIN" ] && probe "$FVM_BIN flutter"; then FLUTTER_BIN="$FVM_BIN flutter"; KIND="fvm-abs|$FVM_BIN"
+     fi
+     # guard empty BEFORE writing — never persist an empty token to the shared cache
+     [ -z "$FLUTTER_BIN" ] && { echo "FAIL: no working flutter found (tried fvm + bare flutter). Install flutter or fvm, then re-run." >&2; exit 1; }
+     [ -n "$KIND" ] && printf '%s\n%s\n' "$CACHE_FMT" "$KIND" > "$CACHE_DIR/flutter-kind"   # KIND empty only for an override (not cacheable)
    fi
    [ -z "$FLUTTER_BIN" ] && { echo "FAIL: no working flutter found (tried fvm + bare flutter). Install flutter or fvm, then re-run." >&2; exit 1; }
-   printf '%s\n' "$FLUTTER_BIN" > .dev/ui-tweak/flutter-bin
+   printf '%s\n' "$FLUTTER_BIN" > .dev/ui-tweak/flutter-bin   # worktree-local EXPANDED value; downstream read unchanged
    # (b) iOS simulator pre-warm (macOS only) — NON-BLOCKING + fail-silent: kick the boot off in the
    #     background so the cold boot overlaps ticket analysis + the first apply, and a later "show me"
    #     finds a warm simulator. NEVER wait on it, NEVER fail or warn because of it (a designer may
