@@ -63,7 +63,7 @@ When `<auto-mode>` is true, apply the following throughout all steps:
 
 **If `<auto-mode>`**:
 
-- Verify git is clean and on `trunk`. If not → STOP with error.
+- Verify git is clean and on the repo's default branch (`source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude). If not → STOP with error.
 - Skip branch name check (worktree will be created in Step 2A).
 
 **If not `<auto-mode>`**:
@@ -272,7 +272,7 @@ _Skip Steps 6–9 entirely if `<auto-mode>` is false. Jump to Output._
 1. Run `/check-test --fix` (if available for `{platform}`) or fall back to `{test_cmd}` directly to run tests and auto-fix failures.
    - If still failing after fix attempts, note in report and proceed.
 2. **Spawn `verify-agent`** to audit the diff. This is mandatory in auto mode — same-session self-audit cannot catch the misses it produced (CAF-467 checkbox case). Pass:
-   - `base` — the trunk ref the worktree branched from (e.g. `origin/trunk`).
+   - `base` — the default-branch ref the worktree branched from (e.g. `origin/trunk` or `origin/main`).
    - `change name` — the OpenSpec change name from Step 4.
    - `figma context path` — `.dev/figma-context.md` if it exists.
    Use `mode: "bypassPermissions"` per the auto-mode rules.

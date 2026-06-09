@@ -1,3 +1,11 @@
+---
+name: pull-request
+description: >
+  Push the current branch and create or update its PR, then post implementation
+  notes to the ticket. Resolves the repo's default branch dynamically for the PR
+  base and diff base (works on any repo, not just trunk-default).
+---
+
 # Pull Request — Create or Update PR
 
 Push the current branch and create a new PR or update the existing one. Automatically posts implementation notes to the ticket (Linear or Jira), comparing what was planned (port artifacts) against what was actually built.
@@ -22,6 +30,12 @@ Push the current branch and create a new PR or update the existing one. Automati
    - If `jira`: `jira.cloud_id` and `jira.base_url`
    - If `linear`: `linear.base_url`
 7. If `ticket_system` is not set or unresolved, warn and skip ticket integration (Steps 4, 9).
+8. Resolve the repo's default branch (used as the PR base + diff base below — works on any repo, not just trunk-default):
+   ```bash
+   source "$HOME/.claude/lib/dev-mode.sh"
+   DEFAULT_BRANCH=$(default_branch)   # e.g. trunk (flutter) or main (gogox-claude)
+   BASE_REF=$(trunk_ref)              # origin/$DEFAULT_BRANCH
+   ```
 
 ### 1. Check for Existing PR
 
@@ -80,7 +94,7 @@ Based on `ticket_system` from the product profile:
 Collect commit messages:
 
 ```bash
-git log origin/trunk..HEAD --pretty='format:- %s' --reverse --no-merges
+git log "$BASE_REF..HEAD" --pretty='format:- %s' --reverse --no-merges
 ```
 
 Generate a **Summary** section by reading the commit messages and writing a plain-English description of what this PR does. Be concise — 2-5 bullet points. Write from the perspective of a reviewer who needs to understand the "why" and "what", not the "how".
@@ -139,8 +153,8 @@ This step always runs. It produces a structured comment for the ticket.
 
 #### 6a. Gather context
 
-- Read the full diff: `git diff origin/trunk...HEAD`
-- Read commit messages: `git log origin/trunk..HEAD --pretty='format:%s' --reverse --no-merges`
+- Read the full diff: `git diff "$BASE_REF...HEAD"`
+- Read commit messages: `git log "$BASE_REF..HEAD" --pretty='format:%s' --reverse --no-merges`
 
 #### 6b. Search for planning artifacts
 
@@ -206,7 +220,7 @@ If already up-to-date, skip this step.
 
 **If no existing PR (create flow):**
 ```bash
-gh pr create --base trunk --title "<PR_TITLE>" --body "<PR_BODY>" [--draft if flag was passed]
+gh pr create --base "$DEFAULT_BRANCH" --title "<PR_TITLE>" --body "<PR_BODY>" [--draft if flag was passed]
 ```
 
 **If PR exists (update flow):**

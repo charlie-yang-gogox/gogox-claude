@@ -1,7 +1,7 @@
 ---
 name: add-worktree
 description: >
-  Create a git worktree at ../TICKET-ID with a branch based on latest trunk,
+  Create a git worktree at ../TICKET-ID with a branch based on the latest default branch,
   then move the session into the new worktree. Platform-aware: runs the right
   dependency-install command and prints the right IDE hint per project.
 ---
@@ -68,9 +68,14 @@ Hold these values in memory for use in later steps where you see `{deps_install}
 
 ## Step 3: Create worktree
 
-1. `git fetch origin trunk` — fetch the latest trunk.
-   - If fetch fails (e.g. network error), show the error and stop. Do not proceed with a stale `origin/trunk`.
-2. `git worktree add -b "$BRANCH" "$WORKTREE_PATH" origin/trunk` — create the worktree.
+0. Resolve the repo's default branch (works on any repo, not just trunk-default):
+   ```bash
+   source "$HOME/.claude/lib/dev-mode.sh"
+   DEFAULT_BRANCH=$(default_branch)   # e.g. trunk (flutter) or main (gogox-claude)
+   ```
+1. `git fetch origin "$DEFAULT_BRANCH"` — fetch the latest default branch.
+   - If fetch fails (e.g. network error), show the error and stop. Do not proceed with a stale `origin/$DEFAULT_BRANCH`.
+2. `git worktree add -b "$BRANCH" "$WORKTREE_PATH" "origin/$DEFAULT_BRANCH"` — create the worktree.
    - If Step 2 chose to reuse an existing local branch, use `git worktree add "$WORKTREE_PATH" "$BRANCH"` (without `-b`).
    - If Step 2 chose to track a remote branch, use `git worktree add --track -b "$BRANCH" "$WORKTREE_PATH" "origin/$BRANCH"`.
 
@@ -88,7 +93,7 @@ Hold these values in memory for use in later steps where you see `{deps_install}
    ```
    Worktree created
    Path:   <WORKTREE_PATH>
-   Branch: <BRANCH> (based on latest trunk)
+   Branch: <BRANCH> (based on latest $DEFAULT_BRANCH)
    Original project: <path from port-settings.json, or "not configured">
    Dependencies: <installed | failed — run {deps_install} manually | skipped (no install command for this platform)>
 

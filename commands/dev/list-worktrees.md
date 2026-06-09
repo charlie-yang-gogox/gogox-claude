@@ -36,10 +36,10 @@ For each secondary worktree, collect the following. Run all worktree enrichments
 4. **Dirty status**: run `git -C "<path>" status --porcelain` to check for uncommitted changes.
    - If output is non-empty, mark as "dirty" with file count.
    - If empty, mark as "clean".
-5. **Commit delta**:
-   - Ahead: `git log origin/trunk..<branch> --oneline | wc -l`
-   - Behind: `git log <branch>..origin/trunk --oneline | wc -l`
-   - If `origin/trunk` is not available, show "unknown (run git fetch)".
+5. **Commit delta** (resolve the base once: `source "$HOME/.claude/lib/dev-mode.sh"; BASE_REF=$(trunk_ref)` — `origin/trunk` on flutter, `origin/main` on gogox-claude):
+   - Ahead: `git log "$BASE_REF..<branch>" --oneline | wc -l`
+   - Behind: `git log "<branch>..$BASE_REF" --oneline | wc -l`
+   - If `$BASE_REF` is not available, show "unknown (run git fetch)".
 6. **Last activity**: run `git -C "<path>" log -1 --format='%ar'` to get the time of the last commit (e.g. "3 days ago").
 7. **Current worktree**: compare the worktree path with `pwd` to determine if the user is currently inside this worktree.
 
