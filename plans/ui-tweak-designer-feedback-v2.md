@@ -3,8 +3,10 @@
 > 行文中文;所有 code / 識別符 / 檔名 / label / flag 維持英文。
 > **來源**:designer(2026-06-08)針對 `/ui-tweak` 的 7 條使用 feedback。
 > **狀態(2026-06-09)**:設計完成,經 ai-expert 兩輪複審(2nd = 7/10 SHIP_WITH_REVISIONS,必修已回補)。
-> 尚未開工。Phase 1 = **PR-1 A3 → PR-2 B**;iOS 加速(A1 Pods clone + 共用 DerivedData)折成**一個
-> Phase 1.5 spike**,在 Phase 1 量測後才做(採納 ai-expert 建議:A1 單獨價值低,與 1.5 同源耦合)。
+> **Phase 1(A3 + B)已實作並在真實票 CAF-609 實測**(draft PR #523;A3/B = PR #61 待 merge)。實測跑出
+> 7 點 dogfooding 回饋 → **2 個真 bug(F1 macOS `timeout`、F2 `pubspec.lock` 污染)+ 4 個加強**,記於 §7。
+> iOS 加速(A1 Pods clone + 共用 DerivedData)折成**一個 Phase 1.5 spike**,在 Phase 1 量測後才做
+> (採納 ai-expert 建議:A1 單獨價值低,與 1.5 同源耦合)。
 >
 > v1 的嘗試是 branch `fix/ui-tweak-designer-feedback`(已 merge 進 main,只做了
 > 「flutter resolution 按 platform profile gating」一項);本檔是把 designer 後續完整 7 條
@@ -223,6 +225,10 @@ ui_preview_cmd: flutter run -d {device} --debug --flavor stag
 
 **工作量**:極小(2 行 yaml,無程式改動)。**風險**:低。
 
+> **B+ (Phase 1 實測後新增,見 §7.3 #1)**:目前 flavor 寫死無 runtime 驗證 → 無 `stag` 的 repo 會吃
+> Xcode/gradle 天書 error。後續加強:repo 在 `.gogox-claude.yaml` 宣告 `flavor:` + `start` 偵測 flavor +
+> `preview` 偵測不到時 graceful fallback。詳見 §7.3。
+
 ---
 
 #### A1 — 從 trunk CoW clone 依賴(解 #1 #2)【折入 Phase 1.5 spike;Phase 1 量測後】
@@ -352,6 +358,10 @@ booted sim;(b) 時間差後 app 可能回首頁;(c) HARD BOUNDARY 禁止 agent �
 
 **工作量**:中。**風險**:擷取時機提前需確認不卡 designer。
 
+> **Phase 1 實測補充(見 §7.3)**:#2b iOS 無 `idb`/`simctl` 輸入橋 → 連 capture-only 都只能截當下、
+> 無法導航(文件需補環境需求 + HARD BOUNDARY 註);#2c cascade 多台在線不分平台 → 優先選 ticket/參考圖
+> 平台或詢問;#3b 細微顏色單張看不出 → demo 改 before/after 並排。三點都併入本群組設計。
+
 ---
 
 ### 群組 D:審查並行加速(解 #6)
@@ -395,9 +405,11 @@ judge 前序列跑。
 |---|---|---|---|---|
 | 1 | **A3**(快取 token + 直指 SDK) | PR-1,先 land | 低、自包含 | 快取存相對 token(修第 4 點);REPO_KEY 撞名先忽略(第 3 點) |
 | 2 | **B**(`flutter.yaml` 加 `--flavor stag`) | PR-2 | 極低 | Q1 同 flavour → 寫 platform 預設,零 resolver 改動(第 1 點消失) |
+| **1.1** | **dogfooding hotfix**(F1 macOS `timeout` + F2 `pubspec.lock` 污染) | 待開,優先於後續加強 | 低 | CAF-609 實測的真 bug;改 `preview.md` Step 1 + `apply.md` Step 5(§7.2) |
 | 3 | **Phase 1.5 = iOS 加速 spike**(A1 Pods clone + 共用 DerivedData) | spike,Phase 1 量測後 | 中 | A1 折入此處(單獨價值低);A1 部分用 `UI_TWEAK_COW` flag、不 clone `build/`;DerivedData 機制待 spike |
 | 4 | **D**(審查真並行 + diff 算一次) | — | 低 | |
-| 5 | **C**(記裝置 + 擷取時機) | — | 中 | |
+| 5 | **C**(記裝置 + 擷取時機 + #2b/#2c/#3b,§7.3) | — | 中 | iOS idb 文件、cascade 平台優先、before/after 並排 |
+| 5+ | **B+**(flavor 偵測 + repo 宣告 `flavor:`,§7.3 #1) | — | 中 | 無 `stag` 的 repo 不再吃天書 error |
 | 6 | **A2**(常駐 flutter run + HMR) | — | 大 | 第二波 |
 | 7 | **E**(cursor/codex) | — | 大 | roadmap,先 rules 檔 MVP |
 
@@ -419,6 +431,12 @@ judge 前序列跑。
 | 10 | #4 opt-in deep-link 導航 | 預設**不開** | ⏳ 待 C |
 | 11 | C 取捨:抓對頁 vs 零等待 | (未定) | ⏳ 待 C |
 | 12 | #5 MVP rules vs 完整移植 | 先 **MVP rules 檔** | ⏳ 待 E |
+| 13 | F1 macOS `timeout` 修法 | bounded-wait 不依賴 `timeout`(純 `flutter devices` 輪詢 + 計數 / `gtimeout` / 背景+kill),文件明寫禁用 `timeout` | ⏳ 待修(§7.2) |
+| 14 | F2 `pubspec.lock` 污染 | `apply` 記 base_ref 前還原環境 setup 噪音(`git checkout -- pubspec.lock`) | ⏳ 待修(§7.2) |
+| 15 | #1 flavor 偵測(B+) | repo 宣告 `flavor:` + `start` 偵測 + `preview` graceful fallback | ⏳ 待設計(§7.3) |
+| 16 | #2b iOS 導航 | iOS 無 `idb` → capture-only 只截當下;文件補環境需求 + HARD BOUNDARY 註 | ⏳ 待 C |
+| 17 | #2c cascade 平台優先 | 多台在線優先選 ticket/參考圖平台或詢問 | ⏳ 待 C |
+| 18 | #3b before/after | demo 並排 before/after 取代單張截圖 | ⏳ 待 C |
 
 ---
 
@@ -444,3 +462,73 @@ judge 前序列跑。
    (**不含 `build/` / `.dart_tool/`**);非 APFS 略過;`Podfile.lock` 不符才 `pod install`。
 5. DerivedData:time-boxed spike 驗證機制(優先試 (d) `FLUTTER_XCODE_*` / (e) 穩定路徑 symlink),
    確認 `flutter run` 下真能共用編譯快取且副作用可接受後,才與 A1 同批落地。
+
+---
+
+## 7. Phase 1 dogfooding 回饋(CAF-609,2026-06-09)
+
+> Phase 1(A3 + B)已在真實票 **CAF-609**(運輸選車頁灰底)跑完整 `/ui-tweak` 流程:draft PR #523、
+> ticket In Review、截圖/錄影已回貼 Linear。以下是該次跑出來的 7 點回饋,依「真 bug / 加強 / 已知」
+> 分類並標落點。**本節是這批回饋的權威記錄**;群組 B/C 只反向連結到這裡,不重複內文。
+
+### 7.1 分類總表
+
+| # | 回饋 | 性質 | 落點 |
+|---|---|---|---|
+| **F1** | `timeout` 在 macOS 不存在 → device 偵測靜默失敗 | 🔴 **真 bug**(這次害 iOS 假裝沒 device) | `preview.md` Step 1 — bounded-wait 從散文改成 macOS-safe 明確機制 |
+| **F2** | `pubspec.lock` 污染 audit diff(`/add-worktree` pub get 在 base_ref 之前髒了 tree) | 🔴 **真 bug** | `apply.md` Step 5 — 記 base_ref 前還原環境 setup 噪音 |
+| #1 | flavor 寫死無 runtime 驗證;無 `stag` 的 repo 吃天書 build error | 🟡 加強(B+) | 群組 B — repo 宣告 `flavor:` + 偵測/graceful fallback |
+| #2b | iOS 連 capture-only 都只能截當下(無 idb 無法導航);Android 可 adb | 🟡 文件補強 | 群組 C + preview/demo HARD BOUNDARY 補註 |
+| #2c | 多 device cascade 不分平台,挑第一個 already-running 就用 | 🟡 加強 | 群組 C / `preview.md` Step 1(a) — 平台優先序 |
+| #3b | 細微顏色(#F7F8F8 vs 白)單張截圖看不出,要 before/after 並排 | 🟡 加強 | 群組 C(demo 擷取) |
+| #2d | iOS build 慢(pod install + Xcode build ~2.5min) | ⚪ 已知 | = Phase 1.5(待量測 gate 決定) |
+
+### 7.2 兩個真 bug(已驗證缺陷,優先於後續加強修)
+
+**F1 — macOS 無 `timeout`,device 偵測靜默失敗** 🔴
+- **現象**:跑的 agent 把 `preview.md` Step 1 的 device 等待寫成 `timeout 90 flutter devices --machine`;
+  macOS 不內建 `timeout` → 前幾次 poll 全回空、誤判「沒有 device」,其實 iPhone 17 Pro 早已 booted。
+- **根因**:`preview.md` Step 1(a)/(b) 只用**散文**寫「grace poll ~10s」「bounded wait ~60s」,沒指定
+  **怎麼**等;agent 自然抓 `timeout`,踩到 macOS 缺指令。bug 不在檔案的字面字串,而在「指定了等多久、
+  沒指定用什麼等」這個缺口。
+- **修法**:把 bounded-wait 改成不依賴 `timeout` 的明確機制 —— 純 `flutter devices --machine` 輪詢 +
+  迴圈計數器(或偵測 `command -v gtimeout`、或背景啟動 + `kill`),並在文件**明寫「macOS 無 `timeout`,
+  禁用」**。
+- **檔案**:`commands/design/ui-tweak/preview.md` Step 1。
+
+**F2 — `pubspec.lock` 污染 audit diff** 🔴
+- **現象**:`/add-worktree` 跑 `flutter pub get` 改了 `pubspec.lock`;`apply.md` Step 5 在那之後才記
+  `base_ref = HEAD`(指 pub get 之前的 commit)→ `git diff base_ref` 含 `pubspec.lock` → 進 audit 的
+  frozen set,需手動 `git checkout -- pubspec.lock` 才讓 audit 只看到那一個 UI 檔。
+- **根因**:`apply.md:162` 記 base_ref 時,working tree 已被環境 setup(pub get)弄髒,base_ref 卻指
+  更早的 HEAD。`preview.md` Step 3 的 F3 quarantine 只還原 audit-set **之外**的檔,但 `pubspec.lock`
+  已落在 base→working diff 裡 → 已被算進 audit-set → 救不到,必須在 **base_ref 源頭**修。
+- **修法**:`apply.md` Step 5 記 base_ref 前,先還原環境 setup 噪音(flutter platform block 內
+  `git checkout -- pubspec.lock 2>/dev/null || true`),讓 frozen set 從一開始就只含 designer 的 UI 編輯;
+  不靠下游手動 checkout。
+- **檔案**:`commands/design/ui-tweak/apply.md` Step 5(flutter platform only)。
+
+### 7.3 加強(折入既有群組)
+
+- **#1 flavor 偵測(B+)** → 群組 B:flavor 寫死在 platform 預設、**無 runtime 驗證**;Android 看
+  `android/app/build.gradle` 的 `productFlavors`、iOS 看 `ios/.../xcschemes/` 的 scheme 是否有 `stag`——
+  兩邊都沒檢查,直接賭它存在(CAF-609 剛好有 `stag` scheme 才過,純屬幸運)。Android flavor(gradle
+  productFlavor)與 iOS flavor(Xcode scheme)是**兩套東西**,只是都叫 `stag` 才沒爆。改進:(i) 讓 repo
+  在 `.gogox-claude.yaml` 宣告 `flavor:`(現只有 `product:`),platform 預設只當 fallback;(ii) `start`
+  解析環境時順手**偵測 flavor**(像 flutter-bin 那樣 probe + cache),`preview` 前偵測不到目標 flavor →
+  graceful no-flavor build 或給看得懂的訊息,而非讓 build 自爆。
+- **#2b iOS 無輸入橋** → 群組 C + HARD BOUNDARY 補註:iOS sim 這台機器無 `idb`、`xcrun simctl` 不支援
+  tap/輸入 → agent 連 capture-only 都只能截**當下**畫面、無法導航;Android 可 `adb shell input tap/text`
+  導到目標頁。文件補:iOS 自動導航/demo 需在環境需求列 `idb`,否則 iOS 一律「人導、agent 截」。這也正好
+  說明 demo 設計成 capture-only 的原因,但現況文件沒講明「iOS 連 capture-only 都受限於無輸入橋」。
+- **#2c device cascade 不分平台** → 群組 C / `preview.md` Step 1(a):Android emulator 與 iOS sim 同時開時,
+  cascade 取「第一個 already-running device」,不問也不分平台(CAF-609 是手動選了 Android)。改進:多台在線時
+  優先選與 ticket / 參考圖一致的平台,或直接問。
+- **#3b 細微顏色難驗收** → 群組 C(demo 擷取):#F7F8F8 vs 純白在單張截圖幾乎看不出差別,"show me on a
+  phone" 對這種改動說服力低 → **before/after 並排**比單張有用得多。
+
+### 7.4 已知(不另開項)
+
+- **#2d iOS build 慢(pod install + Xcode build ~2.5min)**:pre-warm 只解 sim 開機、解不了 build 時間,
+  對「show me」互動流程是偏長等待 → 正是 **Phase 1.5**(A1 Pods clone + 共用 DerivedData)的標的,待量測
+  gate 數字決定是否啟動。
