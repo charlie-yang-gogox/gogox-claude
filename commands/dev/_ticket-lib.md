@@ -151,7 +151,7 @@ Only `blocks`/`blocked-by` kinds carry ordering semantics; treat
 | ticket_system | Source                          | Mapping                                                                                  |
 |---------------|---------------------------------|------------------------------------------------------------------------------------------|
 | `linear`      | classification label `design bug` (**precedence — evaluated first**) | present (whole-string, case-insensitive) → `ui-tweak`, regardless of which canonical labels co-occur. Only if absent, fall through to the canonical row below. |
-| `linear`      | classification label ∈ `{bug,port,feature}` | exactly one match → that lane; zero or multiple → `unknown`                  |
+| `linear`      | classification label ∈ `{bug,port,feature}` | exactly one match → that lane; zero or multiple → `unknown`. **Case-insensitive** (whole-string, after lowercasing each label name): `Bug` / `Port` / `Feature` match too — Linear's default labels are capitalized (CAF and GGC both use `Bug` / `Feature`), so this mirrors `/route`'s case-insensitive treatment. |
 | `jira`        | `fields.issuetype.name`         | `Bug` → `bug`; `Story` / `Task` / `Sub-task` / `Improvement` / `New Feature` → `feature`. Anything else → `unknown`. **No `port` lane** — the port pipeline is Linear-specific (copy-from-source CAF / DAF tickets) and not used in Jira projects. **No `ui-tweak` lane** — Jira has no `design bug` classification; design-bug routing is Linear-only, like `port`. |
 
 **`design bug` precedence rule (canonical statement — route.md, ggx-work.md,

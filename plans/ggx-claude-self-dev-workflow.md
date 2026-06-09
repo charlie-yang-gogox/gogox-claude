@@ -113,13 +113,23 @@ ship 前 HITL gate)**。dogfood **不進 `--auto`**(全域切換 + 自我污染�
 | Q2 | 新 `prompt` platform vs 硬套 node | 新 platform(node 指令全炸 + platform 是語意信號) | ✅ 已建 |
 | Q3 | verify 最低門檻 | prompt-lint(自動)+ dogfood(ship 前 HITL,不進 --auto) | ✅ lint 已建並自測 |
 | Q4 | GGC 票分類慣例 | localized prompt/bash 編輯 → `Bug`;架構/新行為 → `Feature` | ✅ 已套 GGC-2~9 |
-| — | label 大小寫 | GGC team label 是 `Bug`/`Feature`(大寫),pipeline 慣例讀小寫 | ⏳ 待解:改小寫或確認 /route case-insensitive |
-| — | GGC-4 blockedBy GGC-2 | 設原生 relation 讓 DAG 偵測有東西可演示 | ⏳ 本批設定 |
+| — | label 大小寫 | **非問題** —— `/route` 已 case-insensitive,且 CAF 本身就用大寫 `Bug`/`Port`/`Feature`;只把這點補進 `_ticket-lib` 讓 ticket-analyze 一致 | ✅ `_ticket-lib` 已補 |
+| — | GGC-4 blockedBy GGC-2 | 設原生 relation 讓 DAG 偵測有東西可演示 | ✅ 已設定並驗證 |
 
-## 8. 尚未做(後續)
+## 8. §8 施工結果(讓 GGC 票真的能跑)
 
-- **`/ticket-analyze` 的 skill-edit completeness checklist**:目前 checklist 只有 port/feature/bug/ui-tweak
-  四個 lane,沒有「改 prompt」的清單。要跑 analyze 於 GGC 前補上(否則用 feature/bug lane 的清單將套不準)。
-- **label 大小寫**:見決策表,建 profile 後第一件要解。
-- **`/dev:verify` 對 prompt 平台的 verify-agent 行為**:改審「契約/引用是否自洽」而非編譯(目前是 flutter 假設)。
-- **dogfood gate 正式接進 pipeline**:目前只是文件約定,未在 ship 前強制。
+第二批改的是 pipeline 共用檔,全部**加法式**(不動 flutter/android/ios 行為):
+
+- ✅ **`_ticket-lib.md` lane 表**:`{bug,port,feature}` 標明 **case-insensitive**(`Bug`/`Port`/`Feature` 也match),與 `/route` 一致 → ticket-analyze 不會把 GGC 的大寫 `Bug` 判成「無分類」。
+- ✅ **`/format` 新增 generic / `prompt` branch**:原本只有 flutter/android/ios 分支、無 fallback;現在無專屬分支的平台跑 `{format_cmd}`(prompt 為空 → 乾淨 no-op),不再撞牆。
+- ✅ **`/ticket-analyze` Step 3 platform overlay**:`platform: prompt` 時 checklist 改判 prompt 製品(drop device/build/version/Figma;改要求 where / what / ≥1 acceptance)。Step 1.5.1 順手 capture `<platform>`。
+- ✅ **`/dev:verify` Step 2 prompt-platform 註**:告訴 verify-agent diff 是 prompt/markdown/bash,「changed identifiers」= command 名 / `.dev/*` marker / profile key / 跨檔引用(grep stale refs,非 code symbol);build = prompt-lint(已在 Step 1 經 `{test_cmd}` 跑)。
+- ✅ **`/dev:verify` 跑 test 的路徑**:已確認 Step 1「`/check-test` if available for platform, else fall back to `{test_cmd}`」→ prompt 無 check-test 分支 → fallback 跑 `bash scripts/prompt-lint.sh`。無需改動。
+
+### 仍刻意不做
+- **dogfood gate 不 hard-wire 進 ship**:dogfood 需要全域 install 切換 + 可能自我污染,本質是人工/有風險的步驟,留作 ship 前的人工 HITL 約定(已寫進 prompt.yaml 註解與本文件),不塞進 `--auto`。
+
+### 下一步(可跑了)
+設好 profile + 上述 overlay 後,GGC 已可端到端:
+`/ticket-analyze`(GGC team)→ `/ggx-dispatcher --team:GGC` → 第 1 波平行 → merge GGC-2 → 重跑 analyze → GGC-4 解鎖。
+**唯一未實跑驗證**:整條鏈尚未在 GGC 上真跑過一張票(dogfooding 本身)——建議拿 GGC-2 當第一張試。

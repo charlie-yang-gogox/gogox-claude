@@ -125,6 +125,26 @@ Run the full formatting pipeline appropriate for the active project, optionally 
 
    If `swiftlint --strict` reports remaining warnings or errors, **stop and surface them to the user**. Do not commit.
 
+### {platform} = prompt (and any platform with no dedicated branch above)
+
+No language compiler/formatter is assumed (this repo's "code" is prompts +
+markdown-embedded bash + workflow JS — see the `prompt` platform profile). Run the
+profile's `{format_cmd}` if it is set; if it is empty (the `prompt` default) there
+is nothing to format — skip gracefully. **Do NOT error and do NOT improvise a
+formatter.**
+
+```bash
+if [ -n "{format_cmd}" ]; then
+  {format_cmd}
+else
+  echo "platform '{platform}': no format_cmd configured — nothing to format, skipping."
+fi
+```
+
+This is the generic fallback: any platform whose profile defines `{format_cmd}`
+(e.g. node's prettier/eslint) runs it here; `prompt` repos (gogox-claude) verify
+via `scripts/prompt-lint.sh` at test time, so formatting is a clean no-op.
+
 ---
 
 ## Step 2: Check for changes
