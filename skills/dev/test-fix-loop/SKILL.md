@@ -1,8 +1,3 @@
-<!--
-  RULE: All skill content must be written in English.
-  This applies to frontmatter, body, code comments, and examples.
-  No exceptions. PRs with non-English content will be rejected.
--->
 ---
 name: test-fix-loop
 description: >
@@ -13,6 +8,12 @@ description: >
   input. Use when asked to "get the tests green", "fix the failing tests
   unattended", "loop the test suite", or "auto-fix test code".
 ---
+
+<!--
+  RULE: All skill content must be written in English.
+  This applies to frontmatter, body, code comments, and examples.
+  No exceptions. PRs with non-English content will be rejected.
+-->
 
 # Test Fix Loop
 
