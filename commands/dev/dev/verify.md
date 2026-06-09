@@ -96,15 +96,59 @@ After the agent returns, read `.dev/verify-pass.md`:
 
 - **`Status: CLEAR`** → proceed to Step 3.
 - **`Status: BLOCKED`** → run BLOCKED recovery (Step 2a).
-- **File missing** → treat as `BLOCKED`. Do NOT fall back to "trust the implementer" — absence of report IS the failure signal.
 
-**No inline fallback here (deliberate, R3).** Unlike `/dev:figma` Step 4b and `/dev:align` Step 2b, `verify-agent` is **excluded** from the spawn-failure → inline degradation. In `--auto` the code under audit was written inline in this same session (`commands/dev/dev/apply.md`), so an inline verify would be the implementer auditing their own work — collapsing the decorrelation this stage exists to provide (the self-audit asymmetry). A spawn failure therefore stays a BLOCKED hard-fail; the dispatcher's §6.2 fallback handles it from there. See `ARCHITECTURE.md` "Nested-spawn constraint" R3.
+A **present** report is authoritative and is NEVER overridden by the Step 2b
+fallback — only an **absent** report or an **errored / unavailable spawn**
+triggers it. Distinguish the two failure shapes exactly as `/dev:figma` Step 4b:
+
+- The `Agent` call itself **errors / is unavailable** — e.g. a nested level-2
+  spawn inside a `/ggx-dispatcher`-spawned worker (opus nesting fails; see
+  `ARCHITECTURE.md` "Nested-spawn constraint") → go straight to Step 2b (a
+  retry is pointless — the depth limit will not change).
+- The agent **returned but wrote no `.dev/verify-pass.md`** → retry the spawn
+  once; still no file → Step 2b.
+
+### Step 2b: Spawn-unavailable fallback (platform-gated — GGC-11, R3 revised)
+
+`verify-agent` is the **decorrelation auditor** — it exists to be a *different*
+context than the implementer — so it is NOT inlined as freely as the figma/align
+sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
+(`$PLATFORM`, resolved in Step 0):
+
+- **`{platform}` = `prompt`** (e.g. gogox-claude — markdown / bash / workflow-JS
+  diffs, already gated by the deterministic `scripts/prompt-lint.sh` run in
+  Step 1): run the `agents/dev/verify-agent.md` contract **inline in this
+  session** against the same inputs (`$BASE_REF`, `$N`, `$FIGMA_RAW`), then
+  atomic-write `.dev/verify-pass.md` with the SAME `Status: CLEAR|BLOCKED`
+  encoding so the walker needs zero changes. **Line 2 MUST carry this loud
+  provenance banner** (a legal part of the report — downstream parsers read the
+  `Status:` line, not line 2):
+
+  ```
+  Provenance: inline-self-audit — DECORRELATION LOST (Agent spawn unavailable in this session; the implementer audited its own diff). Acceptable ONLY on the prompt platform — diffs are tiny prose/bash and prompt-lint is the deterministic gate; NOT a substitute for the independent auditor on code platforms. See ARCHITECTURE.md R3.
+  ```
+
+  This is deliberately **not silent**: the GGC-2 dogfood run self-audited with no
+  such marker, and making that invisible degradation visible is exactly why the
+  banner exists. Proceed to Step 3 on `Status: CLEAR`; Step 2a on `BLOCKED`.
+
+- **`{platform}` ∈ {`flutter`, `android`, `ios`} (or any non-`prompt` /
+  unresolved platform)** — real code, large diffs, weaker deterministic gates:
+  **NO inline fallback.** An inline verify would be the implementer auditing its
+  own code, collapsing the decorrelation this stage exists to provide (the
+  self-audit asymmetry). Spawn failure stays a **BLOCKED hard-fail** (an absent
+  report is itself the BLOCKED signal — do NOT fall back to "trust the
+  implementer"); the dispatcher's §6.2 fallback handles it from there. The
+  decorrelation-preserving path for code platforms is the R4 `claude -p`
+  headless auditor (a separate process, not a nested spawn) — documented in
+  `ARCHITECTURE.md` R4, not yet wired. Inlining is opt-in per platform, never
+  the silent default.
 
 ### Step 2a: BLOCKED recovery sequence (executed once)
 
 1. For each finding in `.dev/verify-pass.md`, edit the affected files to address it.
 2. Re-run `/check-test --fix` (or `{test_cmd}`) to confirm fixes did not regress tests.
-3. Re-spawn `verify-agent` with the same inputs.
+3. Re-run the auditor with the same inputs — re-spawn `verify-agent`, or, if the spawn was unavailable and Step 2b's inline path produced the report, re-run that same inline audit (preserving its `Provenance:` banner).
 4. Read `.dev/verify-pass.md` again:
    - `Status: CLEAR` → proceed to Step 3.
    - `Status: BLOCKED` (still) → ABORT. STOP. The walker will see `Status: BLOCKED` next iteration and refuse to advance until the report is fixed (or `/dev:ff --from verify` is used to discard and re-run).
