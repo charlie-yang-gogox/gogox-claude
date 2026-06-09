@@ -124,11 +124,16 @@ while IFS= read -r f; do
       fi
       ;;
     *.md)
+      md_errs_before=$ERRORS
       needs_frontmatter "$f" && check_frontmatter "$f"
       fg=$(scan_footguns "$f")
       if [ -n "$fg" ]; then
         while IFS= read -r line; do [ -n "$line" ] && err "$line"; done < <(printf '%s\n' "$fg")
       fi
+      # Emit a per-.md success line on a clean pass so a green run is self-
+      # evidencing, matching the ok lines the .js / .sh branches print. Gated
+      # on the ERRORS delta so an erroring file gets only its ERROR line(s).
+      [ "$ERRORS" -eq "$md_errs_before" ] && ok "md-scan       $f"
       ;;
   esac
 done < "$TMPLIST"
