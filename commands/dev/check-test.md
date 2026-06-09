@@ -44,14 +44,15 @@ TOTAL_CORES=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 
 - If `$ARGUMENTS` contains `--all` → **Full mode**, jump to Step 4.
 - Else → **Incremental mode**, proceed to Step 3.
-- If the current branch is `trunk` (no diff against base) → automatically fall back to **Full mode** and inform the user.
+- If the current branch is the repo's default branch (no diff against base) → automatically fall back to **Full mode** and inform the user.
 
 ## Step 3: Incremental detection (cross-platform skeleton)
 
 Find the base and the list of changed files — same on every platform:
 
 ```bash
-BASE=$(git merge-base HEAD trunk)
+source "$HOME/.claude/lib/dev-mode.sh"
+BASE=$(git merge-base HEAD "$(default_branch)")   # default branch: trunk (flutter) or main (gogox-claude)
 
 # Committed changes on this branch
 git diff --name-only "$BASE"..HEAD
@@ -196,5 +197,5 @@ If any tests **fail**:
 - If the test run itself errors (compilation failure, gradle sync failure, xcodebuild config error), surface the error clearly — do not retry blindly.
 - With `--fix`, report each fix attempt: what was changed and why.
 - In incremental mode, if you are unsure whether the detected tests are sufficient, suggest the user run `--all` to be safe.
-- When on `trunk` (no diff against base), automatically fall back to `--all`.
+- When on the repo's default branch (no diff against base), automatically fall back to `--all`.
 - iOS incremental mode is intentionally not implemented — full suite only. Revisit if iOS team onboards a workable filter.

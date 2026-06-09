@@ -100,7 +100,7 @@ fi
 
 **Auto mode**:
 
-1. Verify git is clean and on `trunk`. If not → STOP.
+1. Verify git is clean and on the repo's default branch. If not → STOP. (Resolve the default branch dynamically: `source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude.)
 2. Read the ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`):
    - **Linear**: `mcp__claude_ai_Linear__get_issue` (already done in ownership check; reuse the snapshot). Branch type heuristic: `bug` label → `fix`; otherwise default to `feat`.
    - **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` (already done; reuse). Branch type heuristic: `.fields.issuetype.name == "Bug"` → `fix`; otherwise `feat`. The `--bug` flag (when set by `/bug:ff`) is the authoritative override in both trackers.

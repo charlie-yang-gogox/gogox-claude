@@ -23,11 +23,11 @@ Self-review of the committed diff. Distinct from verify-agent: verify-agent audi
 WT=$(git rev-parse --show-toplevel)
 TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
-BASE_REF="origin/trunk"   # default
 
 # Pipeline mode: bug vs feature. Resolved by pipe_mode (lib/dev-mode.sh).
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
+BASE_REF=$(trunk_ref)   # origin/<default branch> — trunk (flutter) or main (gogox-claude)
 
 if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" != "bug" ]; then
   echo "FAIL: /dev:review requires --auto (or bug mode via /bug:ff)." >&2

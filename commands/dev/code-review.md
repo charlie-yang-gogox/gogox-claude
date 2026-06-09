@@ -1,3 +1,11 @@
+---
+name: code-review
+description: >
+  Perform a code review of the current git branch, a single remote PR, or all
+  open PRs (--batch), then optionally post the result as a PR comment. Resolves
+  the repo's default branch dynamically for the local-diff base.
+---
+
 Perform a code review of:
 - the current git branch (no args),
 - a single remote PR by number / URL / branch name, or
@@ -53,7 +61,7 @@ If the first argument starts with `--batch`, go to **Batch mode**. Otherwise pro
    1. Read `agents/dev/git-branch-code-reviewer.md` (`<gogox-claude-repo>/agents/dev/git-branch-code-reviewer.md`) once. Treat its `## Modes` / `### Step 0` → `### Step 6` / Output format as binding.
    2. Resolve `{platform}` per Step 0 of the agent definition (`.gogox-claude.yaml` → `platform`; fall back to `~/.claude/commands/profiles/registry/`).
    3. Pick Local vs Remote mode by whether a PR number was resolved at step 1.
-      - **Local mode**: `git diff trunk...HEAD`, then `git diff --name-only trunk...HEAD` and `git log --oneline trunk..HEAD` for changed files + commit list. Read source files for context via the `Read` tool.
+      - **Local mode**: resolve the base branch first (`source "$HOME/.claude/lib/dev-mode.sh"; BASE=$(default_branch)` — trunk on flutter, main on gogox-claude), then `git diff "$BASE...HEAD"`, `git diff --name-only "$BASE...HEAD"`, and `git log --oneline "$BASE..HEAD"` for changed files + commit list. Read source files for context via the `Read` tool.
       - **Remote mode**: `gh pr view <pr_number> --json headRefName,title,body,url`, then `git fetch origin <branch_name>` once, then `gh pr diff <pr_number>` (+ `--name-only`) and `gh pr view <pr_number> --json commits --jq '.commits[].messageHeadline'`. Read files via `git show origin/<branch_name>:<file_path>`.
    4. Extract the Linear ticket identifier (`[A-Z]+-\d+` from the branch name, uppercased). Fetch ticket title + description + comments via `mcp__claude_ai_Linear__get_issue` / `mcp__claude_ai_Linear__list_comments`.
    5. Review per `### Step 5: Review` of the agent definition (correctness vs ticket, OpenSpec coverage, tests, code issues, security, conventions, error handling — pick test vocabulary by `{platform}`).

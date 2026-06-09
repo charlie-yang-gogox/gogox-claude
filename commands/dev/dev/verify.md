@@ -38,7 +38,7 @@ if [ -f "$WT/.gogox-claude.yaml" ]; then
 else
   PLATFORM=$(yq -r '.platform' "$HOME/.claude/commands/profiles/registry/$(basename "$WT").yaml")
 fi
-BASE_REF="origin/trunk"   # default; override per profile if needed
+BASE_REF=$(trunk_ref)   # origin/<default branch> — trunk (flutter) or main (gogox-claude); see lib/dev-mode.sh
 
 if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" != "bug" ]; then
   echo "FAIL: /dev:verify requires --auto (or bug mode via /bug:ff). Default-mode feature pipelines terminate at /dev:apply." >&2
@@ -77,7 +77,7 @@ If still failing after fix attempts, note in the eventual verify report and proc
 
 Use the **Agent** tool with `subagent_type: "verify-agent"`, `mode: "bypassPermissions"`. Prompt with the three required inputs:
 
-- `base` — `$BASE_REF` (e.g. `origin/trunk`)
+- `base` — `$BASE_REF` (e.g. `origin/trunk` or `origin/main`)
 - `change name` — `$N` if non-empty, else pass `(bug-mode: no openspec change)` so the auditor knows to skip openspec cross-checks and rely on diff + tests alone.
 - `figma raw directory` — `$FIGMA_RAW` if non-empty, else omit
 

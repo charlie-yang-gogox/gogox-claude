@@ -22,7 +22,7 @@ Pull latest trunk via merge/rebase, resolve conflicts, verify tests pass, format
 
 | Mode | Trigger | Scope |
 |------|---------|-------|
-| **Single** (default) | no `--batch` | Resolves the **current branch** against `origin/trunk`. Runs Steps 0–8 below. |
+| **Single** (default) | no `--batch` | Resolves the **current branch** against the repo's default branch ref (`origin/trunk` on flutter, `origin/main` on gogox-claude — see **Base branch** below). Runs Steps 0–8 below. |
 | **Batch** | `--batch` | Sweeps open GitHub PRs (optionally filtered by `--user`) and fans out **one parallel subagent per PR**. Each subagent works in that PR's own git worktree (reused if it exists, created otherwise), merges/rebases onto the PR's base branch, runs tests, and **pushes only if the merge was clean**. Conflicted PRs are aborted and flagged for human review. See the **Batch Mode** section near the end. |
 | **Callee** (hybrid) | `--callee` | Invoked by `/ggx-pr-resolver` step 5 — **not** a user-facing mode. Operates on **one explicit worktree path** (the caller already created/reused it), **rebase-only** onto an **explicit base ref the caller passes** (never assumes `origin/trunk`), with **batch-style non-interactive give-up** (unresolvable/uncertain conflict → auto-abort + restore worktree + report `needs-human: conflict`, NEVER `AskUserQuestion`), then tests + format + commit, **NO push** (the caller owns the single push). See the **Callee Mode** section near the end. |
 
@@ -41,7 +41,7 @@ Pull latest trunk via merge/rebase, resolve conflicts, verify tests pass, format
 
 **Base branch.** Throughout Steps 2–8, `{base_branch}` is the remote ref the branch is rebased/merged onto:
 
-- Single mode → `{base_branch}` is `origin/trunk`.
+- Single mode → `{base_branch}` is the repo's default branch ref (`source "$HOME/.claude/lib/dev-mode.sh"; trunk_ref` → `origin/trunk` on flutter, `origin/main` on gogox-claude).
 - Batch mode → `{base_branch}` is `origin/<the PR's baseRefName>` (i.e. the actual base the PR targets — `main`, `master`, `trunk`, or any release branch), set by the batch loop per PR.
 - Callee mode → `{base_branch}` is the **explicit `--base=<ref>` the caller passes** (e.g. `origin/<the PR's baseRefName>`), **never `origin/trunk`** — `/ggx-pr-resolver` resolves the real `baseRef` per PR (release-branch PRs exist; assuming trunk would rebase onto the wrong base and corrupt the PR — owner decision D12, review item M5).
 
@@ -76,7 +76,7 @@ Invoke `/check-clean`. If it fails, stop and ask the user to commit or stash bef
 
 ### 2. Fetch & Merge/Rebase onto trunk
 
-`{base_branch}` is `origin/trunk` in single mode, or `origin/<the PR's baseRefName>` in batch mode (see **Modes** above). Substitute the bare branch name (e.g. `trunk`, `main`) for the `git fetch` refspec.
+`{base_branch}` is the repo's default branch ref in single mode (`source "$HOME/.claude/lib/dev-mode.sh"; trunk_ref` → `origin/trunk` on flutter, `origin/main` on gogox-claude), or `origin/<the PR's baseRefName>` in batch mode (see **Modes** above). Substitute the bare branch name (e.g. `trunk`, `main`) for the `git fetch` refspec.
 
 #### merge commands
 ```bash
