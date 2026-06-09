@@ -96,8 +96,11 @@ never delays the PR. **Phase 2**: once it looks right, pick "Ship it" — the fu
 **commits and opens a draft PR** with a designer-verifiable summary + a link on the work item; the
 PR's Demo section embeds the ticket's design visuals and — if you handed one over at the
 "looks good?" card — your own screenshot/recording (the skill itself still never captures any). It
-**never** auto-merges, flips draft→ready, or mutates ticket status (the only ticket writes are the
-read-only PR-link comment and attaching your supplied capture, if any).
+**never** auto-merges or flips draft→ready. When the draft PR opens it moves the work item to
+**In Review** and removes the `ready-to-dev` label (keeping the rest, e.g. `design bug`) — the same
+handoff step the dev flow does — so the ticket leaves the queue and lands in the engineer-review
+column; `assignee` is never touched (Linear-only). The ticket writes are: the PR-link comment, that
+status/label transition, and attaching your supplied capture, if any.
 
 **Unattended lane (`--auto` — dispatcher/orchestrator use, not for designers).** Linear tickets
 labeled `design bug` are routed here by `/route` / `/ggx-work` / `/ggx-dispatcher` as

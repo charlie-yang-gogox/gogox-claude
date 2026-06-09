@@ -226,7 +226,8 @@ These are blocked; the skill stops and tells you why:
 
 - Iterating, or picking "show me" → nothing is shipped; the change just stays in your working tree.
 - Picking "Ship it" → logic check → commit → open a **draft PR** (its Demo section carries the
-  ticket's design images and your screenshot, if you gave one) + leave a link on the ticket.
-- **It never auto-merges, never flips draft → ready, never changes ticket status.** The human review
-  step is kept on purpose — with no edit-time guard, "no logic changes" is only best-effort (pre-ship
-  dual audit + compile), so a human must do the final check on the PR.
+  ticket's design images and your screenshot, if you gave one) + leave a link on the ticket, then move
+  the ticket to **In Review** and drop its `ready-to-dev` label (same handoff as the dev flow).
+- **It never auto-merges and never flips draft → ready.** The status move stops at In Review; the
+  human review step is kept on purpose — with no edit-time guard, "no logic changes" is only
+  best-effort (pre-ship dual audit + compile), so a human must do the final check on the PR.

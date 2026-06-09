@@ -288,7 +288,7 @@ diff a human reviews on the PR).
 | `start` | `/ui-tweak:start <ticket> [--auto]` — split+enter the `../<ticket>` worktree via `/add-worktree`. Run up-front by **Step 0 (R19)** before the first `apply`. (Under B3 every run splits up-front, so the walker's deliver-path `start` branch is defensive only.) |
 | `commit` | `/commit` (NO extra confirm — "Ship it" on C1 already authorized the handoff, R18) — commit ONLY the files in the Step-5 coverage table (R12); formatter-touched extras go in the PR body `### Formatter-only changes` |
 | `demo` | `/ui-tweak:demo` — opt-in **Tier-1 passive capture** (`demo-requested` present): screenshot + short recording of what is CURRENTLY on the previewed device's screen — **zero input events** (never taps/launches/navigates; the screen is the one the designer just approved). Appends output paths to `demo-files`, consumes `demo-requested`. Best-effort + fail-silent: ANY failure also consumes `demo-requested` and the walker proceeds to `pr` with the normal Demo fallback chain |
-| `pr` | `/pull-request --draft` with the **pre-built PR body** (see "Deliver PR body" below — its `## Demo` embeds ticket visuals and any designer-supplied capture from `.dev/ui-tweak/demo-files`); title prefixed `[ui-tweak]`; structured read-only ticket comment (`🎨 UI tweak ready for engineer review` + audit verdict + coverage summary) |
+| `pr` | `/pull-request --draft` with the **pre-built PR body** (see "Deliver PR body" below — its `## Demo` embeds ticket visuals and any designer-supplied capture from `.dev/ui-tweak/demo-files`); title prefixed `[ui-tweak]`; structured PR-link ticket comment (`🎨 UI tweak ready for engineer review` + audit verdict + coverage summary). Then **transition the ticket** (see "Ticket transition on PR open" below): status → `In Review` and remove the `ready-to-dev` label (keep all others, e.g. `design bug`) — Linear-only, idempotent, both interactive and `--auto` |
 | `review` | `/code-review <pr>` → `claude-reports/<ticket>/code-review.md` |
 | `done` | terminal: iteration → **C1 (show-me)**; post-preview → **C1 (looks-good)**; deliver (PR open + code-review) → **C5** |
 
@@ -508,14 +508,34 @@ already produced:
 
 Never reuse `/pull-request`'s empty placeholder.
 
+## Ticket transition on PR open (`pr` stage tail)
+
+After the draft PR is open and the PR-link comment is posted, move the work item forward so it
+leaves the dev queue and lands in the engineer-review column — the same lifecycle step `/dev:ship`
+performs after opening its PR. This is **Linear-only** (Jira has no ui-tweak lane) and **idempotent**
+(read current state first; skip any write already at target):
+
+1. **Status → `In Review`.** Resolve the ticket id from `.dev/ui-tweak/ticket.json` and set its state
+   to the team's `In Review` status via `save_issue` (`state: "In Review"`). If the ticket is already
+   in `In Review` / a later state (`Ready for QA`, `Done`), do not move it backward — skip.
+2. **Remove the `ready-to-dev` label, keep the rest.** `save_issue`'s `labels` field replaces the
+   whole set, so read the current labels (from `ticket.json` / a fresh fetch), drop `ready-to-dev`,
+   and write back the remainder verbatim (e.g. keep `design bug`). If `ready-to-dev` is absent,
+   skip.
+
+Both writes are best-effort: a failure here must NOT fail the run (the PR is already open — that is
+the deliverable). Log a single WARN and continue to `review`. `assignee` is still never changed.
+Applies in BOTH interactive and `--auto` modes (parity with `/dev:ship`).
+
 ## Constraints (carry-over)
 
-Terminal is a **draft PR** — never `draft→ready`, never merge, never mutate ticket status (the only
-ticket writes are the read-only PR-link comment and — when the designer supplied a capture —
-attaching that capture file to the ticket so the PR can embed its `assetUrl`; status/assignee are
-never touched). No `--pr` flag; in interactive mode deliver happens only via a human picking
-"Ship it" on a C1 card. Under `--auto` the deliver decision is auto-supplied via the direct-ship
-auto-decision (D7, revised) — the draft PR remains the terminal and the human gate.
+Terminal is a **draft PR** — never `draft→ready`, never merge. The deliver path's allowed ticket
+writes are: (a) the PR-link comment, (b) when the designer supplied a capture, attaching that file so
+the PR can embed its `assetUrl`, and (c) the **PR-open transition** above (status → `In Review` +
+remove `ready-to-dev`, Linear-only, idempotent — mirrors `/dev:ship`). `assignee` is never touched.
+No `--pr` flag; in interactive mode deliver happens only via a human picking "Ship it" on a C1 card.
+Under `--auto` the deliver decision is auto-supplied via the direct-ship auto-decision (D7, revised)
+— the draft PR remains the terminal and the human gate.
 
 **Wired into `/route` / `/ggx-work` / `/ggx-dispatcher`**: `/route` recommends `/ui-tweak:ff` for
 tickets whose Linear labels include `design bug` (precedence over the canonical
