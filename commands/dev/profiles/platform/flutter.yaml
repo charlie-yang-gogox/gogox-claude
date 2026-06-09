@@ -8,21 +8,24 @@ ide_open_hint: "run /work <ticket-id> to start, or /list-worktrees to see all ac
 
 # --- /ui-tweak skill (UI-Designer mode) ---
 # Build-only: confirm the change compiles; no deploy/run/screenshot.
-# Generic default (no flavor). Flavored repos override `ui_build_cmd` in <repo>/.gogox-claude.yaml
-# (e.g. `--flavor stag --target-platform android-arm64`) to avoid the false "Gradle build failed to
-# produce an .apk file" tail and skip the 3x fat-APK assembly. The gate keys on exit code, not log
-# text, so the false tail is harmless either way (verify.md Step 1).
-ui_build_cmd: flutter build apk --debug   # or `flutter build ios --debug --simulator` on iOS targets
+# Default carries `--flavor stag` — gogox's two flutter apps (gogox-client-flutter / gogox-driver-flutter)
+# both build the staging flavour, so designers never have to pick one (feedback #3). The gate keys on
+# exit code, not log text, so the false "Gradle build failed to produce an .apk file" tail is harmless.
+# ⚠️ gogox-specific default: a flutter repo with NO `stag` flavour will fail to build until it overrides
+#    ui_build_cmd / ui_preview_cmd in <repo>/.gogox-claude.yaml (repo override wins over this default).
+ui_build_cmd: flutter build apk --debug --flavor stag   # or `flutter build ios --debug --simulator --flavor stag` on iOS targets
 
 # Phase-1 preview (R18): build the change INTO a device so the designer can SEE it on a real screen
 # (NOT build-only anymore). `{device}` is substituted by /ui-tweak:preview after the device cascade
 # (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator →
 # else honest skip). `flutter run` covers BOTH Android emulators and iOS simulators, so one template
 # serves both. Device discovery uses `flutter devices` / boot uses `flutter emulators --launch <id>`.
-# Repo override (e.g. flavor) lives in <repo>/.gogox-claude.yaml.
+# Default carries `--flavor stag` (gogox-specific; see ui_build_cmd note). Repo override lives in
+# <repo>/.gogox-claude.yaml and wins over this default.
 #
 # fvm rewrite: on fvm-pinned repos (.fvmrc / .fvm/fvm_config.json present) the /ui-tweak stages
 # rewrite the LEADING `flutter` token of ui_build_cmd / ui_preview_cmd (incl. repo overrides) with
-# the resolved binary from .dev/ui-tweak/flutter-bin (e.g. `fvm flutter`). Keep templates written
-# with the bare `flutter` token so the rewrite stays mechanical.
-ui_preview_cmd: flutter run -d {device} --debug   # repos add their flavor, e.g. `--flavor stag`
+# the resolved binary from .dev/ui-tweak/flutter-bin (e.g. `fvm flutter` or the direct
+# .fvm/flutter_sdk/bin/flutter SDK binary). Keep templates written with the bare `flutter` token
+# (and the flavor at the END) so the leading-token rewrite stays mechanical.
+ui_preview_cmd: flutter run -d {device} --debug --flavor stag
