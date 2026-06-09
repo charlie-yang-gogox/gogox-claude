@@ -12,3 +12,4 @@ commands/dev/profiles/ggx-slack.json
 
 # /dev:* runtime artifacts (proof-of-work, not source)
 .dev/
+claude-reports/
