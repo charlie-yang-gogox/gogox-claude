@@ -1,0 +1,12 @@
+# gogox-claude repo profile — makes THIS repo a dev target for the
+# Linear → dev → PR pipeline (/ticket-analyze → /ggx-dispatcher → /ggx-work → /route).
+#
+# Resolved first by every gogox-claude command's "Step 0: resolve profile"
+# (before the per-machine registry fallback). Committed on purpose: co-owners
+# clone the repo and inherit it — no per-machine setup. See
+# plans/ggx-claude-self-dev-workflow.md.
+
+platform: prompt          # NOT flutter/android/ios/node — this repo's "code" is prompts + JS + bash. See commands/dev/profiles/platform/prompt.yaml.
+product: gogox-claude
+branch_prefix: GGC         # Linear team key (https://linear.app/gogox/team/GGC)
+ticket_system: linear
