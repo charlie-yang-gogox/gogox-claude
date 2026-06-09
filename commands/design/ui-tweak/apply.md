@@ -157,8 +157,18 @@ correction Level A, no re-arm). `--auto` skips the interactive confirm but still
 If `base_ref` already exists (a correction or repair re-run), do **not** overwrite it (keep the true
 pre-edit baseline so preview/audit always diff the cumulative change):
 
+On **flutter**, restore environment-setup noise before recording `base_ref`: `/add-worktree` runs
+`flutter pub get`, which dirties `pubspec.lock`. Since `base_ref` points at the pre-`pub get` HEAD,
+that lockfile change would otherwise land in the `base_ref → working` diff and pollute the audit's
+frozen set. Restore it here so the frozen set contains only the designer's UI edits (the restore
+targets environment-setup noise only, never the designer's edits — which have not been made yet at
+this point in the stage):
+
 ```bash
 mkdir -p "$REPO_ROOT/.dev/ui-tweak"
+if [ "$PLATFORM" = "flutter" ]; then
+  git -C "$REPO_ROOT" checkout -- pubspec.lock 2>/dev/null || true
+fi
 [ -f "$REPO_ROOT/.dev/ui-tweak/base_ref" ] || git rev-parse HEAD > "$REPO_ROOT/.dev/ui-tweak/base_ref"
 ```
 
