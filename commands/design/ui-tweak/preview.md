@@ -131,6 +131,46 @@ Acquire a target device in this order; stop at the first that yields one:
 
 Pick ONE device id; substitute it into `ui_preview_cmd`'s `{device}`.
 
+> ### ⛔ macOS has no `timeout` — do NOT use it for the (a)/(b) waits (GGC-2 / F1)
+> macOS ships **no** `timeout` command (it is GNU coreutils, Linux-only). A device wait written as
+> `timeout <N> $FLUTTER_BIN devices --machine` therefore errors out on a designer's Mac, the early
+> polls come back empty, and the cascade **wrongly concludes "no device"** — falling through to the
+> build-only path (c) even when a simulator is already booted. The (a) grace poll and the (b)
+> bounded wait below MUST be expressed as a **counter-bounded poll loop** (a `while` with a counter and
+> `sleep`), which depends on nothing beyond POSIX builtins. Do not reach for `timeout`. If you want a
+> hard wall-clock ceiling you may use `gtimeout` **only when `command -v gtimeout` confirms coreutils
+> is installed** — never assume it. The bound is the number of poll iterations, not an external timer.
+
+**Concrete wait mechanism for (a) and (b) — copy this loop; never `timeout`.** `poll_for_device` polls
+`$FLUTTER_BIN devices --machine` once per second up to a bounded iteration count and prints the first
+device id it finds (empty if the bound elapses with none). The grace poll (a) and the cold-boot wait
+(b) differ only in `MAX` (`10` vs `60`):
+
+```bash
+# Counter-bounded device poll — no `timeout` (absent on macOS). MAX = max seconds to wait.
+# Echoes the first usable device id, or nothing if the bound elapses.
+poll_for_device() {
+  MAX=$1; i=0
+  while [ "$i" -lt "$MAX" ]; do
+    DEV=$($FLUTTER_BIN devices --machine 2>/dev/null \
+      | jq -r '[.[] | select(.isSupported != false) | .id][0] // empty' 2>/dev/null)
+    [ -n "$DEV" ] && { printf '%s\n' "$DEV"; return 0; }
+    i=$((i + 1)); sleep 1
+  done
+  return 1
+}
+
+# (a) grace poll (~10s) — only after `xcrun simctl list devices booted` shows a (Booted) sim
+#     that `flutter devices` has not surfaced yet:
+DEVICE=$(poll_for_device 10)
+
+# (b) cold-boot bounded wait (~60s) — after `$FLUTTER_BIN emulators --launch <id>`:
+[ -z "$DEVICE" ] && DEVICE=$(poll_for_device 60)
+```
+
+If `$DEVICE` is still empty after (b), fall through to **(c)**. The bound is the loop counter (`MAX`
+iterations of `sleep 1`), so it is portable to stock macOS with no external dependency.
+
 ## Step 2 — build INTO the device, then STOP (this is also the build gate)
 
 - **Device path**: run `ui_preview_cmd` (e.g. `fvm flutter run -d <id> --debug [--flavor …]` — the
