@@ -150,6 +150,11 @@ async function runUiTweak(item) {
 
   // Stage 1: /ui-tweak:start → :apply → :preview (R20 direct-ship build-only
   // gate; --auto never reaches a device preview). STOP before :audit.
+  // The prep agent also computes the final cumulative diff ONCE (after the
+  // build-only compile gate / format) and returns it inline, so the panel below
+  // never makes either judge re-run `git diff` or re-read the changed files
+  // (GGC-5: diff-once, fed inline to both judges). diffText is the exact text
+  // that ships; changedFiles is the name-only list for the judges' context.
   const prep = await agent(
     [
       `For ticket ${item.ticketId} (target worktree ${item.worktreePath}):`,
@@ -159,7 +164,16 @@ async function runUiTweak(item) {
       `(R20 direct-ship → build-only compile gate, no device preview). STOP`,
       `before /ui-tweak:audit. Leave .dev/ui-tweak/base_ref and`,
       `.dev/ui-tweak/build-pass in place for the panel.`,
-      `Return { ok: boolean, baseRef: string|null, error: string|null }.`,
+      ``,
+      `THEN compute the audit diff ONCE so the dual-judge panel does not make`,
+      `each judge re-run git: read base from .dev/ui-tweak/base_ref, run`,
+      "`git diff \"$BASE\"` (full text) and `git diff \"$BASE\" --name-only`",
+      `(changed-file list), and return both verbatim. Do NOT truncate diffText`,
+      `unless it exceeds ~200KB (then return the first ~200KB and set`,
+      `diffTruncated:true so the judges know to read remaining files themselves).`,
+      ``,
+      `Return { ok: boolean, baseRef: string|null, diffText: string|null,`,
+      `changedFiles: string|null, diffTruncated: boolean, error: string|null }.`,
     ].join("\n"),
     {
       label: `ui-prep:${item.ticketId}`,
@@ -173,6 +187,9 @@ async function runUiTweak(item) {
         properties: {
           ok: { type: "boolean" },
           baseRef: { type: ["string", "null"] },
+          diffText: { type: ["string", "null"] },
+          changedFiles: { type: ["string", "null"] },
+          diffTruncated: { type: "boolean" },
           error: { type: ["string", "null"] },
         },
       },
@@ -189,17 +206,63 @@ async function runUiTweak(item) {
     };
   }
 
+  // Stage 1c: deterministic structural pre-pass (LLM-free; mirrors audit.md
+  // Step 1c). Scan the ADDED lines of the precomputed diff for unambiguous
+  // non-inert-UI signals; a hit short-circuits to BLOCKED WITHOUT spawning the
+  // slow opus dev-reviewer (the obvious-logic-change fast path). This only ever
+  // produces an EARLY BLOCKED, never an early CLEAR, so the both-must-be-CLEAR
+  // contract is unchanged (a CLEAR still requires BOTH judges to run + return
+  // CLEAR). Skipped when the diff was truncated (can't scan what we don't have).
+  if (prep.diffText && !prep.diffTruncated) {
+    const added = prep.diffText
+      .split("\n")
+      .filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+    const STRUCTURAL_RE =
+      /\bimport\b|require\(|=>|\bfunction\b|\bdef\b|\bclass\b|\breturn\b|\bif\s*\(|\bfor\s*\(|\bwhile\s*\(|\bswitch\b|\bawait\b|\basync\b|\bnew\s+[A-Z]|@\+id\//;
+    const structuralHit = added.some((l) => STRUCTURAL_RE.test(l));
+    if (structuralHit) {
+      log(`[ui] ${item.ticketId} structural pre-pass BLOCKED (logic signal in diff) — opus judge skipped`);
+      return {
+        ticketId: item.ticketId,
+        outcome: "failed",
+        prUrl: null,
+        stage: "ui:audit",
+        error:
+          "UI-TWEAK BLOCKED (structural pre-pass): added lines contain non-inert-UI logic signals (import/call/control-flow/identifier) — reverted, no changes kept.",
+        uiTweakFailed: true,
+      };
+    }
+  }
+
   // Stage 2: decorrelated dual-judge panel — BOTH must be CLEAR (audit.md
   // Step 2/3). Spawned in parallel; tiers PINNED (sonnet vs opus), no downgrade.
+  // The precomputed diff (prep.diffText + prep.changedFiles) is fed INLINE to
+  // both judges (GGC-5) — neither re-runs git diff nor re-reads files.
   log(`[ui] ${item.ticketId} dual-judge (sonnet + opus)`);
+  const diffBlock =
+    prep.diffText && !prep.diffTruncated
+      ? [
+          `Changed files:`,
+          prep.changedFiles || "(none reported)",
+          ``,
+          `Final cumulative diff (precomputed once — do NOT re-run git diff):`,
+          "```diff",
+          prep.diffText,
+          "```",
+        ].join("\n")
+      : // Fallback only if prep could not supply the diff (or it was truncated):
+        `Audit the final cumulative diff in ${item.worktreePath}` +
+        (prep.baseRef ? ` (git diff ${prep.baseRef})` : "") +
+        (prep.diffTruncated ? " — the diff was too large to inline, read the changed files directly." : ".");
   const judgePrompt = (lens) =>
     [
-      `Audit the final cumulative diff (git diff ${prep.baseRef}) in`,
-      `${item.worktreePath} for ticket ${item.ticketId}, through the ${lens} lens.`,
-      `Read .dev/ui-tweak/figma-context.md (if present) and assert every`,
-      `WILL-EDIT target is covered — a miss is BLOCKED. Per audit.md: a purely`,
-      `visual/layout/structure change is CLEAR; any logic/behavior change is`,
-      `BLOCKED. Return { status: "CLEAR"|"BLOCKED", reason }.`,
+      `Audit the change for ticket ${item.ticketId} through the ${lens} lens.`,
+      diffBlock,
+      ``,
+      `Read .dev/ui-tweak/figma-context.md in ${item.worktreePath} (if present)`,
+      `and assert every WILL-EDIT target is covered — a miss is BLOCKED. Per`,
+      `audit.md: a purely visual/layout/structure change is CLEAR; any`,
+      `logic/behavior change is BLOCKED. Return { status: "CLEAR"|"BLOCKED", reason }.`,
     ].join("\n");
 
   const [uiVerify, devReview] = await parallel([

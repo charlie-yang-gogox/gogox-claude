@@ -10,9 +10,11 @@ description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — th
      with --workflow: the SCRIPT spawns ui-verify-agent (sonnet) + dev-reviewer
      (opus) as level-1 agents, BOTH must be CLEAR, --auto is loud-fail (no
      repair loop). If the judge contract here changes (figma-context read,
-     WILL-EDIT coverage assertion, both-must-be-CLEAR, loud-fail semantics),
-     update runUiTweak's judge prompts TOO. See ggx-dispatcher.md §5.2 (Phase B)
-     and ARCHITECTURE.md "Nested-spawn constraint" R5. -->
+     WILL-EDIT coverage assertion, both-must-be-CLEAR, loud-fail semantics,
+     diff-computed-once-and-fed-inline, deterministic structural pre-pass
+     short-circuit), update runUiTweak's judge prompts TOO. See
+     ggx-dispatcher.md §5.2 (Phase B) and ARCHITECTURE.md "Nested-spawn
+     constraint" R5. -->
 
 # `/ui-tweak:audit`
 
@@ -51,19 +53,63 @@ Run `/format --skip-commit`. The formatter may touch the changed files (whitespa
 small non-whitespace hunks; auditing AFTER format means the judges see exactly what will be committed
 — no separate post-format re-audit is needed (the single audit below covers the final tree).
 
+## Step 1b — compute the diff ONCE (feed inline to both judges)
+
+Compute the final cumulative diff and the changed-file list a **single time**, AFTER the format pass,
+and hold both in memory. Both judges receive this precomputed text inline — neither re-runs `git diff`
+nor re-reads the changed files, so the only per-judge cost is the model call itself (the git/file IO
+happens once, not once per judge):
+
+```bash
+CHANGED_FILES=$(git diff "$BASE" --name-only)
+DIFF_TEXT=$(git diff "$BASE")          # the exact text that ships; computed once, fed to both judges
+```
+
+`$DIFF_TEXT` + `$CHANGED_FILES` are the judges' sole diff input below. (For a very large diff —
+many changed files — you MAY additionally fan the judges out per-file, but a UI tweak diff is almost
+always tiny, so the default single-diff-inline path is both correct and faster; the bottleneck is the
+opus model latency, not the diff size, which is exactly what Step 1c targets.)
+
+## Step 1c — deterministic structural pre-pass (fast; may short-circuit the opus call)
+
+Before spawning the judges, run a **deterministic, LLM-free structural scan** over `$DIFF_TEXT`
+(grep only — no model call). It looks for added-line signals that are unambiguously NOT inert UI:
+new imports, new call heads / function definitions, renamed or new identifiers, control-flow
+keywords, changed `@+id` references, etc. — the same structural signals `dev-reviewer` would catch,
+but computed in milliseconds:
+
+```bash
+# Examine ADDED lines only (leading '+', excluding the '+++' file header).
+ADDED=$(printf '%s\n' "$DIFF_TEXT" | grep -E '^\+' | grep -vE '^\+\+\+')
+STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE \
+  'import |require\(|=>|function |def |class |return |if \(|for \(|while \(|switch |await |async |new [A-Z]|@\+id/')
+```
+
+- `STRUCTURAL_HIT > 0` → **short-circuit to BLOCKED** without spawning the opus `dev-reviewer` at all
+  (the obvious-logic-change fast path — saves the slow opus call). Record the matched signal as the
+  block reason and go straight to Step 4 (agent repair) / the `--auto` loud-fail path. This NEVER
+  produces an early CLEAR — it only ever BLOCKs earlier, so the both-must-be-CLEAR contract in Step 3
+  is unchanged (a CLEAR still requires BOTH judges to actually run and return CLEAR).
+- `STRUCTURAL_HIT == 0` → proceed to Step 2 and spawn BOTH judges normally.
+
 ## Step 2 — dual judge, decorrelated (R6), on the FINAL cumulative diff
 
-Spawn judges with the **Agent tool**, inputs `base=$BASE` (the pre-edit SHA, NOT HEAD) + platform.
-The judges audit the **final cumulative diff** `git diff "$BASE"` (everything from the original
-baseline through every correction and the format pass — this is what actually ships). The judges are
-**read-only by tool grant** (no Write) and **return** their verdict text — this stage persists it.
+Spawn judges with the **Agent tool**, inputs the **precomputed** `$DIFF_TEXT` + `$CHANGED_FILES`
+from Step 1b (the pre-edit SHA `$BASE` is passed only as provenance metadata — the judges do NOT
+re-run `git diff`). The judges audit the **final cumulative diff** (everything from the original
+baseline through every correction and the format pass — this is what actually ships) as supplied
+inline. The judges are **read-only by tool grant** (no Write) and **return** their verdict text —
+this stage persists it.
 
-**Always run BOTH judges in parallel** (one message, two Agent calls). Since the skill has no
-edit-time hook, there is no upstream proof that the diff is value-only — so neither judge may be
-skipped. They are decorrelated by model tier (`ui-verify-agent` = sonnet, `dev-reviewer` = opus) so
-their misses are not positively correlated; `dev-reviewer` additionally runs a deterministic
-structural pre-pass (added imports / new call heads / renamed identifiers / changed `@+id`) that
-BLOCKs non-inert-UI structural edits regardless of how plausible they read.
+**Always run BOTH judges in parallel** (one message, two Agent calls) — and feed both the SAME
+precomputed `$DIFF_TEXT` inline, so the git/file IO is paid once for the whole panel rather than once
+per judge. Since the skill has no edit-time hook, there is no upstream proof that the diff is
+value-only — so neither judge may be skipped (except the Step 1c structural short-circuit, which only
+ever BLOCKs, never CLEARs). They are decorrelated by model tier (`ui-verify-agent` = sonnet,
+`dev-reviewer` = opus) so their misses are not positively correlated; the Step 1c deterministic
+structural pre-pass is the fast cousin of `dev-reviewer`'s own structural reasoning (added imports /
+new call heads / renamed identifiers / changed `@+id`) — when it fires, the opus call is skipped
+entirely; when it does not, `dev-reviewer` still applies its full structural + behavioral lens.
 
 **Persist the verdicts** from each judge's returned text:
 - `ui-verify-agent` text → `.dev/ui-verify-pass.md`
