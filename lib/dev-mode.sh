@@ -10,10 +10,23 @@
 
 # pipe_mode [<worktree_root>]
 #
-# Echoes `bug` if .dev/mode.md exists and its first line is exactly `bug`.
-# Echoes `feature` otherwise. Absent / unreadable / unexpected content all
-# fall through to `feature` so unmarked legacy worktrees keep their
-# existing behavior.
+# Echoes the pipeline mode:
+#   `bug`            — .dev/mode.md exists and its first line is exactly `bug`
+#                      (written by /dev:start --bug; always wins).
+#   `feature-direct` — no bug marker AND the worktree has no `openspec/` dir:
+#                      feature work on a repo that does not use OpenSpec
+#                      (e.g. gogox-claude, platform `prompt` — GGC-17).
+#                      Rides the bug-mode FLOW (direct edit, no /opsx:*
+#                      stages, no figma/detect/align) with feature SEMANTICS
+#                      (feat:-typed commits, feature wording in reports).
+#                      Detected dynamically — no marker file is written, so
+#                      pre-existing worktrees pick it up on re-run with zero
+#                      migration. OpenSpec-initialized repos always have
+#                      `openspec/` committed at the root, so they can never
+#                      misdetect into this branch.
+#   `feature`        — everything else (the OpenSpec-driven default).
+# Absent / unreadable / unexpected mode.md content falls through to the
+# openspec-dir check, so unmarked legacy worktrees keep their behavior.
 #
 # Usage:
 #   PIPE_MODE=$(pipe_mode)            # uses git toplevel
@@ -25,6 +38,8 @@ pipe_mode() {
   if [ -f "$wt/.dev/mode.md" ] \
      && [ "$(head -1 "$wt/.dev/mode.md" 2>/dev/null)" = "bug" ]; then
     echo bug
+  elif [ ! -d "$wt/openspec" ]; then
+    echo feature-direct
   else
     echo feature
   fi

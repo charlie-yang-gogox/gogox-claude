@@ -26,9 +26,10 @@ Test → audit → format → commit. The verify-agent is the load-bearing piece
 WT=$(git rev-parse --show-toplevel)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
-# Pipeline mode: bug (no openspec) vs feature (openspec-driven).
-# Resolved by pipe_mode (lib/dev-mode.sh); .dev/mode.md is written by
-# /dev:start when --bug; absent ⇒ feature.
+# Pipeline mode: bug / feature-direct (both: no openspec) vs feature
+# (openspec-driven). Resolved by pipe_mode (lib/dev-mode.sh); .dev/mode.md
+# is written by /dev:start when --bug; feature-direct is detected
+# dynamically (no openspec/ dir — GGC-17).
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
 
@@ -40,17 +41,18 @@ else
 fi
 BASE_REF=$(trunk_ref)   # origin/<default branch> — trunk (flutter) or main (gogox-claude); see lib/dev-mode.sh
 
-if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" != "bug" ]; then
-  echo "FAIL: /dev:verify requires --auto (or bug mode via /bug:ff). Default-mode feature pipelines terminate at /dev:apply." >&2
+if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" = "feature" ]; then
+  echo "FAIL: /dev:verify requires --auto (or a direct mode: bug via /bug:ff, feature-direct on no-OpenSpec repos). Default-mode feature pipelines terminate at /dev:apply." >&2
   exit 1
 fi
 
-if [ "$PIPE_MODE" = "bug" ]; then
-  # Bug mode: no openspec change dir, no tasks.md. Sanity-check the human committed something.
+if [ "$PIPE_MODE" != "feature" ]; then
+  # Direct modes (bug / feature-direct): no openspec change dir, no tasks.md.
+  # Sanity-check something was committed.
   N=""
   COMMITS_AHEAD=$(git rev-list --count "$BASE_REF..HEAD" 2>/dev/null || echo 0)
   [ "$COMMITS_AHEAD" -gt 0 ] || {
-    echo "FAIL: bug-mode /dev:verify requires at least one commit beyond $BASE_REF. Commit your fix first." >&2
+    echo "FAIL: direct-mode /dev:verify requires at least one commit beyond $BASE_REF. Commit your change first." >&2
     exit 1; }
 else
   # Feature mode: require openspec change dir + completed tasks.
@@ -78,7 +80,7 @@ If still failing after fix attempts, note in the eventual verify report and proc
 Use the **Agent** tool with `subagent_type: "verify-agent"`, `mode: "bypassPermissions"`. Prompt with the three required inputs:
 
 - `base` — `$BASE_REF` (e.g. `origin/trunk` or `origin/main`)
-- `change name` — `$N` if non-empty, else pass `(bug-mode: no openspec change)` so the auditor knows to skip openspec cross-checks and rely on diff + tests alone.
+- `change name` — `$N` if non-empty, else pass `(bug-mode: no openspec change)` so the auditor knows to skip openspec cross-checks and rely on diff + tests alone. (Same form for both direct modes — `feature-direct` runs also have no openspec change; the string is a contract with the auditor, do not vary it per mode.)
 - `figma raw directory` — `$FIGMA_RAW` if non-empty, else omit
 
 **Prompt-platform repos (`{platform}` = `prompt`, e.g. gogox-claude).** Also tell
@@ -87,8 +89,9 @@ the auditor the diff is prompts / markdown / bash / workflow JS, NOT app code �
 paths, profile keys, and cross-file references (grep for stale references to
 those, not code symbols). The "build" that confirms compilation is
 `scripts/prompt-lint.sh`, already run in Step 1 via `{test_cmd}`. There are no
-openspec artifacts on this platform (skill-edits use the bug lane), so pass the
-`(bug-mode: no openspec change)` change-name form.
+openspec artifacts on this platform (skill-edits ride the direct modes — bug, or
+feature-direct per GGC-17), so pass the `(bug-mode: no openspec change)`
+change-name form.
 
 **Pass the raw dir, not the receipt path.** The auditor must read `.dev/figma-raw/*.json` directly, not `.dev/figma-context.md`. The receipt is a curated summary written by the implementing pipeline — sharing it with the auditor would re-converge auditor and implementer onto the same filtered view, defeating the whole point of the split. The receipt is referenced internally by verify-agent only for sha256 cross-check.
 

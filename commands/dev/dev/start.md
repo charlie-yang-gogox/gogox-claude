@@ -30,7 +30,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 - Worktree at `../<ticket-id>` (auto only).
 - `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` (when `--no-figma` OR ticket has no Figma URL after parsing).
 - `.dev/spec-review-directives.md` — first line `Status: PRESENT` (latest `<!-- spec-review:v1 -->` Linear comment captured verbatim) or `Status: NONE` (no such comment). Always written. Consumed by `/dev:apply` Step 0-bug.1 and Step 4D.1 to surface `[REVISED]` directives to whichever agent authors code.
-- `.dev/mode.md` with single line `bug` (only when `--bug` is set). Absent for the default feature path — readers treat absent as `feature`.
+- `.dev/mode.md` with single line `bug` (only when `--bug` is set). Absent for the default feature path — readers resolve absent via `pipe_mode` (lib/dev-mode.sh): `feature` on OpenSpec repos, `feature-direct` on repos without an `openspec/` dir (GGC-17 — dynamic, no marker written).
 - Linear ticket: assigned to self, status `In Progress`, `ready-to-dev` label removed, estimate=1 if null, starting comment posted (both modes; skipped only with `--no-ticket-init`). Driven by `/_ticket-init` (idempotent).
 - `/tmp/<ticket-id>.md` — ticket dump (auto only).
 
@@ -224,7 +224,7 @@ if [ "$BUG_FLAG" = "1" ]; then
 fi
 ```
 
-`.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. Default (feature) mode does NOT write this file — readers treat absent as `feature`. This keeps existing dev-pipeline runs unchanged and makes bug mode opt-in.
+`.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. Default (feature) mode does NOT write this file — readers resolve absent via `pipe_mode` (lib/dev-mode.sh): `feature` when the repo has an `openspec/` dir, `feature-direct` when it doesn't (GGC-17). `feature-direct` is deliberately marker-less — dynamic detection means pre-existing worktrees pick it up on re-run with zero migration. This keeps existing dev-pipeline runs unchanged and makes bug mode opt-in.
 
 ## Step 4c: Capture spec-review directives (if any)
 
