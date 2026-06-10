@@ -11,8 +11,18 @@ ide_open_hint: "run /work <ticket-id> to start, or /list-worktrees to see all ac
 # Default carries `--flavor stag` — gogox's two flutter apps (gogox-client-flutter / gogox-driver-flutter)
 # both build the staging flavour, so designers never have to pick one (feedback #3). The gate keys on
 # exit code, not log text, so the false "Gradle build failed to produce an .apk file" tail is harmless.
-# ⚠️ gogox-specific default: a flutter repo with NO `stag` flavour will fail to build until it overrides
-#    ui_build_cmd / ui_preview_cmd in <repo>/.gogox-claude.yaml (repo override wins over this default).
+#
+# Flavor source precedence (GGC-7) — `stag` here is the LAST-RESORT default, not a hard requirement:
+#   1. `<repo>/.gogox-claude.yaml` `flavor:`  — a repo declares its own (e.g. `flavor: dev`); WINS.
+#   2. this platform default (`flavor` token `stag` baked into the commands below).
+# `/ui-tweak:start` resolves the effective flavor by this precedence, then PROBES whether the repo
+# actually has it (Android `productFlavors` in build.gradle[.kts] / an iOS Xcode scheme of that name —
+# they are DIFFERENT mechanisms and only coincidentally both `stag` on gogox repos), caching the result
+# to `.dev/ui-tweak/flavor` (probe + cache, exactly like flutter-bin). `/ui-tweak:preview` then reads
+# that marker: if the flavor was NOT detected it strips the `--flavor <name>` tail and runs a graceful
+# NO-FLAVOR build with a legible WARN — so a repo lacking the matching flavor degrades cleanly instead
+# of dying on a cryptic Xcode/gradle error. A repo MAY still hard-override ui_build_cmd / ui_preview_cmd
+# wholesale in <repo>/.gogox-claude.yaml (repo override wins over this default).
 ui_build_cmd: flutter build apk --debug --flavor stag   # or `flutter build ios --debug --simulator --flavor stag` on iOS targets
 
 # Phase-1 preview (R18): build the change INTO a device so the designer can SEE it on a real screen

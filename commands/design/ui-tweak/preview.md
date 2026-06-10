@@ -85,6 +85,32 @@ Then rewrite the **leading `flutter` token** of the resolved `ui_preview_cmd` / 
 `flutter emulators` call below. Do NOT re-discover fvm by trial-and-error — the marker is
 authoritative.
 
+**`{platform} = flutter` ONLY — graceful flavor fallback (GGC-7).** `/ui-tweak:start` (b) probed
+whether the effective flavor actually exists in this repo (Android `productFlavors` / iOS scheme) and
+wrote `.dev/ui-tweak/flavor` (line1 = flavor name, line2 = `detected|missing`). If the flavor was
+**not** detected — or the repo declares no flavor at all — strip the trailing `--flavor <name>` from
+the resolved `ui_preview_cmd` / `ui_build_cmd` and run a **no-flavor build** with a legible WARN,
+rather than letting gradle/Xcode self-destruct on a flavor it does not have. When the marker is
+`detected`, leave the command untouched. The flavor token lives at the END of the command on purpose
+(see `flutter.yaml`), so the strip is a mechanical tail-edit. Skip this block on `android` / `ios`
+(no flutter `--flavor` semantics there):
+
+```bash
+# Default to keeping --flavor if no marker (e.g. a stale worktree from before GGC-7): the pre-GGC-7
+# behavior was "always carry --flavor stag", so an absent marker must NOT silently strip it.
+FLAVOR_DETECTED=detected; FLAVOR_NAME=""
+if [ -f "$WT/.dev/ui-tweak/flavor" ]; then
+  FLAVOR_NAME=$(sed -n 1p "$WT/.dev/ui-tweak/flavor")
+  FLAVOR_DETECTED=$(sed -n 2p "$WT/.dev/ui-tweak/flavor")
+fi
+if [ "$FLAVOR_DETECTED" = "missing" ]; then
+  # Strip a trailing `--flavor <token>` from each resolved command (tail position; mechanical).
+  ui_preview_cmd=$(printf '%s' "$ui_preview_cmd" | sed -E 's/[[:space:]]*--flavor[[:space:]]+[A-Za-z0-9_]+[[:space:]]*$//')
+  ui_build_cmd=$(printf '%s'   "$ui_build_cmd"   | sed -E 's/[[:space:]]*--flavor[[:space:]]+[A-Za-z0-9_]+[[:space:]]*$//')
+  echo "WARN: flavor '${FLAVOR_NAME:-<none>}' not present in this repo — building WITHOUT --flavor (graceful fallback, GGC-7). If the app needs a flavor, declare a present one via 'flavor:' in <repo>/.gogox-claude.yaml." >&2
+fi
+```
+
 ## Step 0b — direct-ship mode (R20) + navigate mode (GGC-14)
 
 ```bash

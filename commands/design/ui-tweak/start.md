@@ -119,6 +119,56 @@ designer never types `/ui-tweak:start`.
      udid=$(xcrun simctl list devices available 2>/dev/null | grep iPhone | grep -m1 -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
      [ -n "$udid" ] && { (xcrun simctl boot "$udid" >/dev/null 2>&1 &) ; }
    fi
+   # (c) flavor resolution + detection (GGC-7) — resolve the effective flavor by precedence, PROBE
+   #     whether the repo actually has it, and cache the result worktree-local so /ui-tweak:preview
+   #     never re-probes. Android flavor = a gradle `productFlavors` entry; iOS flavor = an Xcode
+   #     scheme of that name — DIFFERENT mechanisms (they only coincide as `stag` on gogox repos), so
+   #     probe BOTH surfaces that exist in the repo and treat "found in either" as detected. A repo
+   #     without the matching flavor must degrade to a no-flavor build downstream, not a cryptic error.
+   #     Precedence: <repo>/.gogox-claude.yaml `flavor:` (relative, plain token) > platform default.
+   #     The platform-default flavor is read from the LAST token of ui_build_cmd in the resolved
+   #     flutter.yaml (kept at the END on purpose, see flutter.yaml), so this stays a mechanical tail-read.
+   #     Marker grammar (.dev/ui-tweak/flavor): line1 = flavor name (empty ⇒ no flavor configured at all),
+   #                                            line2 = detected|missing (missing ⇒ preview strips --flavor).
+   PLATFORM_YAML="$HOME/.claude/commands/profiles/platform/flutter.yaml"
+   FLAVOR_OV=$(sed -n 's/^flavor:[[:space:]]*//p' "$WT/.gogox-claude.yaml" 2>/dev/null | head -1)
+   if [ -n "$FLAVOR_OV" ]; then
+     FLAVOR="$FLAVOR_OV"
+   else
+     # platform default = last whitespace token of ui_build_cmd's `--flavor <x>` (no override ⇒ empty)
+     FLAVOR=$(sed -n 's/^ui_build_cmd:[[:space:]]*//p' "$PLATFORM_YAML" 2>/dev/null \
+       | grep -oE -- '--flavor[[:space:]]+[A-Za-z0-9_]+' | head -1 | awk '{print $2}')
+   fi
+   FLAVOR_DETECTED=missing
+   if [ -z "$FLAVOR" ]; then
+     # no flavor configured anywhere — nothing to probe; preview will build with no --flavor.
+     FLAVOR_DETECTED=missing
+   else
+     # Android: a `productFlavors` block declaring this flavor name. Match the flavor token inside the
+     # block in either Groovy (build.gradle) or Kotlin DSL (build.gradle.kts: `create("stag")` / `stag {`).
+     ANDROID_GRADLE=""
+     for g in "$WT/android/app/build.gradle" "$WT/android/app/build.gradle.kts"; do
+       [ -f "$g" ] && ANDROID_GRADLE="$g" && break
+     done
+     if [ -n "$ANDROID_GRADLE" ] && grep -q 'productFlavors' "$ANDROID_GRADLE" 2>/dev/null; then
+       # tolerate `stag {`, `stag{`, `create("stag")`, `create('stag')`
+       if grep -qE "(^|[^A-Za-z0-9_])${FLAVOR}[[:space:]]*\{" "$ANDROID_GRADLE" 2>/dev/null \
+          || grep -qE "create\([\"']${FLAVOR}[\"']\)" "$ANDROID_GRADLE" 2>/dev/null; then
+         FLAVOR_DETECTED=detected
+       fi
+     fi
+     # iOS: an Xcode scheme file named <flavor>.xcscheme under the project or workspace shared data.
+     if [ "$FLAVOR_DETECTED" = missing ]; then
+       if ls "$WT"/ios/*.xcodeproj/xcshareddata/xcschemes/"$FLAVOR".xcscheme >/dev/null 2>&1 \
+          || ls "$WT"/ios/*.xcworkspace/xcshareddata/xcschemes/"$FLAVOR".xcscheme >/dev/null 2>&1 \
+          || ls "$WT"/ios/Runner.xcodeproj/xcshareddata/xcschemes/"$FLAVOR".xcscheme >/dev/null 2>&1; then
+         FLAVOR_DETECTED=detected
+       fi
+     fi
+     [ "$FLAVOR_DETECTED" = missing ] && \
+       echo "WARN: flavor '$FLAVOR' not found in this repo (no matching Android productFlavor or iOS scheme) — /ui-tweak:preview will build WITHOUT --flavor." >&2
+   fi
+   printf '%s\n%s\n' "$FLAVOR" "$FLAVOR_DETECTED" > .dev/ui-tweak/flavor   # worktree-local; preview reads this
    ```
 
 ## Not the ticket lifecycle
