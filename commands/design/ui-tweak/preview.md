@@ -85,7 +85,7 @@ Then rewrite the **leading `flutter` token** of the resolved `ui_preview_cmd` / 
 `flutter emulators` call below. Do NOT re-discover fvm by trial-and-error — the marker is
 authoritative.
 
-**`{platform} = flutter` ONLY — graceful flavor fallback (GGC-7).** `/ui-tweak:start` (b) probed
+**`{platform} = flutter` ONLY — graceful flavor fallback (GGC-7).** `/ui-tweak:start` (c) probed
 whether the effective flavor actually exists in this repo (Android `productFlavors` / iOS scheme) and
 wrote `.dev/ui-tweak/flavor` (line1 = flavor name, line2 = `detected|missing`). If the flavor was
 **not** detected — or the repo declares no flavor at all — strip the trailing `--flavor <name>` from
