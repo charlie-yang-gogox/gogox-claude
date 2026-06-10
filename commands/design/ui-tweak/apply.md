@@ -153,6 +153,16 @@ card C1's "I'm done — show me" / "Ship it" option — the designer never has t
 status`): in default mode take one plan confirmation (the designer may adjust a target in place —
 correction Level A, no re-arm). `--auto` skips the interactive confirm but still records the plan.
 
+**Skip the plan-confirm when it would be redundant (P5, GGC-14).** In default (interactive) mode, if
+**exactly ONE target** resolved (a single `Ti`) **AND its grounding source is the ticket** (the
+description/Figma gave the values — provenance `figma-confirmed` or `from the work-item description`,
+NOT `⚠ estimated`), skip the plan-confirm and go straight to the edit → card C1 (show-me). Rationale:
+C1 (show-me) is the next stop anyway and its **Other** field is already the in-place correction escape,
+so a separate plan-confirm for a single ticket-specified target is one prompt too many (it was the
+back-to-back double-ask observed in the GGC-14 dogfood). Still **record** the plan (for the PR body /
+audit). Keep the plan-confirm whenever there are ≥2 targets, OR any target is `⚠ estimated`, OR the
+source is free-text (the designer benefits from confirming scope/inference before the edit).
+
 **Record the base ref** (`base_ref` must survive to preview/audit as the cumulative-diff baseline).
 If `base_ref` already exists (a correction or repair re-run), do **not** overwrite it (keep the true
 pre-edit baseline so preview/audit always diff the cumulative change):
@@ -190,7 +200,8 @@ does not think a diff exists).
 ## HITL / `--auto`
 
 Plan-confirmation gate (default keeps it; `--auto` skips the interactive confirm but still records
-the plan). `--auto` NEVER causes build/audit/commit (those are preview / audit).
+the plan; **default ALSO skips it for a single ticket-sourced target — P5, see Step 5**). `--auto`
+NEVER causes build/audit/commit (those are preview / audit).
 
 ## Stop
 

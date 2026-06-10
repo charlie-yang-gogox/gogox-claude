@@ -1,6 +1,6 @@
 ---
 name: demo
-description: "Tier-1 capture stage of the /ui-tweak pipeline — runs when .dev/ui-tweak/demo-requested is present (written either by C1 looks-good's 'Ship it — and record a short demo' OR, under --auto / the interactive navigate opt-in, by the orchestrator's auto-decision). Scheduled by the walker AFTER commit (diff frozen) and BEFORE pr, in the deliver path the designer has already left — so it adds ZERO designer wait. Two modes: (1) PASSIVE (default) — captures what is CURRENTLY on the previewed device's screen, the screen the designer just navigated to and approved; (2) NAVIGATE+capture (GGC-14, when .dev/ui-tweak/auto-navigate is present) — fires exactly ONE deep-link URI to a whitelisted ggv:// host derived from the ticket, then captures the resulting screen. Capture = one screenshot + a short (~6s) recording via pure-output tools (xcrun simctl io / adb screencap|screenrecord). HARD RULE: zero input events EXCEPT the single sanctioned deep-link fire — never taps, swipes, types, logs in, or grants permissions; navigation is ONLY the one URI fire (no tap-through). Relies on an already-logged-in running session; if the target isn't whitelisted, or the deep-link lands on login (unauthenticated), it captures whatever is shown + notes it. Best-effort + fail-silent: ANY failure (device gone, app closed, no deep-link route, capture error) consumes demo-requested, prints one line, and exits 0 — the PR opens on schedule with the normal Demo fallback chain. Internal stage — designers run /ui-tweak."
+description: "Tier-1 capture stage of the /ui-tweak pipeline — runs when .dev/ui-tweak/demo-requested is present (written either by C1 looks-good's 'Ship it — and record a short demo' OR, under --auto / the interactive navigate opt-in, by the orchestrator's auto-decision). Scheduled by the walker AFTER commit (diff frozen) and BEFORE pr, in the deliver path the designer has already left — so it adds ZERO designer wait. Two modes: (1) PASSIVE (default) — captures what is CURRENTLY on the previewed device's screen, the screen the designer just navigated to and approved; (2) NAVIGATE+capture (GGC-14, when .dev/ui-tweak/auto-navigate is present) — two-tier navigation then capture: Tier 1 fires ONE deep-link URI to a whitelisted ggv:// host derived from the ticket; Tier 2 (no deep-link route, e.g. a drawer) is an LLM-planned tap-through — read the codebase to plan the path, then a capped observe→tap loop (MAX_TAPS) of NAVIGATION-only taps (adb shell input tap / idb ui tap). Capture = one screenshot + a short (~6s) recording via pure-output tools (xcrun simctl io / adb screencap|screenrecord). HARD RULE: navigation is for a screenshot only — NEVER taps confirm/submit/pay/destructive controls, never grants permissions, never types/logs in, never edits code, never gates the run. iOS tap-through needs idb (else honest fallback). Relies on an already-logged-in running session; if the target can't be reached, or the device is unauthenticated, it captures whatever is shown + sets a NAV_NOTE. Best-effort + fail-silent: ANY failure (device gone, app closed, no deep-link route, capture error) consumes demo-requested, prints one line, and exits 0 — the PR opens on schedule with the normal Demo fallback chain. Internal stage — designers run /ui-tweak."
 ---
 
 <!-- RULE: command content is English. -->
@@ -31,6 +31,15 @@ If `UI_TWEAK_FF` is not set, print **C-MISDIRECT** (see `/ui-tweak:apply` Step 0
 WT=$(git rev-parse --show-toplevel)
 [ -f "$WT/.dev/ui-tweak/demo-requested" ] || { echo "demo: not requested — nothing to do."; exit 0; }
 AUTO_NAV=0; [ -f "$WT/.dev/ui-tweak/auto-navigate" ] && AUTO_NAV=1   # GGC-14: NAVIGATE mode
+
+# P1 short-circuit (GGC-14): the interactive C1 (looks-good) "record a short demo" path captures the
+# approved screen AT THE MOMENT OF APPROVAL (no drift) and pre-populates demo-files. If that already
+# happened, the best artifact exists — do NOT re-capture or navigate; just consume + exit (pr uploads).
+if [ -s "$WT/.dev/ui-tweak/demo-files" ]; then
+  rm -f "$WT/.dev/ui-tweak/demo-requested"
+  echo "demo: instant capture already present (P1) — nothing to re-capture."
+  exit 0
+fi
 ```
 
 ## Step 1 — find the previewed device (READ-ONLY discovery — never boot or launch the app here)
@@ -45,46 +54,74 @@ Android serial). **If no device is found, or the app process is no longer runnin
 fallback chain covers the PR. (Device *discovery* is read-only; the one sanctioned drive action is the
 Step 1.5 deep-link fire, and only in NAVIGATE mode.)
 
-## Step 1.5 — navigate via a single deep-link (NAVIGATE mode only — GGC-14)
+## Step 1.5 — navigate to the target screen (NAVIGATE mode only — GGC-14)
 
 _Skip entirely when `AUTO_NAV=0` (PASSIVE mode → go straight to Step 2 and capture the current screen)._
 
-Goal: get the app to the screen the change affects, using exactly ONE deep-link URI — never tap-through.
-This rides the app's existing deep-link surface (CAF: `app_links` + `go_router`), which only recognizes
-a **whitelist** of `ggv://` hosts. Arbitrary routes are NOT URI-addressable.
+Goal: get the running app to the screen the change affects, then capture it. **Two tiers, tried in
+order; both best-effort** — if neither reaches the target, capture whatever is shown + set `NAV_NOTE`.
+Neither tier may EVER edit code or change app/account state — this is navigation for a screenshot only,
+strictly after the build gate, never gating.
 
-1. **Derive the target host.** Read `.dev/ui-tweak/ticket.json` (title, description, labels) plus the
-   change summary, and map the affected screen to ONE whitelisted host. Known CAF hosts (gogox-client-flutter
-   `DeeplinkParser`): `news`, `promotions`, `payment`, `profile`, `service-delivery`, `rate-us`, `login`,
-   `voucher`, `order-detail`, `rate-driver`. A repo MAY override/extend this list via
-   `deeplink_hosts:` in `<repo>/.gogox-claude.yaml`; if that key exists, use it as the authoritative
-   whitelist instead of the built-in CAF list. Pick the single best match.
-   - **No confident match** (target screen is not a whitelisted host) → do NOT guess, do NOT tap-through.
-     Set `NAV_NOTE="no deep-link route for the target screen — captured the app's current screen instead"`
-     and skip to Step 2 (capture whatever is shown).
+### Tier 1 — deep-link (preferred: deterministic, one action)
 
-2. **Fire ONE deep-link** on the running app (platform-conditional; `$DEV` is the id from Step 1):
+1. **Derive the target host** from `.dev/ui-tweak/ticket.json` (title/description/labels) + the change
+   summary. Known CAF `ggv://` hosts (gogox-client-flutter `DeeplinkParser`): `news`, `promotions`,
+   `payment`, `profile`, `service-delivery`, `rate-us`, `login`, `voucher`, `order-detail`,
+   `rate-driver`. A repo MAY override/extend this via `deeplink_hosts:` in `<repo>/.gogox-claude.yaml`
+   (authoritative when present). Pick the single best match.
+2. **If a host matches**, fire ONE deep-link and settle (counter-bounded, NEVER `timeout` — absent on
+   macOS; see preview.md); `$DEV` + `$PLATFORM_KIND` are from Step 1:
    ```bash
    URI="ggv://<host>"            # e.g. ggv://order-detail
    case "$PLATFORM_KIND" in
      ios)     xcrun simctl openurl "$DEV" "$URI" ;;
      android) adb -s "$DEV" shell am start -a android.intent.action.VIEW -d "$URI" ;;
    esac
-   ```
-   Then give the app a brief, counter-bounded settle (NEVER `timeout` — absent on macOS; see preview.md):
-   ```bash
    i=0; while [ "$i" -lt 4 ]; do sleep 1; i=$((i+1)); done   # ~4s to let the route render
    ```
+   → go to Step 2 (capture). Done.
+3. **No whitelisted host matches** → Tier 2.
 
-3. **Unauthenticated handling.** A `requiresAuth` deep-link fired without a logged-in session does NOT
-   error — the app stashes it and shows `/logon/personal` (login). We cannot reliably detect that here,
-   and we do NOT attempt to log in (no credentials, no tap-through). Just proceed to Step 2 and capture;
-   set `NAV_NOTE="navigated via deep-link; if the capture shows a login screen the device was not logged in"`.
-   The precondition is an **already-logged-in running device** (the designer logs in once beforehand);
-   under `--auto` an unauthenticated device simply yields a login-screen capture, which the PR note flags.
+### Tier 2 — LLM-planned tap-through (no deep-link route — GGC-14)
 
-This single URI fire is the ONLY drive action this stage may perform. Everything in Step 2's HARD RULE
-still holds.
+For screens that are not URI-addressable (e.g. a hamburger / side-menu drawer), navigate by driving the
+UI, **planned from the codebase**. Best-effort, capped, fail-silent; never edits code, never gates.
+
+1. **Plan the path from the codebase.** Read the app source to determine the route from the current
+   screen (usually `/home` after launch) to the target: which affordances to tap and in what order
+   (e.g. "tap the top-left menu icon → tap the 'Wallet' row"). Use widget keys / semantics labels /
+   route names from the code to identify targets and minimize guessing.
+2. **Observe → tap loop** (capped at `MAX_TAPS=6`):
+   - **Screenshot** (read-only): Android `adb -s "$DEV" exec-out screencap -p > /tmp/uitw-step.png`;
+     iOS `xcrun simctl io "$DEV" screenshot /tmp/uitw-step.png`.
+   - **Decide ONE navigation tap** from the screenshot + the codebase plan, then execute it:
+     - Android: `adb -s "$DEV" shell input tap <x> <y>`
+     - iOS: `idb ui tap --udid "$DEV" <x> <y>` — **only if `command -v idb` succeeds**. `xcrun simctl`
+       cannot tap, so if `idb` is absent iOS tap-through is unavailable → abandon Tier 2, set
+       `NAV_NOTE="iOS tap-through needs idb (not installed) — captured the current screen"`, go to Step 2.
+   - Re-screenshot; judge whether the target screen is reached. Reached → break (→ capture). Stuck /
+     looping / `MAX_TAPS` hit → break, set
+     `NAV_NOTE="couldn't reach the target screen automatically (<n> nav taps) — captured the current screen"`.
+
+   > ### ⛔ Tap-through guardrail — NAVIGATION taps ONLY (logged-in-app safety)
+   > The app is on a **logged-in** (stag) session, so a wrong tap can fire a **real action**. You may tap
+   > ONLY navigation affordances: tab bars, menu / drawer icons, list rows, back / close. You must
+   > **NEVER** tap confirm / submit / pay / place-order / delete or any destructive or state-mutating
+   > control, never grant a permission dialog, never type into a field. If the only way forward is through
+   > such a control, STOP tap-through, set `NAV_NOTE`, and capture where you are. This drives the UI for a
+   > screenshot — nothing here may change app or account state, and nothing here may edit code.
+
+3. **Still not reached** → Step 2 captures the current screen with `NAV_NOTE` set (honest fallback).
+
+### Unauthenticated handling (both tiers)
+
+A `requiresAuth` target on an unauthenticated device lands on `/logon/personal` (login). We do **NOT**
+log in (no credentials; never tap past a login wall). Set
+`NAV_NOTE="device may not be logged in — capture may show the login screen"` and capture. The
+precondition is an **already-logged-in running device** (the designer logs in once beforehand); under
+`--auto` an unauthenticated device simply yields a login-screen capture, which the PR note + relevance
+gate (Step 2 / pr) handle.
 
 ## Step 2 — capture (pure output; ZERO input events beyond the Step 1.5 deep-link fire)
 
@@ -98,14 +135,16 @@ mkdir -p "$WT/.dev/ui-tweak/demo"
 - **Android (emulator or USB device)**: `adb -s <id> exec-out screencap -p > .../after.png`, then
   `adb -s <id> shell screenrecord --time-limit 6 /sdcard/ui-tweak-demo.mp4` + `adb pull`.
 
-> ### ⛔ Capture-only — the HARD BOUNDARY still holds here (one narrow exception)
-> This stage may **read** the screen. The ONLY drive action it may ever perform is the **single
-> deep-link URI fire** of Step 1.5, and ONLY in NAVIGATE mode. Beyond that: **No** `adb shell input`,
-> no `simctl launch`, no taps/swipes/typing, no permission dialogs, no login, no tap-through, no
-> second deep-link, no "navigate by poking the UI". In PASSIVE mode the screen captured is, by
-> construction, the one the designer navigated to and approved at C1 (looks-good); in NAVIGATE mode it
-> is whatever the one deep-link produced. If the app crashed, the phone slept, or the device is gone,
-> that is a FAIL-SILENT (Step 3), not a reason to drive the app.
+> ### ⛔ Capture + bounded navigation — the boundary, restated for NAVIGATE mode
+> In **PASSIVE mode** this stage may ONLY read the screen — no input events at all; the screen captured
+> is the one the designer approved at C1 (looks-good). In **NAVIGATE mode** (GGC-14) the ONLY drive
+> actions permitted are Step 1.5's navigation: one deep-link fire (Tier 1) and/or a capped sequence of
+> **navigation-only** taps (Tier 2, `MAX_TAPS`). Under BOTH modes it is still **absolutely forbidden**
+> to: edit code; tap confirm / submit / pay / delete or any state-mutating or destructive control;
+> grant permission dialogs; type into fields; or log in. Navigation is for reaching a screen to
+> screenshot — it never changes app, account, or repo state, and it never affects the build/audit gate
+> (which already passed). If the app crashed, the phone slept, or the device is gone, that is a
+> FAIL-SILENT (Step 3), not a reason to keep poking.
 
 On success, register the outputs and consume the request. In NAVIGATE mode also record `NAV_NOTE`
 (when set) so the `pr` stage can caption the embedded image honestly:
