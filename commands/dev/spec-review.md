@@ -64,7 +64,17 @@ counts as a concurrent reviewer for that ticket).
 The remaining sub-steps below apply per-ticket inside the main loop (Step 2
 onward iterates `<queue>`):
 
-2. Call `mcp__linear-server__get_issue` with the current ticket's id. Capture:
+2. **Resolve the Linear MCP server once** (then reuse it for every Linear call
+   in this skill, including the Step 1.5 `list_issues` above — `list_issues`,
+   `get_issue`, `list_comments`, `save_comment`, `save_issue`):
+   use whichever is connected this session — prefer `mcp__claude_ai_Linear__*`,
+   otherwise fall back to `mcp__linear-server__*` (the project `.mcp.json`
+   server). Only one is live per environment (the claude.ai connector is
+   auto-hidden when a project server shares its URL), so hardcoding either
+   prefix breaks in the other environment — mirror `ggx-dispatcher.md` §"All MCP
+   tool calls". The calls below are written with the `mcp__claude_ai_Linear__*`
+   prefix; substitute the resolved prefix uniformly.
+   Call `get_issue` with the current ticket's id. Capture:
    - `<labels>` — array of label names
    - `<assignee>`
    - `<title>`, `<url>`
@@ -176,7 +186,7 @@ attribute (never fuzzy-matching prose)**.
 
 #### Steps
 
-1. Call `mcp__linear-server__list_comments` with `orderBy: createdAt` (newest
+1. Call `mcp__claude_ai_Linear__list_comments` with `orderBy: createdAt` (newest
    first). Page through if needed.
 2. Walk comments newest → oldest. The first comment that contains a port
    summary (heuristic in §2.6) is the **target comment**. Parse it as below;
@@ -380,7 +390,7 @@ For each item:
 
 ### Step 5: Pre-post concurrency check + post Linear comment
 
-1. Re-fetch comments via `mcp__linear-server__list_comments`.
+1. Re-fetch comments via `mcp__claude_ai_Linear__list_comments`.
 2. Scan for any comment whose body contains `<!-- spec-review:v1 ticket=<id> -->`
    AND whose `createdAt` is **strictly newer** than `<batch-start-time>` (from
    Step 0). If found:
@@ -401,7 +411,7 @@ For each item:
    - If `<legacy_warning>` is True: prepend a one-line note inside the comment:
      `> Note: parsed legacy auto-accept marker format. Recommend re-running
      /port:ff after the v1 marker rollout.`
-4. Call `mcp__linear-server__save_comment` with `issueId: <ticket-id>` and
+4. Call `mcp__claude_ai_Linear__save_comment` with `issueId: <ticket-id>` and
    `body: <built body>`.
 5. On 5xx / network failure → retry once after a short pause. Second failure:
    - **Single mode** → STOP with: `Failed to post review comment after retry. Decisions are not persisted. Re-run /spec-review.`
@@ -415,7 +425,7 @@ For each item:
    - Remove `need-spec-review` if present.
    - Add `ready-to-dev`.
    - Preserve all other labels unchanged.
-2. Call `mcp__linear-server__save_issue` with `id: <ticket-id>` and
+2. Call `mcp__claude_ai_Linear__save_issue` with `id: <ticket-id>` and
    `labels: <new label set>`.
 3. On failure:
    - **Single mode** → print:
