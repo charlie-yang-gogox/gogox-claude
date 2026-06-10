@@ -5,7 +5,9 @@ Prerequisite: >
   - Linear MCP authenticated for CAF/DAF tickets; Atlassian Rovo MCP
     authenticated for CET/DET tickets.
   - Default mode: already on the branch/worktree for the ticket. Git clean.
-  - --auto mode: on trunk with clean working tree. gh CLI authenticated.
+  - --auto mode: on trunk with no tracked modifications (untracked files are
+    tolerated — the worker branches its worktree off origin/<default> and never
+    touches the main worktree). gh CLI authenticated.
     Environment variables USER_NAME and GH_USER_NAME set.
 ---
 
@@ -82,6 +84,21 @@ PORCELAIN=$(git status --porcelain)
 RUNTIME_DIRT=$(printf '%s\n' "$PORCELAIN" | grep -E "$RUNTIME_REGEX" || true)
 OTHER_DIRT=$(printf '%s\n' "$PORCELAIN" | grep -vE "$RUNTIME_REGEX" || true)
 
+# Split the non-.dev dirt into TRACKED modifications vs UNTRACKED files.
+# Porcelain marks untracked entries with a leading `??`; everything else is a
+# tracked modification (M/A/D/R/C, staged or unstaged). Only TRACKED
+# modifications are a hard-STOP — they may be a human's in-progress work.
+# UNTRACKED files are harmless to an auto run: the worker branches its
+# worktree off origin/<default> and edits only in ../<TICKET-ID>, never the
+# main worktree, so untracked files in main cannot be clobbered or carried in.
+# This aligns /dev:start's clean-tree precondition with /ggx-dispatcher
+# Step 1.3's policy ("Untracked files warn but proceed — agents work in
+# separate worktrees"); the two checks previously disagreed, which let a
+# benign untracked file (e.g. claude-reports/, scripts/measure-ios-startup.sh)
+# in main false-positive an auto worker's first stage (GGC-13).
+OTHER_TRACKED_DIRT=$(printf '%s\n' "$OTHER_DIRT" | grep -vE '^\?\?' || true)
+OTHER_UNTRACKED_DIRT=$(printf '%s\n' "$OTHER_DIRT" | grep -E '^\?\?' || true)
+
 # Legacy .dev/state.json residue (one-time cleanup safety net for pipelines started under v7)
 if [ -f .dev/state.json ]; then
   echo "INFO: legacy .dev/state.json detected; removing (filesystem-as-state model)" >&2
@@ -89,18 +106,29 @@ if [ -f .dev/state.json ]; then
 fi
 ```
 
-- If `$OTHER_DIRT` is empty AND `$RUNTIME_DIRT` is non-empty: this is pure leftover residue.
-  - **Auto mode**: log the list, then `git checkout -- <files>` for tracked-and-modified entries and `rm -f <files>` for untracked ones. Proceed.
-  - **Default mode**: list the residue files. **AskUserQuestion** with options:
-    - `Discard residue and continue` (default) — same cleanup as auto.
-    - `Inspect first (abort)` — STOP so user can review manually.
-- If `$OTHER_DIRT` is non-empty: real source changes exist; STOP with the standard "uncommitted changes" error regardless of residue.
+- If `$OTHER_TRACKED_DIRT` is non-empty: real source changes exist (a human's
+  in-progress work); STOP with the standard "uncommitted changes" error
+  regardless of residue. `/dev:start` never sweeps tracked edits into a stash
+  the user didn't ask for.
+- Else (no tracked modifications outside `.dev/`):
+  - If `$OTHER_UNTRACKED_DIRT` is non-empty: untracked files in the main
+    worktree — **warn and proceed**, never abort. Mirror the dispatcher's
+    Step 1.3 note:
+    > `note: <N> untracked file(s) present outside .dev/ — proceeding (worker branches its worktree off origin/<default>; main-worktree untracked files are never touched).`
+    Do NOT remove them (they may be a human's scratch files, and the worker
+    cannot be harmed by them either way).
+  - If `$RUNTIME_DIRT` is non-empty: pure leftover `.dev/` residue.
+    - **Auto mode**: log the list, then `git checkout -- <files>` for
+      tracked-and-modified entries and `rm -f <files>` for untracked ones. Proceed.
+    - **Default mode**: list the residue files. **AskUserQuestion** with options:
+      - `Discard residue and continue` (default) — same cleanup as auto.
+      - `Inspect first (abort)` — STOP so user can review manually.
 
 ### Step 3b: Mode-specific pre-flight
 
 **Auto mode**:
 
-1. Verify git is clean and on the repo's default branch. If not → STOP. (Resolve the default branch dynamically: `source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude.)
+1. Verify the repo is on its default branch AND has no **tracked** modifications. If not → STOP. (Resolve the default branch dynamically: `source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude.) This is the tracked-only re-check that pairs with Step 3a: untracked files were already triaged there as warn-and-proceed, so test only tracked dirt here — `git status --porcelain --untracked-files=no` (empty ⇒ clean) — never the whole porcelain. Counting untracked files here would re-introduce the GGC-13 false-positive that Step 3a just resolved.
 2. Read the ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`):
    - **Linear**: `mcp__claude_ai_Linear__get_issue` (already done in ownership check; reuse the snapshot). Branch type heuristic: `bug` label → `fix`; otherwise default to `feat`.
    - **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` (already done; reuse). Branch type heuristic: `.fields.issuetype.name == "Bug"` → `fix`; otherwise `feat`. The `--bug` flag (when set by `/bug:ff`) is the authoritative override in both trackers.
