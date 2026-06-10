@@ -7,7 +7,7 @@ description: >
 Prerequisite: >
   - MCP servers for Linear and Figma authenticated.
   - Default mode: already on the branch/worktree for the ticket. Git clean.
-  - --auto mode: on trunk with clean working tree. gh CLI authenticated.
+  - --auto mode: on trunk with no tracked modifications (untracked files are tolerated — the worktree is created off origin/<default> and never touches main). gh CLI authenticated.
     Environment variables USER_NAME and GH_USER_NAME set.
 ---
 
@@ -63,7 +63,7 @@ When `<auto-mode>` is true, apply the following throughout all steps:
 
 **If `<auto-mode>`**:
 
-- Verify git is clean and on the repo's default branch (`source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude). If not → STOP with error.
+- Verify the repo is on its default branch AND has no **tracked** modifications (`source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude). If not → STOP with error. Test only tracked dirt — `git status --porcelain --untracked-files=no` (empty ⇒ clean) — not the whole porcelain: untracked files in the main worktree are harmless because the worktree created in Step 2A branches off origin/<default> and never touches main (aligns with `/ggx-dispatcher` Step 1.3 and `/dev:start` Step 3a; counting untracked files here was the GGC-13 false-positive).
 - Skip branch name check (worktree will be created in Step 2A).
 
 **If not `<auto-mode>`**:
