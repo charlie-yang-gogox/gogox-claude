@@ -98,11 +98,11 @@ UI, **planned from the codebase**. Best-effort, capped, fail-silent; never edits
    - **Decide ONE navigation tap** from the screenshot + the codebase plan, then execute it:
      - Android: `adb -s "$DEV" shell input tap <x> <y>`
      - iOS: `idb ui tap --udid "$DEV" <x> <y>` — **only if `command -v idb` succeeds**. `xcrun simctl`
-       cannot tap, so if `idb` is absent iOS tap-through is unavailable → abandon Tier 2, set
-       `NAV_NOTE="iOS tap-through needs idb (not installed) — captured the current screen"`, go to Step 2.
-   - Re-screenshot; judge whether the target screen is reached. Reached → break (→ capture). Stuck /
-     looping / `MAX_TAPS` hit → break, set
-     `NAV_NOTE="couldn't reach the target screen automatically (<n> nav taps) — captured the current screen"`.
+       cannot tap, so if `idb` is absent iOS tap-through is unavailable → **could-not-reach** (reason:
+       "iOS tap-through needs idb (not installed)"; see "On failure to reach the target" below).
+   - Re-screenshot; judge whether the target screen is reached. Reached → break (→ Step 2 capture).
+     Stuck / looping / `MAX_TAPS` hit → **could-not-reach** (reason: "couldn't reach <screen> after
+     <n> nav taps").
 
    > ### ⛔ Tap-through guardrail — NAVIGATION taps ONLY (logged-in-app safety)
    > The app is on a **logged-in** (stag) session, so a wrong tap can fire a **real action**. You may tap
@@ -112,16 +112,29 @@ UI, **planned from the codebase**. Best-effort, capped, fail-silent; never edits
    > such a control, STOP tap-through, set `NAV_NOTE`, and capture where you are. This drives the UI for a
    > screenshot — nothing here may change app or account state, and nothing here may edit code.
 
-3. **Still not reached** → Step 2 captures the current screen with `NAV_NOTE` set (honest fallback).
+### Login wall (Q2 — login is NOT a precondition)
 
-### Unauthenticated handling (both tiers)
+If navigation hits a **login wall** (a `requiresAuth` target lands on `/logon/personal`, or a tapped
+feature demands login), that is a **could-not-reach** with reason "login needed to reach <screen>".
+**Never log in or tap past the login wall yourself** (no credentials; nav-only). Being logged-in is not
+assumed — a login wall is simply one reason navigation couldn't finish.
 
-A `requiresAuth` target on an unauthenticated device lands on `/logon/personal` (login). We do **NOT**
-log in (no credentials; never tap past a login wall). Set
-`NAV_NOTE="device may not be logged in — capture may show the login screen"` and capture. The
-precondition is an **already-logged-in running device** (the designer logs in once beforehand); under
-`--auto` an unauthenticated device simply yields a login-screen capture, which the PR note + relevance
-gate (Step 2 / pr) handle.
+### On failure to reach the target (mode-aware)
+
+Whenever Tier 1 + Tier 2 cannot confidently reach the target (no route, tap-through stuck, idb absent,
+or a login wall), branch by mode — do NOT silently capture the wrong screen:
+
+- **Interactive** (not `--auto` — this is the path `preview` Step 2.5 drives): set the nav-help markers
+  and STOP (the orchestrator renders C1 looks-good **Variant B** to inform the designer + keep the app
+  live so they finish navigating / log in):
+  ```bash
+  printf '%s\n' "<reason>" > "$WT/.dev/ui-tweak/nav-help-reason"
+  : > "$WT/.dev/ui-tweak/nav-help-needed"
+  ```
+  Do NOT capture here.
+- **`--auto`** (no human to inform): honest fallback — capture the current screen anyway and set
+  `NAV_NOTE="<reason> — captured the current screen"`. The `pr` relevance gate (a `demo-note` present)
+  then skips embedding the misleading capture. The run never fails.
 
 ## Step 2 — capture (pure output; ZERO input events beyond the Step 1.5 deep-link fire)
 

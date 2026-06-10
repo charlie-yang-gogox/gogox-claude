@@ -254,8 +254,10 @@ loop:
 ```
 
 `done` resolves to a card by markers: **deliver + PR open + code-review → C5**; **preview-requested +
-preview-shown → the post-preview C1 variant ("looks good — ship it / more changes")**; **otherwise →
-the iteration C1 ("I'm done — show me / more changes")**.
+preview-shown → C1 (looks-good)** — **Variant B (nav-help)** when `.dev/ui-tweak/nav-help-needed` is
+present (preview Step 2.5 couldn't reach the screen — inform the designer, keep the app live), else
+**Variant A (result)** showing the captured screenshot; **otherwise → the iteration C1 ("I'm done —
+show me / more changes")**.
 
 **`--auto` auto-decision (the ONE structural difference from interactive — D7, revised).** Under
 `--auto` no card may render, so the two `done` resolutions that would show a card are auto-taken:
@@ -359,11 +361,11 @@ compiles or that logic was checked:
   ```
   When `.not-deliverable` is present, append the "⚠ N spot(s) weren't changed …" note. After a
   correction, first line becomes *"I adjusted it once more. In total I've changed: <cumulative>."*
-- **options**: `I'm done — show me on a phone` *(recommended)* — "I'll build it onto a phone/emulator
-  so you can see it." / `It already looks right — ship it` — "You've already seen it on your own
-  device — skip the phone preview; I'll confirm it still works, run the full check, **try to grab a
-  screenshot of the screen for the PR** (GGC-14, best-effort — needs a logged-in device running), and
-  open a draft PR."
+- **options**: `I'm done — show me` *(recommended)* — "I'll build it, **go to that screen myself, and
+  show you a screenshot** — you don't have to navigate (GGC-14). If I can't reach it I'll ask you to
+  open it." / `It already looks right — ship it` — "You've already seen it on your own device — skip the
+  preview; I'll confirm it still works, run the full check, **try to grab a screenshot of the screen for
+  the PR** (best-effort), and open a draft PR."
   *(BOTH the "show me" AND "ship it" options are OMITTED when `.not-deliverable` exists — you can
   neither preview nor ship a partial; tell them to adjust.)* / `I want more changes` — "Tell me what to
   adjust (e.g. 'move it down one')."
@@ -381,45 +383,53 @@ compiles or that logic was checked:
     hand-build may predate the latest tweak, so this gate is never skipped.
   - `I want more changes` / **Other** → Correction loop.
 
-**C1 (looks-good) — preview is live on a device** (`preview-requested` + `preview-shown` present):
+**C1 (looks-good) — preview has navigated to the target + captured it** (`preview-requested` +
+`preview-shown` present). GGC-14 reorientation: `preview` already navigated to the affected screen FOR
+the designer and screenshotted it — the designer reviews the **result**, they do NOT drive the device
+on the happy path. Two variants, chosen by the `nav-help-needed` marker:
+
+**Variant A — RESULT (capture succeeded: `nav-help-needed` ABSENT, `demo-files` populated)**:
+- **question** (embed/attach the captured screenshot — it IS the review surface):
+  ```
+  Here's <screen> with your change, on <device>:  [screenshot]
+  (What changed: <plain summary>.)  Does it look right?
+  ```
+- **options**: `Ship it` *(recommended)* — "Looks right — run the full check + open a draft PR with a
+  link on the work item." / `I want more changes` — "Tell me what to adjust; I'll redo and re-show it."
+- **routing**: `Ship it` → resolve ticket id from `.dev/ui-tweak/ticket.json` → write
+  `.dev/ui-tweak/deliver` → walker (→ audit/commit/pr/review/C5). The screenshot already in
+  `demo-files` is embedded by `pr`. **DO NOT re-ask for a number.**
+  `I want more changes` / any other **Other** text → Correction loop (clears preview/nav markers).
+
+**Variant B — NAV-HELP fallback (`nav-help-needed` present — the agent could NOT reach the target;
+reason in `nav-help-reason`, e.g. "no deep-link route", "tap-through stuck", "login needed")**. This is
+the ONLY path where the designer drives — and only because automation genuinely failed. The app is kept
+**live on the device** (Q1) so they can finish the navigation:
 - **question**:
   ```
-  It's running on <device> now — take a look.  (What changed: <plain summary>.)
-  Does it look right? If so I'll do the full check and open a draft PR for engineer review.
-  (Took a screenshot or recording you'd like to include? Pick Other and paste/drag the file here —
-  I'll attach it to the PR.)
+  I built your change and it's running on <device>, but I couldn't get to <screen> automatically —
+  <nav-help-reason>.  (If it needs login, please log in on the device first.)
+  Open <screen> on the device yourself, then pick "I've opened it" and I'll capture it.
   ```
-  **No-device fallback (R18)**: if preview ran build-only (no device found), replace line 1 with
-  *"I couldn't find a phone/emulator to show it on, but I confirmed it builds."* and keep the rest —
-  and OMIT the `Ship it — and record a short demo` option (there is no screen to record).
-- **options**: `Ship it` *(recommended)* — "Looks right — run the full check + open a draft PR with a
-  link on the work item." / `Ship it — and record a short demo` — "Same as Ship it, plus I'll record
-  what's on the screen right now and include it in the PR. You don't wait — it happens after you're
-  done here." / `I want more changes` — "Tell me what to adjust; I'll redo and re-show it."
-- **routing**: `Ship it` → resolve ticket id from `.dev/ui-tweak/ticket.json` (always present under B3
-  — Step 0 split the worktree with a ticket, so the id is never missing here): write
-  `.dev/ui-tweak/deliver` → walker (→ audit/commit/pr/review/C5). **DO NOT re-ask for a number.**
-  `Ship it — and record a short demo` → **capture NOW, at the moment of approval (P1, GGC-14)**: the
-  screen is still the one the designer just approved, so immediately take a screenshot + ~6s recording
-  of the previewed device (the same pure-output capture `/ui-tweak:demo` Step 2 uses — `xcrun simctl io`
-  / `adb exec-out screencap` + `screenrecord`) and append the paths to `.dev/ui-tweak/demo-files`. This
-  is the SOLE capture path and is **fail-silent** (any error → empty `demo-files`, no block). Then write
-  `.dev/ui-tweak/deliver` + `.dev/ui-tweak/demo-requested` + (P2 fallback) `.dev/ui-tweak/auto-navigate`.
-  Post-commit the `demo` stage sees `demo-files` already populated → it just no-ops (the instant capture
-  is the best artifact — the approved screen, no drift). ONLY if the instant capture failed (empty
-  `demo-files`) does `demo` fall back to NAVIGATE (deep-link → tap-through) to recover a screenshot.
-  Why capture here and not only post-commit: the deferred capture raced the designer (audit + commit
-  take minutes; the approved screen drifts — the screenshot then catches `/home`, not the change). P1
-  removes that race; P2 is the safety net.
-  **Other text that is ONLY existing local image/video file path(s)** (e.g. dragged into the prompt;
-  verify each file exists and is an image/video) → that is a **demo attachment, NOT a correction**:
-  append each absolute path to `.dev/ui-tweak/demo-files` (one per line), reply in plain words
-  ("Got it — I'll include it when I wrap this up."), and re-render C1 (looks-good). The `pr` stage
-  uploads + embeds them (see "Deliver PR body").
-  `I want more changes` / any other **Other** text → Correction loop (which clears the preview
-  markers so it re-iterates).
-- **Doing nothing is fine**: walking away leaves the reviewed diff in the tree; no extra "leave it"
-  button. Shipping (→ draft PR) is the only explicit terminal action.
+- **options**: `I've opened it — capture now` *(recommended)* — "I'll screenshot the screen you're on." /
+  `Ship without a screenshot` — "Skip the image; open the draft PR anyway." / `I want more changes`.
+- **routing**:
+  - `I've opened it — capture now` → capture the CURRENT screen (pure-output, the same `/ui-tweak:demo`
+    Step 2 capture — `xcrun simctl io` / `adb exec-out screencap` + `screenrecord`) into
+    `.dev/ui-tweak/demo-files`; `rm -f .dev/ui-tweak/nav-help-needed .dev/ui-tweak/nav-help-reason
+    .dev/ui-tweak/demo-note` → re-render **Variant A** (now a real screenshot to review). Fail-silent: a
+    capture error just leaves `demo-files` empty → fall through to `Ship without a screenshot`.
+  - `Ship without a screenshot` → write `.dev/ui-tweak/deliver` → walker. `pr`'s relevance gate uses the
+    Demo fallback chain (no misleading capture embedded).
+  - `I want more changes` / **Other** → Correction loop.
+
+**Both variants — Other text that is ONLY existing local image/video file path(s)** (dragged in; verify
+each exists + is an image/video) → a **demo attachment, NOT a correction**: append each absolute path to
+`.dev/ui-tweak/demo-files`, clear `nav-help-needed`, reply "Got it — I'll include it.", re-render Variant
+A. The `pr` stage uploads + embeds them.
+
+**Doing nothing is fine**: walking away leaves the reviewed diff in the tree. Shipping (→ draft PR) is
+the only explicit terminal action.
 
 > **C2 removed (R18).** There is no standalone "change blocked, take it back" designer card anymore.
 > Build failures and audit (logic) blocks are the agent's implementation problem — they route to the
@@ -468,7 +478,8 @@ The designer just types the change they want (no dedicated "adjust" option — O
         "$wt/.dev/ui-tweak/preview-requested" "$wt/.dev/ui-tweak/deliver" \
         "$wt/.dev/ui-tweak/direct-ship" "$wt/.dev/ui-tweak/demo-files" \
         "$wt/.dev/ui-tweak/demo-requested" "$wt/.dev/ui-tweak/auto-navigate" \
-        "$wt/.dev/ui-tweak/demo-note" \
+        "$wt/.dev/ui-tweak/demo-note" "$wt/.dev/ui-tweak/nav-help-needed" \
+        "$wt/.dev/ui-tweak/nav-help-reason" \
         "$wt/.dev/ui-verify-pass.md" "$wt/.dev/dev-reviewer-pass.md" \
         "$wt/.dev/ui-tweak/repair-context" "$wt/.dev/ui-tweak/repair-count"
   ```
@@ -490,7 +501,8 @@ rm -f "$wt/.dev/ui-tweak/repair-context" "$wt/.dev/ui-tweak/build-pass" \
       "$wt/.dev/ui-tweak/preview-shown" "$wt/.dev/ui-tweak/deliver" \
       "$wt/.dev/ui-tweak/direct-ship" "$wt/.dev/ui-tweak/demo-files" \
       "$wt/.dev/ui-tweak/demo-requested" "$wt/.dev/ui-tweak/auto-navigate" \
-      "$wt/.dev/ui-tweak/demo-note" \
+      "$wt/.dev/ui-tweak/demo-note" "$wt/.dev/ui-tweak/nav-help-needed" \
+      "$wt/.dev/ui-tweak/nav-help-reason" \
       "$wt/.dev/ui-verify-pass.md" "$wt/.dev/dev-reviewer-pass.md"
 # keep preview-requested (still wants the preview) and repair-count (accumulates toward the cap of 3).
 # direct-ship + auto-navigate ARE cleared: after a fix the designer re-decides at C1 (show-me) —
