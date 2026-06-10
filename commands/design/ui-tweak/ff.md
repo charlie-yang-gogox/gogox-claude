@@ -1,6 +1,6 @@
 ---
 name: ff
-description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → [demo] → pr → review) runs when they pick 'Ship it' — demo is the opt-in Tier-1 passive capture ('Ship it — and record a short demo' on C1 looks-good): zero-input screenshot+recording of the approved screen, after commit, fail-silent. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate still runs before the audit. Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce; C3/C4 removed); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: in interactive mode a draft PR happens only when the designer picks 'Ship it'. --auto (the /ggx-work / /ggx-dispatcher lane for `design bug` tickets) shows no cards and never reaches a device preview; instead it auto-takes the R20 direct-ship path after the single apply — build-only compile gate → dual-judge audit → commit → draft PR (terminal; never draft→ready, never merge). Accepts-and-ignores --no-ticket-init (ui-tweak never calls /_ticket-init; the flag exists so /ggx-work's lane-agnostic spawn builder can append it uniformly)."
+description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me'; Phase 2 (audit → commit → [demo] → pr → review) runs when they pick 'Ship it' — demo is the Tier-1 capture stage: PASSIVE ('Ship it — and record a short demo' on C1 looks-good: zero-input screenshot+recording of the approved screen) or NAVIGATE (GGC-14, auto-navigate marker: fires ONE whitelisted ggv:// deep-link to the target screen then captures — no tap-through), after commit, fail-silent. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate still runs before the audit (or, with the GGC-14 navigate opt-in, a launch onto an already-running logged-in device so demo can navigate+capture). Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce; C3/C4 removed); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: in interactive mode a draft PR happens only when the designer picks 'Ship it'. --auto (the /ggx-work / /ggx-dispatcher lane for `design bug` tickets) shows no cards and never reaches an interactive device-preview card; instead it auto-takes the R20 direct-ship path after the single apply, with GGC-14 navigate+capture ON by default — build/launch gate (launch onto an already-running logged-in device if present, else build-only) → dual-judge audit → commit → demo (one ggv:// deep-link + screenshot, best-effort/fail-silent) → draft PR (terminal; never draft→ready, never merge). Accepts-and-ignores --no-ticket-init (ui-tweak never calls /_ticket-init; the flag exists so /ggx-work's lane-agnostic spawn builder can append it uniformly)."
 ---
 
 <!-- RULE: ALL content, including designer-facing CARD text, is English. No Chinese / non-ASCII. -->
@@ -264,16 +264,22 @@ the iteration C1 ("I'm done — show me / more changes")**.
   do NOT stop. First check `.dev/ui-tweak/.not-deliverable`: if present, a partial change must not
   ship — print `FAIL: /ui-tweak:ff --auto — change is partial (.not-deliverable); needs a human.`
   to stderr and exit non-zero (R13). Otherwise **auto-take the R20 direct-ship branch**: write
-  `.dev/ui-tweak/deliver` AND `.dev/ui-tweak/direct-ship`, then continue the loop. This is exactly
-  the existing C1 "It already looks right — ship it" choice, auto-supplied — the build-only compile
-  gate, the dual-judge audit, commit, draft PR, and code-review all still run; nothing is skipped
-  except the human look. The draft PR (engineer review) is the human gate that replaces the card.
+  `.dev/ui-tweak/deliver` AND `.dev/ui-tweak/direct-ship` AND (GGC-14) `.dev/ui-tweak/demo-requested`
+  AND `.dev/ui-tweak/auto-navigate`, then continue the loop. This is the existing C1 "It already looks
+  right — ship it" choice, auto-supplied, PLUS the GGC-14 navigate+capture so the draft PR embeds a
+  real screenshot — the build gate, the dual-judge audit, commit, the `demo` navigate+capture, draft
+  PR, and code-review all still run; nothing is skipped except the human look. With `auto-navigate`
+  set, `preview` launches the app onto an already-running logged-in device (else build-only) so `demo`
+  can fire one deep-link to the target screen and capture it (best-effort / fail-silent — a missing
+  capture never fails the run). The draft PR (engineer review) is the human gate that replaces the card.
 - `done` would render **C5** (deliver + PR open + code-review) → terminal: print
   `Ticket <id>: ui-tweak shipped — draft PR open.` and exit 0. (`/ggx-work`'s next `/route` call
   sees PR OPEN → phase done.)
 - `done` would render **C1 (looks-good)** → structurally unreachable under `--auto` (nothing writes
   `preview-requested`); if ever hit, treat as the show-me case.
-- `demo` is never requested under `--auto` (`demo-requested` is only written by a card choice).
+- `demo` IS requested under `--auto` (GGC-14): the auto-decision above writes `demo-requested` +
+  `auto-navigate`, so the walker runs the `demo` stage in NAVIGATE mode after commit. It is
+  best-effort / fail-silent — it can never fail the `--auto` run.
 
 Note the iteration phase collapses to a single `apply` under `--auto` — corrections require a human
 reply, so there are none (R18's "designer iterates first" intent is deliberately relaxed here; the
@@ -287,7 +293,7 @@ diff a human reviews on the PR).
 | `audit` | `/ui-tweak:audit [--auto]` — **Phase 2** first check (deliver only): `/format` then the dual-judge on the final cumulative diff. CLEAR → `commit`; BLOCKED → repair-context (→ apply, max 3) |
 | `start` | `/ui-tweak:start <ticket> [--auto]` — split+enter the `../<ticket>` worktree via `/add-worktree`. Run up-front by **Step 0 (R19)** before the first `apply`. (Under B3 every run splits up-front, so the walker's deliver-path `start` branch is defensive only.) |
 | `commit` | `/commit` (NO extra confirm — "Ship it" on C1 already authorized the handoff, R18) — commit ONLY the files in the Step-5 coverage table (R12); formatter-touched extras go in the PR body `### Formatter-only changes` |
-| `demo` | `/ui-tweak:demo` — opt-in **Tier-1 passive capture** (`demo-requested` present): screenshot + short recording of what is CURRENTLY on the previewed device's screen — **zero input events** (never taps/launches/navigates; the screen is the one the designer just approved). Appends output paths to `demo-files`, consumes `demo-requested`. Best-effort + fail-silent: ANY failure also consumes `demo-requested` and the walker proceeds to `pr` with the normal Demo fallback chain |
+| `demo` | `/ui-tweak:demo` — **Tier-1 capture** (`demo-requested` present). PASSIVE mode (default): screenshot + short recording of what is CURRENTLY on the previewed device's screen — zero input events (the screen is the one the designer just approved). NAVIGATE mode (GGC-14, `auto-navigate` present — the `--auto` default + the show-me "ship it" opt-in): fires exactly ONE whitelisted `ggv://` deep-link to reach the target screen, then captures (still no tap-through). Appends output paths to `demo-files` (+ an honest `demo-note` when navigation was partial/unauthenticated), consumes `demo-requested`. Best-effort + fail-silent: ANY failure also consumes `demo-requested` and the walker proceeds to `pr` with the normal Demo fallback chain |
 | `pr` | `/pull-request --draft` with the **pre-built PR body** (see "Deliver PR body" below — its `## Demo` embeds ticket visuals and any designer-supplied capture from `.dev/ui-tweak/demo-files`); title prefixed `[ui-tweak]`; structured PR-link ticket comment (`🎨 UI tweak ready for engineer review` + audit verdict + coverage summary). Then **transition the ticket** (see "Ticket transition on PR open" below): status → `In Review` and remove the `ready-to-dev` label (keep all others, e.g. `design bug`) — Linear-only, idempotent, both interactive and `--auto` |
 | `review` | `/code-review <pr>` → `claude-reports/<ticket>/code-review.md` |
 | `done` | terminal: iteration → **C1 (show-me)**; post-preview → **C1 (looks-good)**; deliver (PR open + code-review) → **C5** |
@@ -355,20 +361,24 @@ compiles or that logic was checked:
   correction, first line becomes *"I adjusted it once more. In total I've changed: <cumulative>."*
 - **options**: `I'm done — show me on a phone` *(recommended)* — "I'll build it onto a phone/emulator
   so you can see it." / `It already looks right — ship it` — "You've already seen it on your own
-  device — skip the phone preview; I'll confirm it still works, run the full check, and open a
-  draft PR."
+  device — skip the phone preview; I'll confirm it still works, run the full check, **try to grab a
+  screenshot of the screen for the PR** (GGC-14, best-effort — needs a logged-in device running), and
+  open a draft PR."
   *(BOTH the "show me" AND "ship it" options are OMITTED when `.not-deliverable` exists — you can
   neither preview nor ship a partial; tell them to adjust.)* / `I want more changes` — "Tell me what to
   adjust (e.g. 'move it down one')."
 - **routing**:
   - `I'm done — show me` → write `.dev/ui-tweak/preview-requested` → walker → `preview` (Phase 1).
   - `It already looks right — ship it` (R20) → resolve the ticket id from `.dev/ui-tweak/ticket.json`
-    (always present under B3) → write **`.dev/ui-tweak/deliver`** AND **`.dev/ui-tweak/direct-ship`** →
-    walker. The deliver branch first runs a **build-only gate** (preview in build-only mode — no device,
-    no look, no C1 looks-good stop) so the cumulative diff is proven to compile, then proceeds to
-    `audit` → `commit` → `pr` → `review` → C5. A build fail here routes to the normal agent repair loop
-    (max 3, then Ce) exactly like a device-preview build fail — the designer's earlier hand-build may
-    predate the latest tweak, so this gate is never skipped.
+    (always present under B3) → write **`.dev/ui-tweak/deliver`** AND **`.dev/ui-tweak/direct-ship`**
+    AND (GGC-14) **`.dev/ui-tweak/demo-requested`** AND **`.dev/ui-tweak/auto-navigate`** → walker.
+    With `auto-navigate` set the deliver branch's gate is NOT pure build-only: `preview` (Step 0b)
+    launches onto an **already-running logged-in device** if one exists (else build-only), then after
+    `audit` → `commit` the `demo` stage fires ONE deep-link to the target screen and captures it for the
+    PR — best-effort / fail-silent (no logged-in device, no whitelisted route, or capture error → no
+    screenshot, run never fails). Then `pr` → `review` → C5. A build fail routes to the normal agent
+    repair loop (max 3, then Ce) exactly like a device-preview build fail — the designer's earlier
+    hand-build may predate the latest tweak, so this gate is never skipped.
   - `I want more changes` / **Other** → Correction loop.
 
 **C1 (looks-good) — preview is live on a device** (`preview-requested` + `preview-shown` present):
@@ -449,12 +459,14 @@ The designer just types the change they want (no dedicated "adjust" option — O
   rm -f "$wt/.dev/ui-tweak/build-pass"  "$wt/.dev/ui-tweak/preview-shown" \
         "$wt/.dev/ui-tweak/preview-requested" "$wt/.dev/ui-tweak/deliver" \
         "$wt/.dev/ui-tweak/direct-ship" "$wt/.dev/ui-tweak/demo-files" \
-        "$wt/.dev/ui-tweak/demo-requested" \
+        "$wt/.dev/ui-tweak/demo-requested" "$wt/.dev/ui-tweak/auto-navigate" \
+        "$wt/.dev/ui-tweak/demo-note" \
         "$wt/.dev/ui-verify-pass.md" "$wt/.dev/dev-reviewer-pass.md" \
         "$wt/.dev/ui-tweak/repair-context" "$wt/.dev/ui-tweak/repair-count"
   ```
-  A designer correction is a fresh intent → it also **resets the repair budget** (`repair-count`) and
-  the **direct-ship** flag (a new edit must be re-decided, not silently re-shipped). The designer then
+  A designer correction is a fresh intent → it also **resets the repair budget** (`repair-count`), the
+  **direct-ship** flag, and the **auto-navigate** flag (a new edit must be re-decided, not silently
+  re-shipped or re-navigated). The designer then
   iterates from C1 (show-me) again; building only re-happens when they next pick "show me" or
   "ship it", and the dual-judge only when they next ship.
 
@@ -469,11 +481,14 @@ re-validates from Phase 1:
 rm -f "$wt/.dev/ui-tweak/repair-context" "$wt/.dev/ui-tweak/build-pass" \
       "$wt/.dev/ui-tweak/preview-shown" "$wt/.dev/ui-tweak/deliver" \
       "$wt/.dev/ui-tweak/direct-ship" "$wt/.dev/ui-tweak/demo-files" \
-      "$wt/.dev/ui-tweak/demo-requested" \
+      "$wt/.dev/ui-tweak/demo-requested" "$wt/.dev/ui-tweak/auto-navigate" \
+      "$wt/.dev/ui-tweak/demo-note" \
       "$wt/.dev/ui-verify-pass.md" "$wt/.dev/dev-reviewer-pass.md"
 # keep preview-requested (still wants the preview) and repair-count (accumulates toward the cap of 3).
-# direct-ship IS cleared: after a fix the designer re-decides at C1 (show-me) — "show me" gives a real
-# device preview (not build-only), "ship it" re-arms direct-ship. Avoids a stale build-only preview.
+# direct-ship + auto-navigate ARE cleared: after a fix the designer re-decides at C1 (show-me) —
+# "show me" gives a real device preview (not build-only), "ship it" re-arms direct-ship (+ auto-navigate,
+# GGC-14). Under --auto the show-me auto-decision re-writes all four markers next loop. Avoids a stale
+# build-only preview / stale navigate request.
 ```
 After 3 attempts (`repair-count >= 3`) the dispatch loop renders the **engineer card Ce** instead of
 re-entering apply. A clean `preview` build resets `repair-count`.
@@ -485,16 +500,20 @@ re-entering apply. A clean `preview` build resets `repair-count`.
 The `pr` stage MUST pass a pre-built `## UI Tweak — designer-verifiable summary` body (Source /
 Grounding-provenance / Audit verdict / Coverage table with `shared?`) — this body is the reviewer's
 primary way to judge visual correctness, so the stage also populates the body's `## Demo` section
-with whatever visuals **already exist**. The agent still NEVER captures anything itself — the
-preview HARD BOUNDARY is untouched; it only surfaces and uploads visuals a human or the ticket
-already produced:
+with whatever visuals **already exist** (designer-supplied, ticket attachments) plus any capture the
+`demo` stage produced. `preview` still never captures; the ONLY capture path is the `demo` stage,
+which is passive except for the single GGC-14 deep-link fire (no tap-through). The `pr` stage surfaces
+and uploads:
 
 1. **Captured demo** (preferred — shows the *actual* result): if `.dev/ui-tweak/demo-files` exists
-   (designer-supplied via C1 Other, and/or written by the `demo` stage's passive capture), upload
-   each listed file to the ticket via the Linear 3-call flow — `prepare_attachment_upload` → PUT the
-   raw bytes to the signed URL with its headers verbatim → `create_attachment_from_upload` — and
-   embed each returned `assetUrl` in `## Demo` as `![demo](<assetUrl>)`. (This upload is the one
-   extra ticket write the deliver path is allowed — see Constraints.)
+   (designer-supplied via C1 Other, and/or written by the `demo` stage's passive OR navigate capture),
+   upload each listed file to the ticket via the Linear 3-call flow — `prepare_attachment_upload` → PUT
+   the raw bytes to the signed URL with its headers verbatim → `create_attachment_from_upload` — and
+   embed each returned `assetUrl` in `## Demo` as `![demo](<assetUrl>)`. If `.dev/ui-tweak/demo-note`
+   exists (GGC-14 — navigation was partial / unauthenticated / no whitelisted route), add its contents
+   as a plain caption line under the image so the reviewer reads the screenshot honestly (e.g. "couldn't
+   deep-link to the target screen — this is the app's current screen"). (This upload is the one extra
+   ticket write the deliver path is allowed — see Constraints.)
 2. **Ticket visuals** (shows the *target* design): read `.dev/ui-tweak/ticket.json` (cached by
    `start`) for image attachments and embed their URLs as markdown images. Add the grounded Figma
    node URL (from apply's figma grounding, when present) as a plain

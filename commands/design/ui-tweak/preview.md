@@ -84,15 +84,16 @@ Then rewrite the **leading `flutter` token** of the resolved `ui_preview_cmd` / 
 `flutter emulators` call below. Do NOT re-discover fvm by trial-and-error — the marker is
 authoritative.
 
-## Step 0b — direct-ship mode (R20)
+## Step 0b — direct-ship mode (R20) + navigate mode (GGC-14)
 
 ```bash
 DIRECT_SHIP=0; [ -f "$WT/.dev/ui-tweak/direct-ship" ] && DIRECT_SHIP=1
+AUTO_NAV=0;    [ -f "$WT/.dev/ui-tweak/auto-navigate" ] && AUTO_NAV=1   # GGC-14: demo will navigate+capture
 ```
 
-When `DIRECT_SHIP=1` the designer picked **"It already looks right — ship it"** on card C1 (show-me):
-they have already looked at it on their own device, so this stage runs as a **build-only compile gate**
-— NOT a device preview. Concretely:
+When `DIRECT_SHIP=1` the designer picked **"It already looks right — ship it"** on card C1 (show-me),
+or `--auto` auto-took the direct-ship branch. They have already looked at it (or there is no human to
+look), so by default this stage is a **build-only compile gate** — NOT a device preview:
 
 - **Skip Step 1 entirely** (no device cascade — do not boot/launch anything). Go straight to the
   **no-device build-only path**: run `ui_build_cmd`.
@@ -102,6 +103,21 @@ they have already looked at it on their own device, so this stage runs as a **bu
 - The build-fail path (Step 4) is **unchanged** — a compile failure still routes to the agent repair
   loop (max 3, then Ce). This gate exists precisely because the designer's hand-build may predate the
   latest tweak.
+
+**Exception — `DIRECT_SHIP=1` AND `AUTO_NAV=1` (GGC-14): launch onto an already-running device so the
+`demo` stage can navigate + capture.** A pure build-only gate leaves no running app for `demo` to
+deep-link into, so when navigation is requested we must actually install + launch — but only onto a
+device that is **already running** (the designer's pre-warmed, already-logged-in device). Concretely:
+
+- Run a **restricted cascade — path (a) ONLY** (Step 1 (a): an already-running emulator/simulator or
+  physical handset). **Do NOT cold-boot (skip path (b))**: booting an emulator unattended is heavy and
+  the booted device would not be logged in, so it adds nothing. If (a) yields a device → go to Step 2's
+  **device path** (`ui_preview_cmd`) to build+install+launch and leave the app up; the build gate still
+  keys on exit code exactly as the normal path.
+- If (a) yields **no running device** → fall back to the **build-only path** (`ui_build_cmd`) exactly as
+  above. `demo` will then find no running app and FAIL-SILENT (the PR uses the Demo fallback chain).
+- **Still do NOT write `preview-shown`** (direct-ship has no "looks good?" card) and the walker still
+  advances to `audit`. The launch here exists solely to give `demo` a live, logged-in app to navigate.
 
 The rest of this file (Steps 1–4) is the normal **device-preview** path used when `DIRECT_SHIP=0`.
 
@@ -198,10 +214,13 @@ iterations of `sleep 1`), so it is portable to stock macOS with no external depe
 > If the app crashes on launch or won't start, treat it like a build failure → Step 4 (do NOT poke at
 > it to "fix" the runtime state).
 >
-> The ONLY sanctioned capture path in the whole pipeline is the opt-in `/ui-tweak:demo` stage
-> (Phase 2, after commit, designer-authorized via `demo-requested`) — and even that stage is
-> capture-only (zero input events) on the screen the designer already approved. Inside preview this
-> boundary is absolute.
+> The ONLY sanctioned capture path in the whole pipeline is the `/ui-tweak:demo` stage (Phase 2, after
+> commit, authorized via `demo-requested`). That stage is capture-only with ONE narrow exception
+> (GGC-14): in NAVIGATE mode (`auto-navigate` marker) it may fire a **single deep-link URI** to reach
+> the target screen, then capture — still no tap-through, no login, no second drive action. **`preview`
+> itself never navigates or captures**, in any mode: even when it launches onto a device for the
+> navigate path (Step 0b), its job still ends at "the app is up". The deep-link fire belongs to `demo`,
+> not here. Inside preview the no-drive boundary is absolute.
 
 ## Step 3 — quarantine build side-effects (F3) + record success
 
@@ -236,11 +255,16 @@ The orchestrator's loop sees `repair-context` and routes back to `/ui-tweak:appl
 
 ## `--auto` — failures must be LOUD (R13)
 
-Under `--auto`, preview IS reached — in **direct-ship build-only mode** (D7, revised): the
-orchestrator's auto-decision wrote `deliver` + `direct-ship`, so this stage runs as the pure compile
-gate (no device cascade, no `preview-shown`, no card) — it is the load-bearing build proof before
-the audit. The *device* mode is never reached under `--auto` (no card ever writes
-`preview-requested`).
+Under `--auto`, preview IS reached — in **direct-ship mode** (D7, revised): the orchestrator's
+auto-decision wrote `deliver` + `direct-ship` (+ `demo-requested` + `auto-navigate`, GGC-14). It is
+the load-bearing build proof before the audit, and:
+
+- **`auto-navigate` absent** → pure build-only compile gate (no device cascade, no `preview-shown`, no
+  card), exactly as before.
+- **`auto-navigate` present** (the GGC-14 default for `--auto`) → the Step 0b restricted cascade: launch
+  onto an **already-running** device if one exists (so `demo` can navigate+capture), else build-only.
+  Either way: no `preview-shown`, no card, exit-code-keyed gate. **`--auto` never cold-boots an emulator
+  here and never reaches the interactive `preview-requested` device-preview card path.**
 
 A build-fail under `--auto` goes through the SAME agent repair loop as interactive (write
 `repair-context` + bump `repair-count` → apply fixes UI-only → re-gate, max 3 — the loop needs no
