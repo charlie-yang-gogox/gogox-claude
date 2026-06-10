@@ -51,23 +51,49 @@ git rev-parse --abbrev-ref HEAD
 
 Extract pattern `[A-Z]+-\d+` from the branch name. If no match, use the branch name as-is.
 
-### 4. Fetch Ticket Title (if ticket ID found)
+### 4. Resolve Ticket Title (if ticket ID found)
 
-Based on `ticket_system` from the product profile:
+The PR title MUST be `{TICKET_ID}: {tracker title}` (see the CRITICAL block
+below). Resolve the title in the order below — do **not** stop at the first
+silent failure, and do **not** drop to the branch name until every source is
+exhausted.
 
-**If `ticket_system` is `linear`:**
-- Use `mcp__linear-server__get_issue` with the extracted ticket ID
-- If successful, use `"{TICKET_ID}: {title}"` as the PR title
+**4a. Cache first.** If `/tmp/{TICKET_ID}.md` exists (the ticket dump written by
+`/dev:start` in auto mode), read the ticket title from it and use
+`"{TICKET_ID}: {title}"`. This is the only reliable source in headless / cloud
+runs where the tracker MCP is not authenticated, and it avoids a redundant MCP
+round-trip otherwise.
 
-**If `ticket_system` is `jira`:**
-- Use `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` with:
-  - `cloudId`: `{jira_cloud_id}` from product profile
-  - `issueIdOrKey`: the extracted ticket ID
-  - `responseContentFormat`: `markdown`
-- If successful, use `"{TICKET_ID}: {summary}"` as the PR title
+**4b. Otherwise fetch from the tracker**, branching on `ticket_system` from the
+product profile (resolve `TICKET_SYSTEM` per `_ticket-lib.md`):
+- **`linear`** → call `get_issue` with `id: {TICKET_ID}` on the **resolved
+  Linear MCP server** (see the note below) → use `"{TICKET_ID}: {title}"`.
+- **`jira`** → `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` with
+  `cloudId: {jira_cloud_id}` from the product profile, `issueIdOrKey:
+  {TICKET_ID}`, `responseContentFormat: markdown` → use
+  `"{TICKET_ID}: {summary}"`.
 
-**If `ticket_system` is not set, or fetch fails:**
-- Use the branch name as the PR title
+> **Resolve the Linear MCP server once, then reuse it for every Linear call in
+> this skill** (the Step 4 fetch AND the Step 10 comment). Use whichever server
+> is connected this session — prefer `mcp__claude_ai_Linear__*`, otherwise fall
+> back to `mcp__linear-server__*` (the project `.mcp.json` server). Both target
+> the same workspace, but **only one is live in a given environment**: the
+> claude.ai connector is auto-hidden when a project server with the same URL is
+> configured (local runs), while headless / cloud runs typically have only the
+> claude.ai connector. **Hardcoding either prefix is a silent fetch failure in
+> the other environment** — which is exactly how the PR title silently drops to
+> the branch name. Mirror `ggx-dispatcher.md` §"All MCP tool calls" (resolve the
+> prefix once at the start, use it uniformly).
+
+**4c. Last-resort fallback (must be visible).** Only if no `/tmp/{TICKET_ID}.md`
+cache exists AND the tracker fetch fails (or `ticket_system` is unset / no
+ticket ID was parsed from the branch), use the branch name as the PR title —
+and **emit a visible warning** so the degraded title is never silent:
+
+```
+WARN: PR title fell back to branch name — ticket title unresolved
+      (cache miss + tracker fetch failed). Expected format: {TICKET_ID}: {title}
+```
 
 **CRITICAL — PR title format:**
 - The PR title MUST be exactly `{TICKET_ID}: {ticket title from tracker}`.
@@ -83,7 +109,7 @@ Collect commit messages:
 git log origin/trunk..HEAD --pretty='format:- %s' --reverse --no-merges
 ```
 
-Generate a **Summary** section by reading the commit messages and writing a plain-English description of what this PR does. Be concise — 2-5 bullet points. Write from the perspective of a reviewer who needs to understand the "why" and "what", not the "how".
+Generate a **Summary** section by reading the commit messages and writing a plain-English description of what this PR does. In plain language, explain **what aspects were fixed / changed** (e.g. which behaviour, screen, data flow, or edge case was corrected and why), not just a restatement of the commit subjects. Be concise — 2-5 bullet points (use bullets whenever there is more than one distinct aspect). Write from the perspective of a reviewer who needs to understand the "why" and "what", not the "how".
 
 **CRITICAL — the PR body MUST use EXACTLY this template. All five sections are REQUIRED. Do NOT omit any section. Do NOT reorder sections. Do NOT rename headings.**
 
@@ -113,7 +139,7 @@ Generate a **Summary** section by reading the commit messages and writing a plai
 - `{TICKET_URL}` is:
   - Linear: `{linear_base_url}/{TICKET_ID}` (e.g., `https://linear.app/gogox/issue/CAF-272`)
   - Jira: `{jira_base_url}/{TICKET_ID}` (e.g., `https://gogotech.atlassian.net/browse/CET-7911`)
-- `{GENERATED_SUMMARY_BULLETS}` — plain-English summary as bullet points (not narrative paragraphs)
+- `{GENERATED_SUMMARY_BULLETS}` — plain-English summary as bullet points (not narrative paragraphs); each bullet states, in plain language, which aspect was fixed / changed and the reason
 - `{COMMIT_MESSAGES_AS_CHECKLIST}` — each commit message formatted as `- [x] <message>` (one per commit, in chronological order)
 - `{GENERATED_TEST_PLAN}` — QA-oriented numbered checklist generated from the diff and commits (see Step 6d)
 
@@ -239,7 +265,9 @@ If a ticket ID was extracted in Step 3, post the implementation notes as a comme
 
 **If `ticket_system` is `linear`:**
 
-Use `mcp__linear-server__save_comment` with the following format:
+Use `save_comment` on the **same resolved Linear MCP server** from Step 4b
+(`mcp__claude_ai_Linear__save_comment` or its `mcp__linear-server__*`
+equivalent — whichever was resolved), with the following format:
 
 ```markdown
 ## Implementation Notes — PR #{pr_number}
