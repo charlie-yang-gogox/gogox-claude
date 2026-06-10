@@ -87,7 +87,7 @@ Not a platform. Not a service. A git repo + 80 lines of bash. The bet is that **
 
 The `--auto` dispatcher pipelines fan work out across nested agents. The official position bounds how deep that nesting may safely go.
 
-**Official stance.** The [sub-agents docs](https://code.claude.com/docs/en/sub-agents) state plainly that "subagents cannot spawn other subagents" — nesting is unsupported. The [multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system) post describes the supported shape: a lead (opus) orchestrator that spawns a flat layer of (sonnet) workers — depth-1, no deeper. Our `--auto` pipelines run one level deeper than that: `/ggx-dispatcher` (main) spawns a `general-purpose` worker (level-1), and a few stages inside that worker still spawn their own (level-2) subagents. We have observed empirically that **nested sonnet spawns work in practice today while nested opus spawns fail** — but that observation is reliance on undefined behavior, not a contract. Any Claude Code update may remove it without notice.
+**Official stance.** The [sub-agents docs](https://code.claude.com/docs/en/sub-agents) state plainly that "subagents cannot spawn other subagents" — nesting is unsupported. The [multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system) post describes the supported shape: a lead (opus) orchestrator that spawns a flat layer of (sonnet) workers — depth-1, no deeper. Our `--auto` pipelines run one level deeper than that: `/ggx-dispatcher` (main) spawns a `general-purpose` worker (level-1), and a few stages inside that worker still spawn their own (level-2) subagents. We had observed empirically that **nested sonnet spawns worked while nested opus spawns failed** — reliance on undefined behavior, not a contract, and an update did remove it: as of v2.1.170 (probed 2026-06-10) the Agent tool is absent inside subagents entirely, so every level-2 spawn — sonnet included — takes its spawn-failure path (R2 fallbacks fire unconditionally; R3 `/dev:verify` hard-fails in `--auto` on code platforms). Official nested-subagent support (depth=5) was announced 2026-06-09 but had not shipped as of 2.1.170 — re-probe after each Claude Code update before relying on any nesting.
 
 ```
                   DEPTH        AGENT                        STATUS
@@ -99,7 +99,7 @@ level-1   worker               general-purpose (/ggx-work)  supported (depth-1)
             │
             ▼  spawns           ┌─────────────────────────────────────────────┐
 level-2   leaf subagent        │ opus  → BROKEN (fails inside a spawned worker)│
-                               │ sonnet→ UNDEFINED but working today           │
+                               │ sonnet→ BROKEN since 2.1.170 (was working UB) │
                                └─────────────────────────────────────────────┘
                                  ↑ the danger zone — officially unsupported
 ```
