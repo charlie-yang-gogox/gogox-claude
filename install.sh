@@ -160,6 +160,15 @@ echo " commit: $COMMIT"
 echo "============================================"
 echo
 
+# Alphabetize every listing (LC_ALL=C, deterministic). Namespaced commands
+# cluster with their family automatically: "purge" sorts just before
+# "purge:brew"/"purge:sim", "dev" before "dev:*", etc. Names are slugs with no
+# spaces, so newline word-splitting is safe.
+if [ "${#INSTALLED_SKILLS[@]}"   -gt 0 ]; then IFS=$'\n' INSTALLED_SKILLS=($(LC_ALL=C sort <<<"${INSTALLED_SKILLS[*]}"));     unset IFS; fi
+if [ "${#INSTALLED_AGENTS[@]}"   -gt 0 ]; then IFS=$'\n' INSTALLED_AGENTS=($(LC_ALL=C sort <<<"${INSTALLED_AGENTS[*]}"));     unset IFS; fi
+if [ "${#INSTALLED_COMMANDS[@]}" -gt 0 ]; then IFS=$'\n' INSTALLED_COMMANDS=($(LC_ALL=C sort <<<"${INSTALLED_COMMANDS[*]}")); unset IFS; fi
+if [ "${#INSTALLED_PROFILES[@]}" -gt 0 ]; then IFS=$'\n' INSTALLED_PROFILES=($(LC_ALL=C sort <<<"${INSTALLED_PROFILES[*]}")); unset IFS; fi
+
 if [ "${#INSTALLED_SKILLS[@]}" -gt 0 ]; then
   echo "Skills (${#INSTALLED_SKILLS[@]}):"
   for s in "${INSTALLED_SKILLS[@]}"; do

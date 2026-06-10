@@ -33,11 +33,11 @@ options:
   - label: "All (Recommended)"
     description: "Scan Flutter, iOS, Android, and Node.js targets"
   - label: "Flutter"
-    description: "build/, .dart_tool/, Pods/, ephemeral/"
+    description: "build/, .dart_tool/, Pods/, ephemeral/ + Flutter-attributed DerivedData + ~/.pub-cache"
   - label: "iOS"
-    description: "build/, Pods/, Xcode DerivedData"
+    description: "build/, Pods/, native DerivedData, Archives, CocoaPods cache+repos, SPM cache, DeviceSupport, Simulator caches"
   - label: "Android"
-    description: "build/, .gradle/"
+    description: "build/, .gradle/, ~/.gradle/caches + wrapper dists"
 ```
 
 If the user selects **Other**, present a follow-up single-select with the
@@ -48,7 +48,7 @@ question: "Select platform:"
 header: "Platform"
 options:
   - label: "Node.js"
-    description: "node_modules/, .next/, dist/, .nuxt/, .cache/"
+    description: "node_modules/, .next/, dist/, .nuxt/, .cache/, ~/.npm"
 ```
 
 If `--yes` is set, skip this step and use **All**.
@@ -150,14 +150,67 @@ Find directories containing `package.json` (exclude any inside existing
 | `dist/` | Common build output (only if sibling `package.json` exists) |
 | `.cache/` | Bundler caches (webpack, parcel, etc.) |
 
-#### System caches (when "System caches" scope is selected)
+#### System & global caches — attributed per platform
 
-| Target | Description |
-|---|---|
-| `~/Library/Developer/Xcode/DerivedData/*` | Xcode build cache (all projects) |
-| `~/Library/Developer/Xcode/Archives/*` | Xcode archived builds |
-| `~/Library/Caches/CocoaPods/*` | CocoaPods download cache |
-| `~/Library/Developer/CoreSimulator/Caches/*` | iOS Simulator caches |
+These caches live outside any project. Each entry is **attributed to a
+platform** so that choosing a single platform in Step 1 only cleans that
+platform's share — selecting Flutter must never delete a native iOS app's
+DerivedData, or a cache shared with native projects.
+
+**Attribution rules:**
+
+| Cache | Attributed to | Rationale |
+|---|---|---|
+| `~/Library/Developer/Xcode/DerivedData/<folder>/` | Flutter **or** iOS, per folder | Resolved individually via `info.plist` → `WorkspacePath` (see algorithm below). |
+| `~/.pub-cache/` | Flutter | Dart/Flutter global package cache. 100% Flutter-owned. |
+| `~/Library/Developer/Xcode/Archives/*` | iOS | Xcode release archives (native concept). |
+| `~/Library/Caches/CocoaPods/*` | iOS only (shared) | Pod download cache keyed by pod name+version; shared by native iOS **and** Flutter iOS → **not separable**, so NOT attributed to Flutter. |
+| `~/.cocoapods/repos/*` | iOS only (shared) | CocoaPods spec repos (the podspec index, **not** the download cache above). Re-buildable via `pod repo update`. Shared with Flutter iOS → not attributed to Flutter. |
+| `~/Library/Caches/org.swift.swiftpm/*` | iOS only (shared) | Swift Package Manager download/clone cache. Re-fetched on next resolve. |
+| `~/Library/Developer/Xcode/iOS DeviceSupport/*` | iOS | Per-OS-version symbol files cached when debugging on a **real device**. Regenerated automatically on next attach. Accumulates forever, one heavy folder per iOS version. |
+| `~/Library/Developer/Xcode/watchOS DeviceSupport/*`, `tvOS DeviceSupport/*` | iOS | Same as above for watchOS / tvOS devices. |
+| `~/Library/Developer/CoreSimulator/Caches/*` | iOS only (shared) | Simulator runtime cache; not project-specific. |
+| `~/.gradle/caches/*` | Android only (shared) | Gradle download cache; shared by native Android **and** Flutter Android → **not separable**, so NOT attributed to Flutter. |
+| `~/.gradle/wrapper/dists/*` | Android only (shared) | Downloaded Gradle distributions (one per wrapper version). Old versions are dead weight; re-downloaded on demand. |
+| `~/.npm/*` | Node.js | npm global download cache. Re-fetched on next install. (Yarn/pnpm stores — `~/Library/Caches/Yarn`, `~/Library/pnpm` / `~/.pnpm-store` — when present, same treatment.) |
+
+**Resolving DerivedData attribution** (run when scanning system caches):
+
+```bash
+DD=~/Library/Developer/Xcode/DerivedData
+for d in "$DD"/*/; do
+  name=$(basename "$d")
+  case "$name" in *.noindex) continue;; esac          # skip shared index caches
+  wp=$(/usr/libexec/PlistBuddy -c "Print :WorkspacePath" "$d/info.plist" 2>/dev/null)
+  if [ -z "$wp" ] || [ ! -e "$wp" ]; then
+    echo "STALE   $d"                                  # no info.plist, or workspace deleted (e.g. removed worktree)
+  else
+    projdir=$(dirname "$wp")                            # Flutter workspace lives at <project>/ios/Runner.xcworkspace
+    if [ -f "$projdir/../pubspec.yaml" ] || [ -f "$projdir/pubspec.yaml" ]; then
+      echo "FLUTTER $d   $wp"
+    else
+      echo "IOS     $d   $wp"
+    fi
+  fi
+done
+```
+
+**Which caches each platform pulls in:**
+
+- **Flutter** → DerivedData entries tagged `FLUTTER` + `~/.pub-cache`.
+  All native-shared caches below (CocoaPods cache, cocoapods/repos, SPM,
+  DeviceSupport, CoreSimulator, Gradle caches/dists) and Archives are
+  **excluded** (shared with native projects, or native-only).
+- **iOS** → DerivedData tagged `IOS` + Archives + CocoaPods cache +
+  `~/.cocoapods/repos` + SPM cache + iOS/watchOS/tvOS DeviceSupport +
+  CoreSimulator caches.
+- **Android** → `~/.gradle/caches` + `~/.gradle/wrapper/dists`.
+- **Node.js** → `~/.npm` (+ Yarn/pnpm stores when present).
+- **All** → everything above (each shared cache counted once).
+- Entries tagged `STALE` (no `info.plist`, or `WorkspacePath` points to a
+  deleted directory — typically a removed worktree) go into their own
+  **Stale DerivedData** category regardless of platform, so they can be
+  cleared without risking any attributable build.
 
 #### Simulator apps (shown as separate category in Step 4)
 
@@ -172,11 +225,9 @@ themselves are preserved — only installed apps and their data are removed.
 **Important**: Do NOT delete simulator/emulator device files directly. Use
 the CLI tools above so the devices remain functional.
 
-**Platform filtering**: If the user chose a specific platform in Step 1,
-only include system caches relevant to that platform:
-- **Flutter** / **iOS**: include all three system cache targets.
-- **Android**: skip Xcode and CocoaPods system caches.
-- **All**: include all.
+**Platform filtering** for system & global caches is governed by the
+attribution rules in the "System & global caches" section above — selecting a
+platform pulls in only that platform's attributed caches.
 
 ---
 
@@ -187,36 +238,40 @@ only include system caches relevant to that platform:
 
 2. Measure each target with `du -sh`.
 
-3. Aggregate into categories based on source:
+3. Aggregate into categories. System & global caches fold into their attributed
+   platform (per the attribution rules) rather than a monolithic bucket:
 
    | Category | Contents |
    |---|---|
-   | System caches | Xcode DerivedData, Archives, CocoaPods cache |
+   | Flutter | Flutter project targets + `FLUTTER`-tagged DerivedData + `~/.pub-cache` |
+   | iOS | iOS project targets + `IOS`-tagged DerivedData + Archives + CocoaPods cache + `~/.cocoapods/repos` + SPM cache + iOS/watchOS/tvOS DeviceSupport + CoreSimulator caches |
+   | Android | Android project targets + `~/.gradle/caches` + `~/.gradle/wrapper/dists` |
+   | Node.js | Node.js project targets + `~/.npm` (+ Yarn/pnpm stores when present) |
+   | Stale DerivedData | Orphan DerivedData (no `info.plist`, or workspace deleted — e.g. removed worktrees) |
    | Simulator apps | Installed apps in iOS Simulator and Android Emulator |
-   | Flutter | All Flutter project targets found |
-   | iOS | All iOS project targets found |
-   | Android | All Android project targets found |
-   | Node.js | All Node.js project targets found |
 
-4. Print a preview table grouped by category, with subtotals and grand total:
+4. Print a preview table grouped by category, with subtotals and grand total.
+   For platform categories, list project targets and attributed system caches
+   together so the user sees the full footprint:
 
 ```
 Disk available: 2.0 GB
 
-System caches — 30.2 GB
-   29 GB    ~/Library/Developer/Xcode/DerivedData/
-  622 MB    ~/Library/Developer/Xcode/Archives/
-  589 MB    ~/Library/Caches/CocoaPods/
-
-Flutter — 7.4 GB
+Flutter — 8.1 GB
   4.3 GB    ~/projects/app/build/
   737 MB    ~/projects/app/.dart_tool/
   408 MB    ~/projects/app/ios/Pods/
   1.2 GB    ~/projects/feature-branch/build/
+  680 MB    ~/Library/Developer/Xcode/DerivedData/Runner-cgpth…/   (→ app/ios/Runner.xcworkspace)
+  720 MB    ~/.pub-cache/
   ...
 
+Stale DerivedData — 2.1 GB
+  1.4 GB    ~/Library/Developer/Xcode/DerivedData/Runner-fkxfkx…/  (workspace deleted)
+  700 MB    ~/Library/Developer/Xcode/DerivedData/Pods-andje…/     (no info.plist)
+
 ──────────────────────────
-Total: ~37.6 GB
+Total: ~10.2 GB
 ```
 
 Only show categories that have targets. If nothing is found, report
@@ -237,14 +292,14 @@ question: "Which categories do you want to purge?"
 header: "Purge"
 multiSelect: true
 options:
-  - label: "System caches (30.2 GB) (Recommended)"
-    description: "Xcode DerivedData, Archives, CocoaPods cache"
-  - label: "Flutter (7.4 GB)"
-    description: "build/, .dart_tool/, Pods/ across N projects"
+  - label: "Flutter (8.1 GB) (Recommended)"
+    description: "build/, .dart_tool/, Pods/ across N projects + Flutter DerivedData + ~/.pub-cache"
+  - label: "Stale DerivedData (2.1 GB)"
+    description: "Orphan Xcode caches — deleted workspaces / removed worktrees"
   - label: "iOS (1.1 GB)"
-    description: "build/, Pods/ across N projects"
+    description: "build/, Pods/ + native DerivedData, Archives, CocoaPods cache+repos, SPM, DeviceSupport, Simulator caches"
   - label: "Android (200 MB)"
-    description: "build/, .gradle/ across N projects"
+    description: "build/, .gradle/ + ~/.gradle/caches + wrapper dists"
 ```
 
 - If the user selects nothing or cancels → stop, delete nothing.
@@ -282,9 +337,13 @@ Purge complete.
 
   To restore project dependencies when needed:
     Flutter:  flutter pub get && cd ios && pod install
-    iOS:      pod install
+    iOS:      pod install   (cocoapods/repos: pod repo update if needed)
     Android:  ./gradlew dependencies (or just rebuild)
     Node.js:  npm install (or yarn / pnpm install)
+
+  Global caches re-warm automatically: Xcode iOS DeviceSupport regenerates the
+  next time you attach that device; SPM / Gradle / npm caches re-download on the
+  next build or install. No manual restore needed.
 ```
 
 ---
