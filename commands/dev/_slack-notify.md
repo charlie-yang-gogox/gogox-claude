@@ -1,6 +1,6 @@
 ---
 name: _slack-notify
-description: "Internal helper invoked by /ticket-analyze (Step 10) and /ggx-dispatcher (§4.2, §6.5). Posts run-level Slack digests / batch-abort alerts to the user's personal pipeline channel via their own Slack bot (chat.postMessage). Opt-in per user: config lives in-repo at commands/dev/profiles/ggx-slack.json (gitignored, org.yaml pattern, symlinked by install.sh); if absent or disabled, every call is a completely silent no-op — users who never configured a Slack bot see zero behavior change. Fail-soft single-WARN on send errors; NEVER blocks or fails the calling pipeline. Callers pass raw signals; the status→emoji/token mapping lives ONLY in this file. Not user-invoked."
+description: "Internal helper invoked by /ticket-analyze (Step 10), /ggx-dispatcher (§4.2, §6.5), and /ggx-on-duty (Finalize). Posts run-level Slack digests / batch-abort alerts to the user's personal pipeline channel via their own Slack bot (chat.postMessage). Opt-in per user: config lives in-repo at commands/dev/profiles/ggx-slack.json (gitignored, org.yaml pattern, symlinked by install.sh); if absent or disabled, every call is a completely silent no-op — users who never configured a Slack bot see zero behavior change. Fail-soft single-WARN on send errors; NEVER blocks or fails the calling pipeline. Callers pass raw signals; the status→emoji/token mapping lives ONLY in this file. Not user-invoked."
 ---
 
 # `/_slack-notify <shape> ...`
@@ -26,8 +26,12 @@ feature must see zero behavior change in every pipeline.
 ## Shapes
 
 - `/_slack-notify digest <source>` — one run-level digest message.
-  `<source>` ∈ `ticket-analyzer` | `ggx-dispatcher`. The caller passes a
-  header-stats object and one raw-signal line per ticket (see Inputs).
+  `<source>` ∈ `ticket-analyzer` | `ggx-dispatcher` | `on-duty`. The
+  caller passes a header-stats object and one raw-signal line per item
+  (see Inputs). The first two sources are **ticket-keyed** (one line per
+  Linear ticket); `on-duty` is **PR-keyed** (one line per PR, plus
+  ticket-keyed analyzer-verdict-change lines) — it is `/ggx-on-duty`'s
+  ONE batched per-wake notification, not a per-ticket sweep.
 - `/_slack-notify batch-abort detail=<text>` — dispatcher §4.2 only.
   Batch-level alert; there is no single ticket id.
 
@@ -61,6 +65,44 @@ the cosmetic `[ggx-work-result]` lines); `title` comes from the same
 <ticket-id> <url> <lane> port-paused flags=<need-spec-review|-> title="<title>"
 <ticket-id> <url> <lane> failed flags=<in-flight-residue|-> stage=<stage_reached> reason=<short> title="<title>"
 ```
+
+### `digest on-duty`
+
+The on-duty loop's ONE batched per-wake notification (`/ggx-on-duty`
+Finalize step 1). Unlike the two ticket-keyed sources above, the
+per-item lines are **PR-keyed** (`<pr#> <url>` identifies a PR, not a
+Linear ticket) — except the analyzer-verdict-change lines, which are
+ticket-keyed (they report a Leg-1 verdict that flipped since last wake).
+A wake with nothing to report still calls (the renderer emits a quiet
+"all clear" line); duplication with the analyzer/dispatcher built-in
+digests fired by the same wake's Leg-1 chain is accepted (D17 — no
+suppression here).
+
+Header stats: `team`, `repo`, `prs_open` (count of open PRs polled this
+wake), optional `chain` (one of `in-flight` | `idle` | `disabled` —
+mirrors the cycle summary). Per-item lines (raw signals; emit only the
+lines that apply this wake):
+
+```
+<pr#> <url> ci-red check=<check-name> sha=<short-sha> title="<pr-title>"
+<pr#> <url> ci-red check=<check-name> sha=<short-sha> self-pushed title="<pr-title>"
+<pr#> <url> resolver-needs-human reason=<conflict|tests-failed|worktree-dirty|comment-fix-failed-tests|push-failed> title="<pr-title>"
+<pr#> <url> resolver-done rebased=<yes|no> fixed=<n> replied=<n> title="<pr-title>"
+<ticket-id> <url> verdict-change from=<prev-verdict|none> to=<new-verdict> title="<title>"
+```
+
+- `ci-red` carries `self-pushed` when the red SHA is the loop's own
+  pushed SHA (`ggx-on-duty.md` Leg-2 step 1 — `(self-pushed — rerun from
+  our own push)`); it never swallows the alert, only tags it.
+- `resolver-needs-human` `reason` is verbatim one of the resolver's five
+  `needs-human:` exit reasons (`/ggx-pr-resolver` step 8).
+- (`review-posted` / `review-capped` lines were removed with the on-duty
+  code-review leg — D6 REVERSED 2026-06-06, `plans/ggx-on-duty.md`; the
+  loop has no review emitter, so this skill defines no vocabulary for it.)
+- `verdict-change` reports only analyzer verdicts that CHANGED since the
+  prior wake (`analyzer_verdicts` diff) — steady-state verdicts are not
+  re-announced (the analyzer's own built-in digest already re-announces
+  stuck tickets; this line is the loop's change-only view).
 
 ### `batch-abort`
 
@@ -139,6 +181,11 @@ pipeline's exit code.
 | dispatcher `done` | `REVIEW` | 🟢 | yes | `review PR <number>` |
 | dispatcher `port-paused` | `SPEC-REVIEW` | 🟡 | yes | `run /spec-review <id>` |
 | dispatcher `failed` | `FAILED` | 🔴 | yes | `see claude-reports/<id>/, re-run /ggx-work <id>` |
+| on-duty `ci-red` | `CI-RED` | 🔴 | yes | `check <check> on PR <pr#>` |
+| on-duty `ci-red` + `self-pushed` | `CI-RED` | 🔴 | yes | `check <check> — rerun from our own push` |
+| on-duty `resolver-needs-human` | `RESOLVER` | 🛠️ | yes | per-reason: conflict → `resolve the rebase conflict on PR <pr#>`; tests-failed → `fix the failing tests in ../<ticket> (rebased cleanly, suite red)`; worktree-dirty → `clean ../<ticket> then re-run`; comment-fix-failed-tests → `fix the failing tests in ../<ticket> (worktree left dirty)`; push-failed → `someone pushed concurrently; next poll re-rebases` |
+| on-duty `resolver-done` | `RESOLVED` | 🟢 | no | — (FYI line, no action) |
+| on-duty `verdict-change` | `VERDICT` | 🔁 | no | — (FYI; change since last wake) |
 | `batch-abort` | `BATCH-ABORT` | ⛔ | yes | `manually unlock <ids>` |
 
 Notes:
@@ -150,6 +197,11 @@ Notes:
   `missing classification`) stay `FAILED` in v1 — the reason text already
   says what to do. The full design taxonomy (incl. `CLASSIFY` ❓) lives in
   `plans/slack-notifier-design.md` §2 for future expansion.
+- On-duty `RESOLVED` / `VERDICT` are deliberately `#needs-human: no` —
+  they are FYI lines that close the loop's feedback (a resolver pushed,
+  an analyzer verdict flipped). They render in the info footer, not
+  the "Needs your action" block. `CI-RED` and `RESOLVER` are the only
+  on-duty signals that demand a human.
 
 ### Rendering — Block Kit (format v2, decided 2026-06-05)
 
@@ -188,6 +240,42 @@ line-based mrkdwn inside blocks.
    `#ggx-digest <#ggx-<token> for each token present> [#needs-human if any item needs action]`
 
 **Fallback `text`** (one line): `📊 [DIGEST] <source> · <team> — <compact counts> [#needs-human]`.
+
+**On-duty digest blocks** (PR-keyed; same v2 skeleton as the digest
+blocks above, only the line vocabulary differs):
+
+1. `header` block (plain_text, ≤150 chars): `🟢 on-duty · <repo> · <team> team`.
+2. `section` (mrkdwn) — counts line:
+   `*<prs_open> PRs* — <r> ci-red · <h> needs-human · <p> resolved · <v> verdict changes` (chain: `<chain>` appended when present, e.g. `· chain: in-flight`). Each count is derived from the per-item lines.
+3. `divider`.
+4. `section` (mrkdwn) — `*Needs your action (<n>)*` with the same
+   **two-line item** format as the digest block, ordered CI-RED first,
+   then RESOLVER (the only `#needs-human` on-duty
+   signals). PR items use the PR url + `#<pr#>` as the link label:
+
+   ```
+   <emoji> *<<url>|#<pr#>>* <pr-title, truncated to 60 chars with …>
+           ↳ <status-word>: <summary> — _<next action>_
+   ```
+
+   `<summary>` is the raw signal's detail (red check + sha + `(self-pushed
+   — rerun from our own push)` when tagged / the resolver `needs-human`
+   reason). Omit this whole block when nothing needs
+   action.
+5. Optional `section` (mrkdwn) — info footer, the FYI (`#needs-human: no`)
+   lines, each one line, omit the footer entirely if none:
+   - `Resolved: #<pr#> (rebased, <n> fixed)` per `resolver-done`.
+   - `Verdict changes: <ticket-id> <prev>→<new>, …` per `verdict-change`.
+   - `Digest also appended to .ggx-on-duty/digest.md` is NOT printed here
+     — the durable fallback is a caller-side write (see Callers), not a
+     line this skill renders.
+6. `context` block — hashtags ONCE: `#ggx-on-duty <#ggx-<token> for each token present> [#needs-human if any action item]`.
+
+When the wake had nothing to report (no per-item lines), blocks 3-5 are
+omitted and block 2 renders `*<prs_open> PRs* — all clear` so the loop's
+heartbeat is still visible.
+
+**Fallback `text`** (one line): `🟢 [STANDBY] <repo> · <team> — <prs_open> PRs, <r> red, <h> needs-human [#needs-human]`.
 
 **`batch-abort` blocks**: single `section` —
 `⛔ *BATCH-ABORT* · ggx-dispatcher · <team> team\n        ↳ <detail> — _manually unlock <ids>_`
@@ -258,13 +346,26 @@ per invocation total.)
 There is NO failure mode that blocks, retries indefinitely, or changes
 the calling pipeline's exit code.
 
-## Callers (3 sites, 2 files)
+## Callers (4 sites, 3 files)
 
 - `/ticket-analyze` Step 10 — `commands/dev/ticket-analyze.md` (batch
   digest after the `Summary:` line)
 - `/ggx-dispatcher` §4.2 — `commands/dev/ggx-dispatcher.md` (batch-abort)
 - `/ggx-dispatcher` §6.5 — `commands/dev/ggx-dispatcher.md` (end-of-run
   digest)
+- `/ggx-on-duty` Finalize step 1 — `commands/dev/ggx-on-duty.md` (the ONE
+  batched per-wake `digest on-duty`). This caller stands apart in two
+  ways, both deliberate:
+  - **Duplication is accepted (D17)**: the same wake's Leg-1 chain fires
+    the analyzer's Step-10 and the dispatcher's §6.5 built-in digests too.
+    On-duty's `digest on-duty` is the loop's own PR-centric view and is
+    NOT suppressed — do NOT add cross-source dedup here.
+  - **Caller-side durable fallback**: `/ggx-on-duty` ALSO appends the same
+    summary to `.ggx-on-duty/digest.md` itself, in its Finalize step —
+    that append is owned by the caller, NOT this skill. When Slack is
+    unconfigured this skill is a silent no-op (G1) yet the digest still
+    lands on disk, so the loop's record is never lost. This skill writes
+    only to Slack; it never touches `.ggx-on-duty/`.
 
 Do NOT re-inline the mapping or the send block in a caller; extend this
 skill instead. New pipelines (e.g. a future ui-tweak digest) add ONE

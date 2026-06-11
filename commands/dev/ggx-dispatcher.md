@@ -187,9 +187,12 @@ labeling still works — the analyzer is additive, not mandatory.
      ```bash
      # Residue allowlist: files dependency tooling rewrites on its own (a
      # regenerated pubspec.lock aborted the 2026-06-05 scheduled run for
-     # nothing). Deliberately narrow — extend only for files that are
-     # (a) machine-written and (b) reproducible from a clean checkout.
-     RESIDUE_RE='^(pubspec\.lock|ios/Podfile\.lock|Gemfile\.lock)$'
+     # nothing; a flutter-build-rewritten AppFrameworkInfo.plist caused a
+     # resolver false needs-human the same day). Deliberately narrow —
+     # extend only for files that are (a) machine-written and
+     # (b) reproducible from a clean checkout. Keep in sync with the
+     # identical allowlist in ggx-pr-resolver.md step 4 (residue triage).
+     RESIDUE_RE='^(pubspec\.lock|ios/Podfile\.lock|Gemfile\.lock|ios/Flutter/AppFrameworkInfo\.plist)$'
      CHANGED=$(git diff --name-only HEAD)
      if [ -n "$CHANGED" ]; then
        NON_RESIDUE=$(printf '%s\n' "$CHANGED" | grep -Ev "$RESIDUE_RE" || true)
@@ -477,9 +480,30 @@ Column rules:
 - `command` = the exact string Step 5 will pass to its spawn — uniformly `/ggx-work <ID> --auto` per §5.1; ui-tweak-flagged rows render it as `(inline) /ggx-work <ID> --auto` (§5.0 — same command, inline execution; see the roster note below).
 - `link` = the issue `url` field returned by the Step 2 `list_issues` calls. Cache the url alongside the ticket id from Step 2 so this column does not require a re-fetch.
 
-While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>\t<url>\t<ui-tweak|->`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention; `url` is the issue url cached from Step 2; the 5th field is `ui-tweak` when the §2.1 ui-tweak flag is set, else `-`. **Held in session state only — do NOT write a roster.tsv file.** §6.4 uses this roster to render the end-of-run table (lane lookup, walker selection, Ticket-link column). Rows with the ui-tweak flag render their `command` column as `(inline) /ggx-work <ID> --auto` in the §4.0/§4.3 tables so the spawn shape is visible up-front.
+While building this table, accumulate the same rows into an in-memory `DISPATCH_ROSTER` value — TSV, one line per ticket, format `<ticket-id>\t<lane>\t<absolute-worktree-path>\t<url>\t<ui-tweak|->`. Worktree path = `realpath ../<TICKET-ID>` per the `/add-worktree` convention; `url` is the issue url cached from Step 2; the 5th field is `ui-tweak` when the §2.1 ui-tweak flag is set, else `-`. **Held in session state only**, with ONE deliberate exception: the early in-flight projection written in §4.4 below (the §6.4 final report is the only other on-disk roster, and it is unreadable until after the §6.1 join barrier). §6.4 uses this roster to render the end-of-run table (lane lookup, walker selection, Ticket-link column). Rows with the ui-tweak flag render their `command` column as `(inline) /ggx-work <ID> --auto` in the §4.0/§4.3 tables so the spawn shape is visible up-front.
 
 **Under `--workflow` (§5.2):** in addition to the in-memory TSV, serialize **all** rows to a JSON array — `[{ "ticketId", "lane", "worktreePath", "url", "uiTweak" }, ...]` — for the script's `args`. **Design-bug rows are INCLUDED with `uiTweak: true`** (Phase B — the script's `runUiTweak` runs them as a level-1 dual-judge panel; they no longer run §5.0-inline under `--workflow`). The JSON is the `DISPATCH_ROSTER_JSON` value consumed by §5.2.
+
+### 4.4 Early in-flight projection (read by /ggx-on-duty's skip-set — B1, D11)
+
+After §4.1 has locked every surviving ticket and §4.3 has built `DISPATCH_ROSTER`, but **before any Step 5 spawn**, project the claimed set to disk so an external reader can see it during the entire `chain.running` window. This is the ONLY on-disk roster the dispatcher writes during a run; the §6.4 final report is written only after the §6.1 join barrier completes (tens of minutes later), so it cannot serve a reader watching a live chain.
+
+```bash
+# RUN_TS is this run's identifier, reused for the §6.3/§6.4 report paths
+# (`<RUN_TS>-<PID>`). Establish it here, at the first on-disk write, so the
+# inflight file and the final report share one stem.
+: "${RUN_TS:=$(date -u +%Y%m%dT%H%M%SZ)}"
+INFLIGHT="claude-reports/dispatcher/$RUN_TS-$$.inflight.tsv"
+: > "$INFLIGHT"
+# one line per claimed ticket: <ticket-id>\t<headRefName>\t<absolute-worktree-path>
+```
+
+For each row of `DISPATCH_ROSTER`, append `<ticket-id>\t<headRefName>\t<worktree-path>` where:
+
+- `<ticket-id>` / `<worktree-path>` are the exact values already in the roster (`worktree-path = realpath ../<TICKET-ID>`).
+- `<headRefName>` is the branch `/add-worktree` will create for this ticket. The naming convention is `<type>/<ticket-id>` (`add-worktree.md` Step 1), so the ticket-id segment is deterministic; the `<type>` segment is NOT predictable here (the dispatcher deliberately does not read classification labels — see the Label ownership boundary — and `/add-worktree` infers `<type>` from the ticket's nature downstream). Write the default-type prediction `feat/<ticket-id>`. Consumers that need an exact branch should match on the ticket-id segment or fall back to the worktree-path column, both of which ARE exact.
+
+**What this file is FOR**: `/ggx-on-duty`'s Leg-2 resolver skip-set (E-3, D11) reads the newest one of these by mtime while `chain.running` to avoid sending `/ggx-pr-resolver` into a worktree `/dev:ff` is still writing. The canonical skip-set key is the branch name (`headRefName`, D11). The on-duty reader discovers this file via newest-mtime glob — it cannot know the background subagent's `RUN_TS`/`PID` and must never read the lock. A crashed run's stale `*.inflight.tsv` is tolerated (consumers always take the newest-mtime file; a fresh dispatcher run writes a newer one, and §6.4 deletes this run's own file when the final report supersedes it). Rows with the §5.0 ui-tweak flag are included like any other — their worktrees are written by the dispatcher's inline lane instead of a spawned `/dev:ff`, but they are equally in-flight and equally off-limits to the resolver.
 
 ### 5.0 Spawn-shape decision — `design bug` tickets run INLINE (ui-tweak lane)
 
@@ -1103,6 +1127,14 @@ Emoji legend: 🟢 `done` (PR opened, in review), 🟡 `port-paused`
 `<RUN_TS>` is `date -u +%Y%m%dT%H%M%SZ`. The `<PID>` suffix prevents
 collision when concurrent invocations slip past the lock (only possible
 if the lock was forcibly removed).
+
+Once this report is written, **delete this run's early in-flight projection** — the report supersedes it and the chain is no longer in flight:
+
+```bash
+rm -f "claude-reports/dispatcher/$RUN_TS-$$.inflight.tsv"
+```
+
+A crash before this line leaves a stale `*.inflight.tsv` behind; that is tolerated because consumers (the on-duty skip-set, §4.4) always glob the newest by mtime — the next dispatcher run writes a newer one, and a stale file at worst over-excludes a branch from one resolver pass (safe).
 
 ### 6.5 Release lock + final stdout summary
 
