@@ -32,6 +32,7 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 - `--test` — Skip the default-branch + clean-tree pre-flight checks (still requires main worktree, gh auth, and lockfile).
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `3`, hard cap `20`. Out of range → abort. (Under `--workflow` this bounds the roster handed to the script; the script's `pipeline()` self-caps concurrency at `min(16, cores-2)` on top.)
 - `--workflow` — **Opt-in (Phase A, R5).** Replace the §5.3 N×`Agent` fan-out + §6.1 wait loop with a single `Workflow` tool call driving the dev/port/bug lane (see §5.2). ui-tweak rows still run §5.0-inline. Unset → today's path verbatim. Requires `~/.claude/workflows/ggx-dispatch.workflow.js` (installed by `install.sh`). See `ARCHITECTURE.md` "Nested-spawn constraint" R5 and the Phase-A migration notes.
+- `--launch-only` — **Requires `--workflow`** (abort if passed without it). After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty --workflow` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
 
 
@@ -713,7 +714,15 @@ Steps:
    record the `runId` into `run.json` (second atomic write) so a same-session
    resume can pass `resumeFromRunId`.
 
-4. **Watch the background run for liveness (P3 heartbeat); no inline lane.**
+   **`--launch-only` returns HERE.** Once the `runId` is recorded, release the
+   run-lock (§6.5) and return the `runId` to the caller — do NOT run step 4
+   (heartbeat) or step 5 (consume). The caller (`/ggx-on-duty --workflow`,
+   D22) owns the still-running workflow: it polls liveness on its own cadence
+   and consumes `{counts, rows}` on the completion notification. The
+   `dispatcher-*-in-flight` labels (written in §4.1, before this launch) are
+   the durable concurrency guard while the workflow runs lock-free.
+
+4. **(Skip under `--launch-only`.) Watch the background run for liveness (P3 heartbeat); no inline lane.**
    Design-bug rows are in the roster and run in-script via `runUiTweak`
    (level-1 dual-judge panel), so there is **nothing to run inline** here (the
    §5.0 inline lane is the default-path only). The single `Workflow` call is
@@ -737,7 +746,7 @@ Steps:
      batch.
    Outcomes come back in the script's `rows` (step 5).
 
-5. **Consume the workflow result** in place of §6.1's wait loop. The
+5. **(Skip under `--launch-only` — the caller consumes instead.) Consume the workflow result** in place of §6.1's wait loop. The
    `Workflow` completion notification carries the script's return value:
    `{ counts, rows }` where each row is the validated `WORK_SCHEMA` object
    (`ticketId, outcome, prUrl, stage, error`). **First check for a top-level
