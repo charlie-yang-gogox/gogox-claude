@@ -43,6 +43,7 @@ PIPELINE_IN_FLIGHT="no"
 - `--from <stage>` flag: delete markers (Step 0a) before dispatching.
 - `--auto` flag is per-invocation. There is no persisted mode; passing `--auto` on resume simply runs the rest of the pipeline in auto mode.
 - `--bug` flag is **persisted via `.dev/mode.md`** (written by `/dev:start --bug`). Resume invocations do not need to re-pass `--bug`; the walker reads `.dev/mode.md` to branch into bug-mode logic automatically. Passing `--bug` on resume when `.dev/mode.md` is absent is a no-op (the walker would still take the feature path).
+- `feature-direct` mode (GGC-17) has **no flag and no marker** — `pipe_mode` detects it dynamically (worktree has no `openspec/` dir → the repo doesn't use OpenSpec, e.g. the `prompt` platform). It shares the bug-mode walker and direct-edit apply branch but keeps feature semantics (`feat:` commits). OpenSpec repos always have `openspec/` committed, so they never misdetect.
 
 ### Step 0a: --from handling
 
@@ -95,10 +96,12 @@ infer_dev_stage() {
   wt=$(git rev-parse --show-toplevel)
   id=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
-  # Mode dispatch: bug vs feature. Resolved by pipe_mode (lib/dev-mode.sh);
-  # .dev/mode.md is written by /dev:start --bug, absent ⇒ feature.
+  # Mode dispatch: direct (bug / feature-direct) vs feature. Resolved by
+  # pipe_mode (lib/dev-mode.sh); .dev/mode.md is written by /dev:start --bug;
+  # feature-direct is detected dynamically (no openspec/ dir — GGC-17).
+  # Both direct modes share the direct walker: same stage chain, no OpenSpec.
   mode=$(pipe_mode "$wt")
-  if [ "$mode" = "bug" ]; then
+  if [ "$mode" = "bug" ] || [ "$mode" = "feature-direct" ]; then
     infer_bug_stage_safe; return
   fi
 
@@ -174,10 +177,11 @@ infer_dev_stage() {
   echo start
 }
 
-# Bug-mode walker — used when .dev/mode.md says `bug`.
+# Direct-mode walker — used when pipe_mode says `bug` (mode.md marker) or
+# `feature-direct` (dynamic: no openspec/ dir — GGC-17).
 # Skips figma / detect / align entirely. /dev:apply still runs but takes its
-# bug-mode branch (Step 0-bug in commands/dev/dev/apply.md): the agent
-# investigates, hypothesizes, writes the fix, and commits autonomously.
+# direct-edit branch (Step 0-bug in commands/dev/dev/apply.md): the agent
+# investigates, hypothesizes, writes the change, and commits autonomously.
 # Walker advances via .dev/apply-result.md (written by the apply step) just
 # like feature mode advances via tasks.md completion.
 infer_bug_stage() {
@@ -228,12 +232,13 @@ infer_bug_stage() {
   echo start
 }
 
-# Walker-output whitelist. infer_bug_stage must NEVER emit feature-only stages
+# Walker-output whitelist. infer_bug_stage must NEVER emit OpenSpec-only stages
 # (figma / detect / align) — those stages would invoke /dev:figma etc. which
 # perform expensive MCP fetches and assume an openspec change dir exists.
-# A typo, a refactor that forgets to update the bug walker, or a stale openspec/
-# dir leaking into the bug-mode worktree could all cause the inner walker to
-# return an illegal stage. This wrapper catches that before dispatch ever runs.
+# A typo, a refactor that forgets to update the direct walker, or a stale openspec/
+# dir leaking into a direct-mode (bug / feature-direct) worktree could all cause
+# the inner walker to return an illegal stage. This wrapper catches that before
+# dispatch ever runs.
 infer_bug_stage_safe() {
   local out
   out=$(infer_bug_stage) || return $?
@@ -242,7 +247,7 @@ infer_bug_stage_safe() {
     *)
       echo "FAIL: infer_bug_stage emitted illegal stage '$out'" >&2
       echo "Expected one of: start | apply | verify | review | ship | done" >&2
-      echo "Likely cause: walker bug, mode.md parse failure, or stale openspec/changes/ dir in a bug-mode worktree." >&2
+      echo "Likely cause: walker bug, mode.md parse failure, or stale openspec/changes/ dir in a direct-mode worktree." >&2
       return 1 ;;
   esac
 }
@@ -262,15 +267,15 @@ source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode)
 CURRENT=$(infer_dev_stage)
 while CURRENT != "done":
-  # Dispatch-input guard: bug mode MUST NOT dispatch feature-only stages.
+  # Dispatch-input guard: direct modes MUST NOT dispatch OpenSpec-only stages.
   # The walker's whitelist (infer_bug_stage_safe) catches this on the
   # walker-output side; this guard is the redundant second layer that
   # catches mode-dispatch routing errors — e.g. PIPE_MODE was resolved
-  # to bug but somehow infer_dev_stage fell into the feature branch
-  # (mode.md parse drift, future refactor mistake, etc.).
-  if PIPE_MODE == "bug" and CURRENT in {"figma", "detect", "align"}:
+  # to bug/feature-direct but somehow infer_dev_stage fell into the
+  # feature branch (mode.md parse drift, future refactor mistake, etc.).
+  if PIPE_MODE in {"bug", "feature-direct"} and CURRENT in {"figma", "detect", "align"}:
     FAIL — print:
-      "Dispatch refused: bug pipeline received feature-only stage '$CURRENT'.
+      "Dispatch refused: direct pipeline (mode=$PIPE_MODE) received OpenSpec-only stage '$CURRENT'.
        Walker/mode-routing bug. Inspect .dev/mode.md and openspec/changes/
        in this worktree. /dev:ff --from <stage> can re-derive after fixing."
     exit 1
@@ -331,13 +336,13 @@ if PIPE_MODE == "feature" and CURRENT in {"verify", "review", "ship"} and AUTO_F
 
 This replaces the v7 `done_default` terminal that was tracked in `state.json`. Filesystem-as-state derives the same outcome from "tasks done + no `--auto` flag this invocation".
 
-**Bug mode exception**: when `PIPE_MODE == "bug"`, the default-mode terminal does NOT fire. Bug mode runs end-to-end through `verify` → `review` → `ship` even without `--auto`, because `/dev:apply`'s Step 0-bug branch already commits the fix autonomously — there is no user-decision gap left after apply. The HITL in bug-default is exclusively the plan-confirmation gate inside Step 0-bug, before the apply runs; once that is past, the rest is mechanical (test + audit + push) and runs whether the user passed `--auto` or not. `/dev:verify`, `/dev:review`, and `/dev:ship` each gate their auto-only check on `MODE == auto OR PIPE_MODE == bug` to permit this.
+**Direct-mode exception**: when `PIPE_MODE` is `bug` or `feature-direct`, the default-mode terminal does NOT fire. Direct modes run end-to-end through `verify` → `review` → `ship` even without `--auto`, because `/dev:apply`'s Step 0-bug (direct-edit) branch already commits the change autonomously — there is no user-decision gap left after apply. The HITL in direct-default is exclusively the plan-confirmation gate inside Step 0-bug, before the apply runs; once that is past, the rest is mechanical (test + audit + push) and runs whether the user passed `--auto` or not. `/dev:verify`, `/dev:review`, and `/dev:ship` each gate their auto-only check on `MODE == auto OR PIPE_MODE != feature` to permit this.
 
 ## Mode-specific behavior
 
 - **`--auto`**: no HITL gates fire. Stages stop only on failure. Loop runs end-to-end.
 - **default (feature)**: HITL gates in `/dev:figma` (failure case), `/dev:align` (CONFLICT), and `/dev:apply` (review gate) will pause. Terminal at `/dev:apply`. The user resumes with `/dev:ff --auto` (or runs `/format` → `/commit` → `/pull-request` manually).
-- **default (bug)**: one HITL gate inside `/dev:apply` Step 0-bug (plan confirmation). After that, runs end-to-end like `--auto`. To skip the plan-confirm gate too, pass `--auto`.
+- **default (bug / feature-direct)**: one HITL gate inside `/dev:apply` Step 0-bug (plan confirmation). After that, runs end-to-end like `--auto`. To skip the plan-confirm gate too, pass `--auto`.
 
 ## Failure recovery
 

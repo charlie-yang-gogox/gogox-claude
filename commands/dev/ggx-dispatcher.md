@@ -913,7 +913,8 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
      the dev walker would mis-walk it and its `done` could never fire.
    - lane ∈ {`fresh-dev`, `recovery-dev`} without the flag →
      `infer_dev_stage` → emits one of `start` / `figma` / `align` /
-     `apply` / `verify` / `review` / `ship` / `done`. (Bug-mode tickets
+     `apply` / `verify` / `review` / `ship` / `done`. (Direct-mode tickets
+     — bug, and feature-direct on no-OpenSpec repos per GGC-17 —
      go through `infer_bug_stage_safe` from the same dispatch, which
      emits a subset of the same vocabulary; treat them uniformly.)
 3. **Query PR state** — resolve by HEAD BRANCH, not ticket id. The worktree

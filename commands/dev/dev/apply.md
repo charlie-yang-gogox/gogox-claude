@@ -36,8 +36,9 @@ WT=$(git rev-parse --show-toplevel)
 TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
-# Pipeline mode: bug vs feature. Resolved by pipe_mode (lib/dev-mode.sh);
-# .dev/mode.md is written by /dev:start --bug.
+# Pipeline mode: bug / feature-direct / feature. Resolved by pipe_mode
+# (lib/dev-mode.sh); .dev/mode.md is written by /dev:start --bug;
+# feature-direct is detected dynamically (no openspec/ dir — GGC-17).
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
 
@@ -53,11 +54,11 @@ fi
 
 **Mode dispatch**:
 
-- `PIPE_MODE == bug` → jump to **Step 0-bug** below. Steps 1–5 (OpenSpec artifact prep + apply) are SKIPPED entirely. There is no `change_name`, no `tasks.md`, no `/opsx:*` invocation.
+- `PIPE_MODE == bug` or `PIPE_MODE == feature-direct` → jump to **Step 0-bug** (the direct-edit branch) below. Steps 1–5 (OpenSpec artifact prep + apply) are SKIPPED entirely. There is no `change_name`, no `tasks.md`, no `/opsx:*` invocation. (`feature-direct` = feature work on a repo without OpenSpec — GGC-17; same flow as bug, feature semantics.)
 - `PIPE_MODE == feature` → continue with the OpenSpec precondition below, then Steps 1–5.
 
 ```bash
-# Feature mode only — bug mode does not need an OpenSpec change directory.
+# Feature (OpenSpec) mode only — direct modes do not need an OpenSpec change directory.
 N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
 [ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
 
@@ -75,11 +76,13 @@ Feature mode shares artifact prep (Steps 1–2). It diverges at Step 3 (HITL gat
 
 ---
 
-## Step 0-bug: Agent-autonomous bug fix (bug mode only)
+## Step 0-bug: Agent-autonomous direct edit (bug + feature-direct modes)
 
-_Run when `PIPE_MODE == bug`. This entire section REPLACES Steps 1–5. After it finishes, return to `/dev:ff` (same "in-loop signal" contract as feature mode)._
+_Run when `PIPE_MODE == bug` or `PIPE_MODE == feature-direct`. This entire section REPLACES Steps 1–5. After it finishes, return to `/dev:ff` (same "in-loop signal" contract as feature mode)._
 
 The agent is responsible for the **full fix loop** — investigate, hypothesize, implement, commit. The user is NOT asked to find root cause, write code, or pick files. In `--auto` mode there is no HITL at all. In `default` mode there is ONE HITL gate to confirm the agent's fix plan (not to delegate work back to the human).
+
+**`feature-direct` reading (GGC-17)**: everywhere this section says "fix" / "bug", read "the ticket's requested change" — Step 0-bug.2's investigation targets *where the change lands and how* rather than a defect's root cause; everything else (autonomy, HITL shape, commit, `.dev/apply-result.md` contract) is identical. Commit semantics follow the lane: `/commit` derives the type from the diff (`feat:` / `docs:` for feature-direct work, `fix:` for bugs).
 
 ### Step 0-bug.1: Refresh ticket context
 

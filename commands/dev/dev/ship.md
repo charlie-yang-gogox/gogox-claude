@@ -1,6 +1,6 @@
 ---
 name: ship
-description: "Stage 8 — archive OpenSpec changes (feature mode only), commit the archive, push the branch, open a draft PR, transition the ticket to In Review (Linear or Jira), write the final session report, and post a summary comment to the tracker. Auto mode (or bug mode). Supports both Linear and Jira via the abstraction documented in `_ticket-lib.md`."
+description: "Stage 8 — archive OpenSpec changes (feature mode only), commit the archive, push the branch, open a draft PR, transition the ticket to In Review (Linear or Jira), write the final session report, and post a summary comment to the tracker. Auto mode (or a direct mode: bug / feature-direct). Supports both Linear and Jira via the abstraction documented in `_ticket-lib.md`."
 ---
 
 # `/dev:ship`
@@ -27,13 +27,13 @@ WT=$(git rev-parse --show-toplevel)
 TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
-# Pipeline mode: bug vs feature. Resolved by pipe_mode (lib/dev-mode.sh).
-# See /dev:start --bug and /dev:verify Step 0.
+# Pipeline mode: bug / feature-direct / feature. Resolved by pipe_mode
+# (lib/dev-mode.sh). See /dev:start --bug and /dev:verify Step 0.
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
 
-if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" != "bug" ]; then
-  echo "FAIL: /dev:ship requires --auto (or bug mode via /bug:ff)." >&2
+if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" = "feature" ]; then
+  echo "FAIL: /dev:ship requires --auto (or a direct mode: bug via /bug:ff, feature-direct on no-OpenSpec repos)." >&2
   exit 1
 fi
 [ -n "$TICKET_ID" ] || { echo "FAIL: cannot derive ticket_id from branch name" >&2; exit 1; }
@@ -42,8 +42,8 @@ fi
 [ -f "claude-reports/$TICKET_ID/code-review.md" ] && ! grep -qiE '^critical:' "claude-reports/$TICKET_ID/code-review.md" \
   || { echo "FAIL: code-review.md missing or has critical findings. Run /dev:review first." >&2; exit 1; }
 
-if [ "$PIPE_MODE" = "bug" ]; then
-  N=""   # bug mode: no openspec change to archive
+if [ "$PIPE_MODE" != "feature" ]; then
+  N=""   # direct modes (bug / feature-direct): no openspec change to archive
 else
   N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
   [ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
@@ -52,7 +52,7 @@ fi
 
 ## Step 1: Archive OpenSpec changes (feature mode only)
 
-In bug mode (`PIPE_MODE=bug`), there is no OpenSpec change to archive — skip this step entirely and proceed to Step 2.
+In direct modes (`PIPE_MODE` = `bug` or `feature-direct`), there is no OpenSpec change to archive — skip this step entirely and proceed to Step 2.
 
 In feature mode:
 
@@ -136,7 +136,7 @@ Body (identical for both trackers):
 No state mutation. The done markers are:
 
 - Feature mode: (1) `openspec/changes/archive/$N/` exists, (2) the PR for the worktree branch is `OPEN` — resolve by head branch (`gh pr list --head "$(git branch --show-current)" --state all --json state -q '.[0].state'`), NOT `gh pr view $TICKET_ID` which fails when the branch is `<prefix>/<TICKET-ID>`, (3) tracker status is `In Review` (Linear) or matched transition applied (Jira), (4) `dispatcher-dev-in-flight` label absent on the ticket (Linear only — per Step 3 + `commands/dev/ggx-dispatcher.md` Plan X; Jira tickets do not have this label).
-- Bug mode: (2)–(4) above. Step (1) is intentionally absent — there is no OpenSpec change in bug mode, so the walker derives `done` from PR-open + tracker `In Review` alone.
+- Direct modes (bug / feature-direct): (2)–(4) above. Step (1) is intentionally absent — there is no OpenSpec change in a direct mode, so the walker derives `done` from PR-open + tracker `In Review` alone.
 
 Print: `Pipeline complete. PR: <PR URL>.`
 

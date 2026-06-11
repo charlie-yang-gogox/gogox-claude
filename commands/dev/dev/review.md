@@ -24,13 +24,13 @@ WT=$(git rev-parse --show-toplevel)
 TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
-# Pipeline mode: bug vs feature. Resolved by pipe_mode (lib/dev-mode.sh).
+# Pipeline mode: bug / feature-direct / feature. Resolved by pipe_mode (lib/dev-mode.sh).
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
 BASE_REF=$(trunk_ref)   # origin/<default branch> — trunk (flutter) or main (gogox-claude)
 
-if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" != "bug" ]; then
-  echo "FAIL: /dev:review requires --auto (or bug mode via /bug:ff)." >&2
+if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" = "feature" ]; then
+  echo "FAIL: /dev:review requires --auto (or a direct mode: bug via /bug:ff, feature-direct on no-OpenSpec repos)." >&2
   exit 1
 fi
 [ -f "$WT/.dev/verify-pass.md" ] && grep -q '^Status: CLEAR' "$WT/.dev/verify-pass.md" \
