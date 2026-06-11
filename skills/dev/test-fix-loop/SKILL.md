@@ -25,7 +25,8 @@ description: >
 > - **Report-and-skip, never disable.** A failure that needs a production change is recorded as `REQUIRES-HUMAN` and excluded from the pass target. The loop does **not** `@Ignore`/`skip`/comment-out/delete the test to make the suite "green" — that hides signal and is forbidden.
 > - **Snapshot/golden updates are production-behavior-neutral only.** Regenerating a golden is allowed *only* when the new output reflects an intended, already-merged production change the test simply hasn't caught up to. If the golden diff reveals a real production regression, that is `REQUIRES-HUMAN`.
 > - **Isolated worktree.** All work happens in a dedicated git worktree created at the start (Step 0.5). The skill never mutates the caller's current checkout.
-> - **Commit per test fix, never push.** Each accepted test-side fix is committed in the worktree (one commit per fixed test, see Step 5). The skill **never** pushes — the branch stays local for a human to review/push. Pushing is the caller's job.
+> - **Commit per test fix, then push at the end.** Each accepted test-side fix is committed in the worktree (one commit per fixed test, see Step 5). When the loop reaches a terminal state with at least one commit, it **pushes** the worktree branch once (Step 8) so the work is shareable and any open PR can be commented on. Push happens once, at the terminal state — not per-commit inside the loop.
+> - **REQUIRES-HUMAN ⇒ publish the evidence.** When the loop ends in a state that still needs a human (the 🟡 / 🔴 terminal states in §7), it uploads the run artifacts — including the Maestro output for e2e runs — to GCS, then, **only if a PR exists** for the branch, posts the terminal report plus the GCS link as a PR comment (Step 8). No PR → the report stays local and the GCS link is printed for the user instead.
 
 ## Inputs
 
@@ -76,13 +77,14 @@ This is the contract the unattended loop runs against. Resolve it **once** and r
    - **android**: read the JUnit XML / HTML under each module's `build/reports/tests/` and `build/test-results/`; each `<testcase>` with a `<failure>` gives class, method, and message.
    - **ios**: parse the `.xcresult` bundle (`xcrun xcresulttool`) or the xcodebuild log for `error:`/failing assertions; map to test class/method.
    - **node**: prefer a machine-readable reporter (`--reporter json` / `--json`) when the runner supports it; else parse the failure block from stdout.
+   - **e2e (Maestro)**: run `maestro test --format junit --output .dev/test-fix-loop/maestro/` so the run emits a JUnit report plus its recordings/screenshots into a known directory; parse the JUnit `<testcase>`/`<failure>` entries — each failing flow gives the flow file, the failing step/assertion, and the message. Keep the `--output` directory: it is the **Maestro artifact bundle** uploaded to GCS in Step 8.
 4. **Record the contract** to the run journal so the loop (and any later reader) knows exactly what is being executed and how results are read:
 
 ```bash
 mkdir -p .dev/test-fix-loop
 ```
 
-   Write `.dev/test-fix-loop/contract.md` with: the worktree path + branch (from Step 0.5), resolved `{platform}` + `{product}`, the **type of test** (the `--type` argument, or the resolved default when omitted — one of `unit` / `widget` / `integration` / `e2e` / `all`), the exact run command (the runner/target chosen for that type), the result-extraction recipe, the scope (arg / `--incremental` / full), and the production-vs-test path boundary from Step 4. If any of these could not be resolved, abort here and tell the user what was missing.
+   Write `.dev/test-fix-loop/contract.md` with: the worktree path + branch (from Step 0.5), resolved `{platform}` + `{product}`, the **type of test** (the `--type` argument, or the resolved default when omitted — one of `unit` / `widget` / `integration` / `e2e` / `all`), the exact run command (the runner/target chosen for that type), the result-extraction recipe, the scope (arg / `--incremental` / full), the production-vs-test path boundary from Step 4, and the publish targets from Step 8 (the GCS artifact prefix and, for e2e, the Maestro `--output` directory). If any of these could not be resolved, abort here and tell the user what was missing.
 
 ### 2. Establish scope and the production/test boundary
 
@@ -139,7 +141,7 @@ For each `TEST-FIXABLE` failure, one at a time:
    git commit -m "test: fix <test name> — <one-line why>"
    ```
 
-   Never push. Commits accumulate locally on the worktree branch.
+   Do not push inside the loop. Commits accumulate on the worktree branch; the single push happens once at the terminal state (Step 8).
 5. Record each edit + commit sha (file, what changed, why) into `.dev/test-fix-loop/fixes-<iter>.md`.
 
 If there were **zero** `TEST-FIXABLE` failures this iteration (every failure is `REQUIRES-HUMAN`), do not edit or commit anything → go to §7 (terminal: only-human-input-remains).
@@ -161,7 +163,52 @@ Write `.dev/test-fix-loop/report.md` and print a summary. There are exactly thre
 2. **🟡 Only-human-input-remains** — no `TEST-FIXABLE` failures left; the suite still has `REQUIRES-HUMAN` reds. Report the green delta + fix commits achieved, plus a table of skipped failures with their rationale and what a human must decide/fix in production.
 3. **🔴 Aborted** — a §6 guard fired (max-iters, no-progress, or non-test run failure). Report the guard that fired, the current failure list, the fix commits made so far, and the captured run log path.
 
-Every report **must** list the worktree branch's commits since trunk and the cumulative `git diff --name-only $(git merge-base HEAD trunk)..HEAD` so the reader can verify, at a glance, that the branch (a) is unpushed and (b) touched only test-side paths. Flag loudly if any production path appears.
+Every report **must** list the worktree branch's commits since trunk and the cumulative `git diff --name-only $(git merge-base HEAD trunk)..HEAD` so the reader can verify, at a glance, that the branch (a) was pushed (or, if the push failed / there is no remote, is local-only — say which, per Step 8) and (b) touched only test-side paths. Flag loudly if any production path appears.
+
+### 8. Publish — push, and (on REQUIRES-HUMAN states) upload artifacts + comment on the PR
+
+Runs once, after §7 settles. Skip the whole step if the loop made **zero** commits (nothing to publish) — note "nothing to push" in the report and stop.
+
+1. **Push the branch.** When at least one fix was committed:
+
+   ```bash
+   git push -u origin "$(git rev-parse --abbrev-ref HEAD)"
+   ```
+
+   If the push fails (no remote, auth, non-fast-forward), do **not** abort — record the failure in `report.md` and keep the commits local. The branch is still on disk for a human.
+
+2. **Decide whether to publish evidence.** Only the human-input terminal states do this:
+   - ✅ **All green** → push only (step 1). No upload, no comment — there is nothing for a human to decide.
+   - 🟡 **Only-human-input-remains** / 🔴 **Aborted** → continue to steps 3–4.
+
+3. **Upload the run artifacts to GCS.** Upload the whole `.dev/test-fix-loop/` directory (run logs, failure lists, fix lists, `report.md`) **and**, for e2e runs, the Maestro `--output` bundle (recordings / screenshots / JUnit from Step 1.3) to a per-run prefix:
+
+   ```bash
+   BUCKET="${GOGOX_TEST_ARTIFACTS_BUCKET:-gs://gogox-test-artifacts}"
+   REPO="$(basename "$(git rev-parse --show-toplevel)")"
+   BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+   STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+   GCS_PREFIX="$BUCKET/test-fix-loop/$REPO/$BRANCH/$STAMP"
+   gsutil -m cp -r .dev/test-fix-loop "$GCS_PREFIX/" 2>&1 | tail -5
+   ```
+
+   If `gsutil` is unavailable or the upload fails, record it in `report.md` and skip the link (do **not** abort) — the artifacts remain under `.dev/test-fix-loop/` for local inspection.
+
+4. **Comment on the PR — only if one exists.** Resolve the PR from the current branch:
+
+   ```bash
+   gh pr view --json number,url 2>/dev/null
+   ```
+
+   - **PR exists** → post the §7 terminal report plus the GCS link as a single comment:
+
+     ```bash
+     gh pr comment "$PR_NUMBER" --body "$(printf '## test-fix-loop — %s\n\n%s\n\n**Run artifacts (GCS):** %s\n' "$TERMINAL_STATE" "$REPORT_SUMMARY" "$GCS_PREFIX")"
+     ```
+
+   - **No PR** → do **not** create one. Print the same summary + GCS link to the user and note in `report.md` that no PR was found, so the GCS link is the hand-off.
+
+   If `gh pr comment` fails, log the error, leave the report + GCS link in place, and do **not** abort.
 
 ## Rules
 
@@ -170,7 +217,8 @@ Every report **must** list the worktree branch's commits since trunk and the cum
 - Minimal edits only — fix the failing test, do not refactor unrelated test code.
 - Every iteration's run log, failure list, and fix list is persisted under `.dev/test-fix-loop/` so an unattended run is fully auditable after the fact.
 - All work happens in the Step 0.5 worktree — never in the caller's checkout.
-- Commit per fixed test (Step 5); **never push**. The branch is left local for human review. Each commit must contain only test-side paths.
+- Commit per fixed test (Step 5); push once at the terminal state (Step 8) when the loop made at least one commit. Each commit must contain only test-side paths.
+- Publishing evidence (GCS upload + PR comment) happens **only** on the human-input terminal states (🟡 / 🔴), and the PR comment is posted **only if** `gh pr view` resolves a PR for the branch — never create a PR. Every publish step is best-effort: a failure is recorded in the report, never aborts the run.
 - If the project has no resolvable test command, abort in Step 1 — do not invent one.
 
 ## Gogox Context
@@ -179,10 +227,12 @@ Every report **must** list the worktree branch's commits since trunk and the cum
 - Supported platforms today: `flutter`, `android`, `ios`, `node`. Flutter's profile `test_cmd` is `/check-test --all --fix` — this skill uses only its *runner* (`flutter test`), not its production-touching `--fix`.
 - Result-extraction mechanics are shared with `/check-test` Step 5 — keep the two in sync if a runner's output format changes.
 - Runtime artifacts go to `.dev/test-fix-loop/` (the `.dev/` convention used across the dev pipeline; gitignored in target repos).
+- e2e on mobile runs via **Maestro**; `maestro test --format junit --output .dev/test-fix-loop/maestro/` yields both a parseable JUnit report (Step 1.3) and the recordings/screenshots bundle uploaded to GCS in Step 8.
+- GCS upload uses `gsutil`; the bucket is `${GOGOX_TEST_ARTIFACTS_BUCKET:-gs://gogox-test-artifacts}`, with a per-run prefix `…/test-fix-loop/<repo>/<branch>/<utc-stamp>/`. PR comments are posted with `gh pr comment` only when `gh pr view` resolves a PR for the branch (same pattern as `/code-review` and `/resolve-pr-comments`).
 
 ## Output
 
-A local (unpushed) worktree branch with one commit per fixed test — all touching test-side paths only — plus `.dev/test-fix-loop/report.md` summarizing one of the three terminal states, the fix commits applied, and the skipped `REQUIRES-HUMAN` failures with rationale.
+A **pushed** worktree branch with one commit per fixed test — all touching test-side paths only — plus `.dev/test-fix-loop/report.md` summarizing one of the three terminal states, the fix commits applied, and the skipped `REQUIRES-HUMAN` failures with rationale. On the human-input terminal states (🟡 / 🔴) the run artifacts (including any Maestro output) are uploaded to GCS, and — only if a PR exists for the branch — the report + GCS link are posted as a PR comment.
 
 ## How this was used last
 
@@ -190,3 +240,4 @@ A local (unpushed) worktree branch with one commit per fixed test — all touchi
 > Format: `YYYY-MM-DD by @username — one-line context`
 
 - 2026-06-08 by @peter.wong — initial authoring, not yet run on a real suite
+- 2026-06-11 by @peter.wong — dropped never-push; added Step 8 publish (push at terminal state + Maestro/run-artifact GCS upload + PR comment, PR-only) for REQUIRES-HUMAN states (CAF-699); still not run on a real suite
