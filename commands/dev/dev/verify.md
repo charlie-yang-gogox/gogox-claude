@@ -137,21 +137,141 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
 
 - **`{platform}` ∈ {`flutter`, `android`, `ios`} (or any non-`prompt` /
   unresolved platform)** — real code, large diffs, weaker deterministic gates:
-  **NO inline fallback.** An inline verify would be the implementer auditing its
-  own code, collapsing the decorrelation this stage exists to provide (the
-  self-audit asymmetry). Spawn failure stays a **BLOCKED hard-fail** (an absent
-  report is itself the BLOCKED signal — do NOT fall back to "trust the
-  implementer"); the dispatcher's §6.2 fallback handles it from there. The
-  decorrelation-preserving path for code platforms is the R4 `claude -p`
-  headless auditor (a separate process, not a nested spawn) — documented in
-  `ARCHITECTURE.md` R4, not yet wired. Inlining is opt-in per platform, never
-  the silent default.
+  **NO inline fallback** — an inline verify would be the implementer auditing
+  its own code, collapsing the decorrelation this stage exists to provide (the
+  self-audit asymmetry). Instead, run the **R4 headless auditor** (GGC-19): a
+  separate-OS-process `claude -p` is naturally level-1, so the nested-spawn
+  ban does not apply and the auditor keeps a genuinely separate context — both
+  decorrelation properties preserved (`ARCHITECTURE.md` R4). Inlining stays
+  opt-in per platform (`prompt` only, above), never the silent default.
+
+  **Pre-flight — binary gate (no-regression path).** If the `claude` CLI is
+  missing/unauthenticated, or the verify-agent contract file cannot be
+  resolved, do NOT attempt the headless run and do NOT write any report:
+  spawn failure stays today's **BLOCKED hard-fail** (an absent report is
+  itself the BLOCKED signal — do NOT fall back to "trust the implementer");
+  the dispatcher's §6.2 fallback handles it from there. This is the expected
+  degradation on the cloud ggx-dev-agent lane, which may lack an
+  authenticated `claude` binary — the headless path targets the local
+  dispatcher lane.
+
+  ```bash
+  # --- R4 headless auditor (GGC-19) — code platforms only --------------------
+  # Contract file: installed flat by install.sh; repo-local fallback covers
+  # dev checkouts of gogox-claude itself.
+  R4_CONTRACT="$HOME/.claude/agents/verify-agent.md"
+  [ -f "$R4_CONTRACT" ] || R4_CONTRACT="$WT/agents/dev/verify-agent.md"
+
+  if ! command -v claude >/dev/null 2>&1 || [ ! -f "$R4_CONTRACT" ]; then
+    echo "FAIL: verify-agent spawn unavailable AND R4 headless auditor cannot run" >&2
+    echo "      (claude binary or verify-agent contract missing). BLOCKED hard-fail —" >&2
+    echo "      absent report is the BLOCKED signal; dispatcher §6.2 takes over." >&2
+    exit 1
+  fi
+
+  # 1. Assemble the audit prompt into a temp file: the full verify-agent
+  #    contract + the same three inputs Step 2 passes + the strict stdout
+  #    contract the wrapper parses mechanically below.
+  R4_DIR=$(mktemp -d "${TMPDIR:-/tmp}/r4-verify.XXXXXX")
+  R4_PROMPT="$R4_DIR/prompt.md"
+  R4_OUT="$R4_DIR/stdout.txt"
+  {
+    cat "$R4_CONTRACT"
+    printf '\n---\n\n## Run inputs (from /dev:verify Step 2)\n\n'
+    printf -- '- base: %s\n' "$BASE_REF"
+    if [ -n "$N" ]; then printf -- '- change name: %s\n' "$N"; \
+    else printf -- '- change name: (bug-mode: no openspec change)\n'; fi
+    if [ -n "$FIGMA_RAW" ]; then printf -- '- figma raw directory: %s\n' "$FIGMA_RAW"; \
+    else printf -- '- figma raw directory: (none)\n'; fi
+    printf '\n## Output contract (headless run — parsed mechanically)\n\n'
+    printf 'Work from the current directory (%s). Write .dev/verify-pass.md per the\n' "$WT"
+    printf 'contract above. Your FINAL message MUST have, as its FIRST line, exactly\n'
+    printf '`Status: CLEAR` or `Status: BLOCKED` and nothing else on that line.\n'
+  } > "$R4_PROMPT"
+
+  # 2. Headless spawn — separate OS process, naturally level-1 (R4). The
+  #    auditor contract is filesystem-only (Bash/Glob/Grep/Read/Write), so
+  #    claude -p's no-MCP limitation is irrelevant. Step 2b is only reached
+  #    when no report exists, so the rm below can only clear stale partials.
+  #    `exec` is load-bearing: it makes the backgrounded subshell BECOME the
+  #    claude process, so $! is the real auditor PID — without it the
+  #    watchdog's kill -9 would only reap the subshell wrapper, orphaning a
+  #    live auditor that could overwrite the fail-closed BLOCKED report with
+  #    CLEAR after the bound elapsed (a silent-CLEAR race).
+  rm -f "$WT/.dev/verify-pass.md"
+  ( cd "$WT" && exec claude -p \
+      --permission-mode bypassPermissions \
+      --model sonnet \
+      < "$R4_PROMPT" > "$R4_OUT" 2>"$R4_DIR/stderr.txt" ) &
+  R4_PID=$!
+
+  # 3. Counter-bounded watchdog — no `timeout` (absent on stock macOS; the
+  #    GGC-2 / F1 rule). Bound = R4_MAX_SECS wall clock, then hard-kill.
+  R4_MAX_SECS=900
+  R4_TIMED_OUT=0
+  i=0
+  while kill -0 "$R4_PID" 2>/dev/null; do
+    if [ "$i" -ge "$R4_MAX_SECS" ]; then
+      kill -9 "$R4_PID" 2>/dev/null
+      R4_TIMED_OUT=1
+      break
+    fi
+    sleep 5; i=$((i + 5))
+  done
+  wait "$R4_PID" 2>/dev/null
+
+  # 4. Strict first-line parse — fail-closed. CLEAR requires BOTH the stdout
+  #    first line `Status: CLEAR` AND a `Status: CLEAR` report on disk; every
+  #    other shape (timeout, hard-kill, parse failure, missing or
+  #    contradictory report) defaults to BLOCKED. Never silent CLEAR.
+  R4_FIRST=$(head -n 1 "$R4_OUT" 2>/dev/null)
+  R4_STATUS=BLOCKED
+  R4_REASON=""
+  if [ "$R4_TIMED_OUT" = "1" ]; then
+    R4_REASON="headless auditor exceeded ${R4_MAX_SECS}s wall clock — hard-killed"
+  elif [ "$R4_FIRST" = "Status: CLEAR" ] \
+       && grep -q '^Status: CLEAR' "$WT/.dev/verify-pass.md" 2>/dev/null; then
+    R4_STATUS=CLEAR
+  elif [ "$R4_FIRST" = "Status: BLOCKED" ]; then
+    R4_REASON="auditor returned BLOCKED"
+  else
+    R4_REASON="unparsable first line ('${R4_FIRST:-empty}') or stdout/report contradiction"
+  fi
+
+  # 5. Provenance — wrapper-injected on line 2 of verify-pass.md (never
+  #    trusted to the auditor's memory; legal — downstream parsers read only
+  #    the Status: line). If the report is missing or contradicts the
+  #    fail-closed verdict, atomic-write a BLOCKED report so the walker has a
+  #    deterministic marker.
+  R4_PROV='Provenance: headless-r4-auditor — decorrelation PRESERVED via separate-process `claude -p --model sonnet` (Agent spawn unavailable in this session; see ARCHITECTURE.md R4 / GGC-19).'
+  if [ "$R4_STATUS" = "BLOCKED" ] \
+     && ! grep -q '^Status: BLOCKED' "$WT/.dev/verify-pass.md" 2>/dev/null; then
+    {
+      printf '# Verify pass — %s (R4 headless, fail-closed)\n' \
+        "${N:-$(git -C "$WT" rev-parse --abbrev-ref HEAD)}"
+      printf '%s\n\n' "$R4_PROV"
+      printf '## Findings\n- R4 fail-closed: %s\n\n' "$R4_REASON"
+      printf 'Status: BLOCKED\n'
+    } > "$WT/.dev/verify-pass.md.tmp"
+    mv "$WT/.dev/verify-pass.md.tmp" "$WT/.dev/verify-pass.md"
+  elif ! grep -qF 'Provenance: headless-r4-auditor' "$WT/.dev/verify-pass.md" 2>/dev/null; then
+    { head -n 1 "$WT/.dev/verify-pass.md"; printf '%s\n' "$R4_PROV"; \
+      tail -n +2 "$WT/.dev/verify-pass.md"; } > "$WT/.dev/verify-pass.md.tmp"
+    mv "$WT/.dev/verify-pass.md.tmp" "$WT/.dev/verify-pass.md"
+  fi
+  rm -rf "$R4_DIR"
+  # ----------------------------------------------------------------------------
+  ```
+
+  `Status: CLEAR` → proceed to Step 3. `Status: BLOCKED` → Step 2a, whose
+  re-audit re-runs this same headless path with the same inputs (the
+  provenance line is re-injected by the wrapper on every pass).
 
 ### Step 2a: BLOCKED recovery sequence (executed once)
 
 1. For each finding in `.dev/verify-pass.md`, edit the affected files to address it.
 2. Re-run `/check-test --fix` (or `{test_cmd}`) to confirm fixes did not regress tests.
-3. Re-run the auditor with the same inputs — re-spawn `verify-agent`, or, if the spawn was unavailable and Step 2b's inline path produced the report, re-run that same inline audit (preserving its `Provenance:` banner).
+3. Re-run the auditor with the same inputs — re-spawn `verify-agent`; or, if the spawn was unavailable and Step 2b's inline path (prompt platform) produced the report, re-run that same inline audit (preserving its `Provenance:` banner); or, if Step 2b's R4 headless path (code platforms) produced it, re-run the same `claude -p` headless audit (the wrapper re-injects the `headless-r4-auditor` provenance line).
 4. Read `.dev/verify-pass.md` again:
    - `Status: CLEAR` → proceed to Step 3.
    - `Status: BLOCKED` (still) → ABORT. STOP. The walker will see `Status: BLOCKED` next iteration and refuse to advance until the report is fixed (or `/dev:ff --from verify` is used to discard and re-run).
