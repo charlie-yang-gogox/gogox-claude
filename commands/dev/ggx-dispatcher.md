@@ -234,6 +234,50 @@ labeling still works — the analyzer is additive, not mandatory.
    echo "Pre-flight: $PR_COUNT open PRs authored by me (informational only)."
    ```
 
+7. **Permission pre-flight (P2) — assert BEFORE any ticket is touched.**
+   `--workflow` agents run at `acceptEdits`, inherit the session tool
+   allowlist, and have **no way to answer a mid-run permission prompt**, so a
+   required `git`/`gh`/`openspec`/Linear-MCP call that is not allowlisted
+   **silently stalls the whole run**. The §4.1 race-lock happens *after*
+   pre-flight, so a stall discovered later would already have stranded
+   `dispatcher-*-in-flight` residue on locked tickets. The coverage check
+   therefore lives HERE — a miss means **zero tickets touched** (relocated
+   from the old §5.2 step 3, which ran *after* the roster was built).
+
+   Scope the check to the `permissions.allow` array, **merged across the
+   settings overlay chain** — a whole-file grep false-passes on `deny`
+   entries, and the effective allowlist is the union of the user-global and
+   project layers:
+   ```bash
+   # Merge permissions.allow from every settings layer that applies to THIS
+   # repo (user-global first, then project overlays). Missing files and
+   # malformed JSON contribute nothing — tolerated, never fatal.
+   ALLOW=$(
+     for f in "$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json" \
+              ".claude/settings.json" ".claude/settings.local.json"; do
+       [ -f "$f" ] && jq -r '.permissions.allow[]?' "$f" 2>/dev/null
+     done
+   )
+   # Linear MCP must be covered BOTH ways (claude.ai connector AND the
+   # linear-server fallback — a background worker cannot fall back
+   # interactively), and the cover must extend to save_issue *creation*: the
+   # GGC-23 /_file-followup outcome-filer writes NEW issues, so a read-only
+   # allowlist (…__list_issues only) would stall it. A wildcard (…__*) covers
+   # it; otherwise the exact …__save_issue entry must be present.
+   linear_write_covered() {
+     printf '%s\n' "$ALLOW" | grep -qE \
+       'mcp__(claude_ai_Linear|linear-server)__(\*|save_issue)'
+   }
+   ```
+   Decision (the ONLY P2 gate — §5.2 assumes coverage was asserted here):
+   - **`--workflow` set → hard-abort** when `linear_write_covered` is false.
+     Release the lock, leave every label untouched (nothing was dispatched):
+     > `abort "ABORT (P2): permissions.allow does not cover Linear writes — need mcp__claude_ai_Linear__* (or …__save_issue) AND the mcp__linear-server__* fallback. A --workflow worker would stall silently on its first Linear write. Add them to ~/.claude/settings.json and re-invoke. No tickets were locked."`
+   - **Interactive (no `--workflow`) → WARN-then-confirm.** The live session
+     can answer a permission prompt, so a miss is recoverable: print the same
+     gap as a `WARN (P2): …` line and proceed only on explicit human
+     go-ahead. Never hard-abort the interactive path on this check.
+
 ---
 
 ## Step 2: Find tickets
@@ -649,18 +693,12 @@ Steps:
    shell `date` call — NOT from inside the script (the script's clock is
    frozen for resume determinism).
 
-3. **Permission pre-flight (P2), then launch.** BEFORE invoking the tool,
-   assert the allowlist covers the Linear MCP **both ways** — a workflow agent
-   runs at `acceptEdits` and **cannot answer a mid-run prompt**, so a missing
-   Linear permission is a *silent stall*, not a surfaced error:
-   ```bash
-   grep -qE 'mcp__claude_ai_Linear__|mcp__linear-server__' ~/.claude/settings.json \
-     || { echo "ABORT: neither Linear MCP prefix is in ~/.claude/settings.json permissions.allow — a --workflow worker will stall silently on its first Linear write"; exit 1; }
-   ```
-   If neither prefix is present, **abort loudly and do NOT launch** (release the
-   lock, leave labels untouched — nothing was dispatched). Then **print the
-   §4.3 table** (same as §5.3 — the table is the review) and **in the same
-   turn** invoke the `Workflow` tool:
+3. **Launch (P2 coverage already asserted in Step 1.7).** The Linear-MCP
+   allowlist coverage gate now runs in **Step 1 pre-flight, item 7** — BEFORE
+   any ticket is locked — so by the time control reaches here a `--workflow`
+   miss has already hard-aborted (nothing dispatched, no labels touched). Do
+   NOT re-grep here. **Print the §4.3 table** (same as §5.3 — the table is the
+   review) and **in the same turn** invoke the `Workflow` tool:
    - `scriptPath`: `$HOME/.claude/workflows/ggx-dispatch.workflow.js`
    - `args`: the `DISPATCH_ROSTER_JSON` value. Pass it as a JSON array — but
      note that in THIS harness the `Workflow` tool delivers `args` to the
