@@ -193,8 +193,13 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
   #    auditor contract is filesystem-only (Bash/Glob/Grep/Read/Write), so
   #    claude -p's no-MCP limitation is irrelevant. Step 2b is only reached
   #    when no report exists, so the rm below can only clear stale partials.
+  #    `exec` is load-bearing: it makes the backgrounded subshell BECOME the
+  #    claude process, so $! is the real auditor PID — without it the
+  #    watchdog's kill -9 would only reap the subshell wrapper, orphaning a
+  #    live auditor that could overwrite the fail-closed BLOCKED report with
+  #    CLEAR after the bound elapsed (a silent-CLEAR race).
   rm -f "$WT/.dev/verify-pass.md"
-  ( cd "$WT" && claude -p \
+  ( cd "$WT" && exec claude -p \
       --permission-mode bypassPermissions \
       --model sonnet \
       < "$R4_PROMPT" > "$R4_OUT" 2>"$R4_DIR/stderr.txt" ) &
