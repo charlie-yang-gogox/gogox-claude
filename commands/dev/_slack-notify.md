@@ -88,8 +88,6 @@ lines that apply this wake):
 <pr#> <url> ci-red check=<check-name> sha=<short-sha> self-pushed title="<pr-title>"
 <pr#> <url> resolver-needs-human reason=<conflict|tests-failed|worktree-dirty|comment-fix-failed-tests|push-failed> title="<pr-title>"
 <pr#> <url> resolver-done rebased=<yes|no> fixed=<n> replied=<n> title="<pr-title>"
-<pr#> <url> review-posted critical=<n> improvements=<n> minor=<n> title="<pr-title>"
-<pr#> <url> review-capped cycles=<n> title="<pr-title>"
 <ticket-id> <url> verdict-change from=<prev-verdict|none> to=<new-verdict> title="<title>"
 ```
 
@@ -98,12 +96,9 @@ lines that apply this wake):
   our own push)`); it never swallows the alert, only tags it.
 - `resolver-needs-human` `reason` is verbatim one of the resolver's five
   `needs-human:` exit reasons (`/ggx-pr-resolver` step 8).
-- `review-posted` counts are code-review's REAL buckets routed by
-  `/ggx-on-duty` Leg-2 step 3: `critical`+`improvements` were posted
-  inline, `minor` is digest-only (informational here); Positive is
-  dropped upstream and never reaches this skill.
-- `review-capped` means the SHA-chain convergence cap hit 2 — the loop
-  stopped posting comments and flagged the PR `needs-human` (E-2).
+- (`review-posted` / `review-capped` lines were removed with the on-duty
+  code-review leg — D6 REVERSED 2026-06-06, `plans/ggx-on-duty.md`; the
+  loop has no review emitter, so this skill defines no vocabulary for it.)
 - `verdict-change` reports only analyzer verdicts that CHANGED since the
   prior wake (`analyzer_verdicts` diff) — steady-state verdicts are not
   re-announced (the analyzer's own built-in digest already re-announces
@@ -190,8 +185,6 @@ pipeline's exit code.
 | on-duty `ci-red` + `self-pushed` | `CI-RED` | 🔴 | yes | `check <check> — rerun from our own push` |
 | on-duty `resolver-needs-human` | `RESOLVER` | 🛠️ | yes | per-reason: conflict → `resolve the rebase conflict on PR <pr#>`; tests-failed → `fix the failing tests in ../<ticket> (rebased cleanly, suite red)`; worktree-dirty → `clean ../<ticket> then re-run`; comment-fix-failed-tests → `fix the failing tests in ../<ticket> (worktree left dirty)`; push-failed → `someone pushed concurrently; next poll re-rebases` |
 | on-duty `resolver-done` | `RESOLVED` | 🟢 | no | — (FYI line, no action) |
-| on-duty `review-posted` | `REVIEW-POSTED` | 🔎 | no | — (FYI; the next poll's resolver auto-fixes inline findings) |
-| on-duty `review-capped` | `REVIEW-CAPPED` | 🟠 | yes | `review→fix loop hit cap; resolve PR <pr#> by hand` |
 | on-duty `verdict-change` | `VERDICT` | 🔁 | no | — (FYI; change since last wake) |
 | `batch-abort` | `BATCH-ABORT` | ⛔ | yes | `manually unlock <ids>` |
 
@@ -204,12 +197,11 @@ Notes:
   `missing classification`) stay `FAILED` in v1 — the reason text already
   says what to do. The full design taxonomy (incl. `CLASSIFY` ❓) lives in
   `plans/slack-notifier-design.md` §2 for future expansion.
-- On-duty `RESOLVED` / `REVIEW-POSTED` / `VERDICT` are deliberately
-  `#needs-human: no` — they are FYI lines that close the loop's feedback
-  (a resolver pushed, the loop posted inline findings the next poll will
-  fix, an analyzer verdict flipped). They render in the info footer, not
-  the "Needs your action" block. `CI-RED`, `RESOLVER`, and
-  `REVIEW-CAPPED` are the only on-duty signals that demand a human.
+- On-duty `RESOLVED` / `VERDICT` are deliberately `#needs-human: no` —
+  they are FYI lines that close the loop's feedback (a resolver pushed,
+  an analyzer verdict flipped). They render in the info footer, not
+  the "Needs your action" block. `CI-RED` and `RESOLVER` are the only
+  on-duty signals that demand a human.
 
 ### Rendering — Block Kit (format v2, decided 2026-06-05)
 
@@ -258,7 +250,7 @@ blocks above, only the line vocabulary differs):
 3. `divider`.
 4. `section` (mrkdwn) — `*Needs your action (<n>)*` with the same
    **two-line item** format as the digest block, ordered CI-RED first,
-   then RESOLVER, then REVIEW-CAPPED (the only `#needs-human` on-duty
+   then RESOLVER (the only `#needs-human` on-duty
    signals). PR items use the PR url + `#<pr#>` as the link label:
 
    ```
@@ -268,12 +260,11 @@ blocks above, only the line vocabulary differs):
 
    `<summary>` is the raw signal's detail (red check + sha + `(self-pushed
    — rerun from our own push)` when tagged / the resolver `needs-human`
-   reason / the cap cycle count). Omit this whole block when nothing needs
+   reason). Omit this whole block when nothing needs
    action.
 5. Optional `section` (mrkdwn) — info footer, the FYI (`#needs-human: no`)
    lines, each one line, omit the footer entirely if none:
    - `Resolved: #<pr#> (rebased, <n> fixed)` per `resolver-done`.
-   - `Reviewed: #<pr#> (<critical> critical, <improvements> improvements posted inline; <minor> minor)` per `review-posted`.
    - `Verdict changes: <ticket-id> <prev>→<new>, …` per `verdict-change`.
    - `Digest also appended to .ggx-on-duty/digest.md` is NOT printed here
      — the durable fallback is a caller-side write (see Callers), not a
