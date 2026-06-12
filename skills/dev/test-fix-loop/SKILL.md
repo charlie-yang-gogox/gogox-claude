@@ -84,7 +84,7 @@ This is the contract the unattended loop runs against. Resolve it **once** and r
 mkdir -p .dev/test-fix-loop
 ```
 
-   Write `.dev/test-fix-loop/contract.md` with: the worktree path + branch (from Step 0.5), resolved `{platform}` + `{product}`, the **type of test** (the `--type` argument, or the resolved default when omitted — one of `unit` / `widget` / `integration` / `e2e` / `all`), the exact run command (the runner/target chosen for that type), the result-extraction recipe, the scope (arg / `--incremental` / full), the production-vs-test path boundary from Step 4, and the publish targets from Step 8 (the GCS artifact prefix and, for e2e, the Maestro `--output` directory). If any of these could not be resolved, abort here and tell the user what was missing.
+   Write `.dev/test-fix-loop/contract.md` with: the worktree path + branch (from Step 0.5), resolved `{platform}` + `{product}`, the **type of test** (the `--type` argument, or the resolved default when omitted — one of `unit` / `widget` / `integration` / `e2e` / `all`), the exact run command (the runner/target chosen for that type), the result-extraction recipe, the scope (arg / `--incremental` / full), the production-vs-test path boundary from Step 4, and the publish targets from Step 8 (the GCS bucket + object-key convention reused from the e2e runner, and, for e2e, the Maestro `--output` directory). If any of these could not be resolved, abort here and tell the user what was missing.
 
 ### 2. Establish scope and the production/test boundary
 
@@ -179,31 +179,28 @@ Runs once, after §7 settles. Skip the whole step if the loop made **zero** comm
 
 2. **Decide whether to publish evidence.** Only the human-input terminal states do this:
    - ✅ **All green** → push only (step 1). No upload, no comment — there is nothing for a human to decide.
-   - 🟡 **Only-human-input-remains** / 🔴 **Aborted** → continue to steps 3–4.
+   - 🟡 **Only-human-input-remains** / 🔴 **Aborted** → continue to steps 3–5.
 
-3. **Upload the run artifacts to GCS.** Upload the whole `.dev/test-fix-loop/` directory (run logs, failure lists, fix lists, `report.md`) **and**, for e2e runs, the Maestro `--output` bundle (recordings / screenshots / JUnit from Step 1.3) to a per-run prefix:
-
-   ```bash
-   BUCKET="${GOGOX_TEST_ARTIFACTS_BUCKET:-gs://gogox-test-artifacts}"
-   REPO="$(basename "$(git rev-parse --show-toplevel)")"
-   BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-   STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-   GCS_PREFIX="$BUCKET/test-fix-loop/$REPO/$BRANCH/$STAMP"
-   gsutil -m cp -r .dev/test-fix-loop "$GCS_PREFIX/" 2>&1 | tail -5
-   ```
-
-   If `gsutil` is unavailable or the upload fails, record it in `report.md` and skip the link (do **not** abort) — the artifacts remain under `.dev/test-fix-loop/` for local inspection.
-
-4. **Comment on the PR — only if one exists.** Resolve the PR from the current branch:
+3. **Resolve the PR** (needed for the GCS object key *and* the comment):
 
    ```bash
    gh pr view --json number,url 2>/dev/null
    ```
 
-   - **PR exists** → post the §7 terminal report plus the GCS link as a single comment:
+4. **Upload the run artifacts to GCS — reuse the e2e runner's upload path.** The flutter repo's `scripts/e2e_pr_runner.py` already owns this: `upload_to_gcs()` + `_artifact_blob_name()`. Do **not** invent a new bucket/layout — match it so all Maestro artifacts land in one place:
+   - **What to upload**: a single `.zip` of the Maestro debug-output dir (the `--output` bundle from Step 1.3 — recordings / screenshots / JUnit) together with `.dev/test-fix-loop/` (run logs, failure/fix lists, `report.md`), same as the e2e runner zips its debug-output dir.
+   - **Bucket**: `${GCS_BUCKET:-ggx-e2e-testresult}` (optional `${GCS_PROJECT}`), via Application Default Credentials. Objects inherit the bucket's lifecycle policy for TTL — never set per-object deletion.
+   - **Object key** (`_artifact_blob_name(repo, pr_number, sha)`): `<repo>/pr-<pr_number>/<short-sha>-<YYYYmmddTHHMMSS>.zip` — repo with `/`→`_`, short HEAD sha, local-time stamp. **No PR** (step 3 found none) → substitute `branch-<branch>` for the `pr-<pr_number>` segment.
+   - **How**: prefer invoking the e2e runner's helper (import `package_and_upload_artifacts` / `upload_to_gcs` from `scripts/e2e_pr_runner.py`) rather than re-implementing; only if that module is not importable, fall back to `gsutil cp <zip> gs://${GCS_BUCKET:-ggx-e2e-testresult}/<key>`.
+   - **Hand-off link**: the console URL the helper returns — `https://console.cloud.google.com/storage/browser/_details/<bucket>/<key>`.
+
+   If the upload tooling is unavailable or the upload fails, record it in `report.md` and skip the link (do **not** abort) — the artifacts remain under `.dev/test-fix-loop/` for local inspection.
+
+5. **Comment on the PR — only if one exists** (from step 3):
+   - **PR exists** → post the §7 terminal report plus the GCS console URL as a single comment:
 
      ```bash
-     gh pr comment "$PR_NUMBER" --body "$(printf '## test-fix-loop — %s\n\n%s\n\n**Run artifacts (GCS):** %s\n' "$TERMINAL_STATE" "$REPORT_SUMMARY" "$GCS_PREFIX")"
+     gh pr comment "$PR_NUMBER" --body "$(printf '## test-fix-loop — %s\n\n%s\n\n**Run artifacts (GCS):** %s\n' "$TERMINAL_STATE" "$REPORT_SUMMARY" "$GCS_URL")"
      ```
 
    - **No PR** → do **not** create one. Print the same summary + GCS link to the user and note in `report.md` that no PR was found, so the GCS link is the hand-off.
@@ -228,7 +225,7 @@ Runs once, after §7 settles. Skip the whole step if the loop made **zero** comm
 - Result-extraction mechanics are shared with `/check-test` Step 5 — keep the two in sync if a runner's output format changes.
 - Runtime artifacts go to `.dev/test-fix-loop/` (the `.dev/` convention used across the dev pipeline; gitignored in target repos).
 - e2e on mobile runs via **Maestro**; `maestro test --format junit --output .dev/test-fix-loop/maestro/` yields both a parseable JUnit report (Step 1.3) and the recordings/screenshots bundle uploaded to GCS in Step 8.
-- GCS upload uses `gsutil`; the bucket is `${GOGOX_TEST_ARTIFACTS_BUCKET:-gs://gogox-test-artifacts}`, with a per-run prefix `…/test-fix-loop/<repo>/<branch>/<utc-stamp>/`. PR comments are posted with `gh pr comment` only when `gh pr view` resolves a PR for the branch (same pattern as `/code-review` and `/resolve-pr-comments`).
+- GCS upload **reuses the e2e runner's path** (`scripts/e2e_pr_runner.py` → `upload_to_gcs` / `_artifact_blob_name`): bucket `${GCS_BUCKET:-ggx-e2e-testresult}` (optional `${GCS_PROJECT}`), object key `<repo>/pr-<pr_number>/<short-sha>-<stamp>.zip` (or `branch-<branch>/…` when there is no PR), uploaded via google-cloud-storage + ADC; the hand-off link is the `https://console.cloud.google.com/storage/browser/_details/…` URL. PR comments are posted with `gh pr comment` only when `gh pr view` resolves a PR for the branch (same pattern as `/code-review` and `/resolve-pr-comments`).
 
 ## Output
 
@@ -241,3 +238,4 @@ A **pushed** worktree branch with one commit per fixed test — all touching tes
 
 - 2026-06-08 by @peter.wong — initial authoring, not yet run on a real suite
 - 2026-06-11 by @peter.wong — dropped never-push; added Step 8 publish (push at terminal state + Maestro/run-artifact GCS upload + PR comment, PR-only) for REQUIRES-HUMAN states (CAF-699); still not run on a real suite
+- 2026-06-12 by @peter.wong — aligned the Step 8 GCS upload with the e2e runner's path (`scripts/e2e_pr_runner.py`: bucket `ggx-e2e-testresult`, key `<repo>/pr-<#>/<sha>-<stamp>.zip`) instead of a bespoke bucket/`gsutil` prefix (CAF-699)
