@@ -33,6 +33,7 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `3`, hard cap `20`. Out of range → abort. (Under `--workflow` this bounds the roster handed to the script; the script's `pipeline()` self-caps concurrency at `min(16, cores-2)` on top.)
 - `--workflow` — **Opt-in (Phase A, R5).** Replace the §5.3 N×`Agent` fan-out + §6.1 wait loop with a single `Workflow` tool call driving the dev/port/bug lane (see §5.2). ui-tweak rows still run §5.0-inline. Unset → today's path verbatim. Requires `~/.claude/workflows/ggx-dispatch.workflow.js` (installed by `install.sh`). See `ARCHITECTURE.md` "Nested-spawn constraint" R5 and the Phase-A migration notes.
 - `--launch-only` — **Requires `--workflow`** (abort if passed without it). After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty --workflow` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock.
+- `--demo` — **Requires `--workflow`** (abort if passed without it). After §5.2 step 5 consumes `rows`, run a serial demo-capture pass (§6.6) over the shipped `design bug` PRs via `/_ui-demo-batch`. **Skipped under `--launch-only`** — the dispatcher has already returned, so the caller (`/ggx-on-duty --demo`) owns the demo pass. Best-effort / fail-soft: never blocks or fails the run. Off by default (design-bug PRs ship without an auto-captured demo, as today). See GGC-29.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
 
 
@@ -1237,7 +1238,7 @@ pre-check the config file yourself and skip the call when you don't
 find it.** `--dry-run` stops at §4.0 and never reaches here, so dry
 runs are naturally Slack-silent.
 
-STOP.
+STOP — **unless `--demo` is set**, in which case run §6.6 first, then STOP.
 
 **Render contract**: stdout and the md file render the **same six
 columns in the same order**. Don't drop columns from stdout to fit
@@ -1245,6 +1246,28 @@ terminal width — Claude Code terminals wrap markdown tables fine, and
 the value of the table is being identical across the two surfaces (you
 can paste either into a PR comment / Slack thread without re-reading
 the data).
+
+### 6.6 Demo pass (`--demo` — best-effort, after the run)
+
+Runs ONLY when `--demo` was passed (which requires `--workflow`) AND this is
+NOT a `--launch-only` invocation. After §6.5's summary, filter §5.2's `rows`
+for shipped design-bug PRs (`uiTweak === true && outcome === "done"` and a
+non-null `prUrl` — the `uiTweak` marker is set by the script's `runUiTweak`,
+GGC-29) and invoke:
+
+```
+/_ui-demo-batch '<json array of {ticketId, prUrl} for those rows>'
+```
+
+`/_ui-demo-batch` captures each PR's demo **SERIALLY on the one simulator** (so
+the parallel fan-out's N agents never drive the device at once — the race is
+gone by construction; see that helper), then attaches each as an idempotent PR
+comment. It is **fail-soft and never blocks**: no device / capture error
+degrades to a WARN and the run still completes. Empty filtered set → no-op.
+
+Under `--launch-only` the dispatcher returns before the workflow finishes, so
+there are no `rows` here — the caller that consumes the completion
+(`/ggx-on-duty --demo`) runs the demo pass instead. Then STOP.
 
 ---
 
