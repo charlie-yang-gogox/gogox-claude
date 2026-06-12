@@ -15,7 +15,11 @@ description: >
   comment. Writes state ONLY — never invokes downstream pipelines;
   `/ggx-dispatcher` / `/ggx-work` pick up from the labels. Jira runs in
   degraded mode (comment + `fields.labels` string labels, no workflow
-  labels). Supports both trackers via `_ticket-lib.md`.
+  labels). Supports both trackers via `_ticket-lib.md`. The optional
+  `--triage` flag adds a human-confirmed Phase 0 intake pass that classifies
+  untriaged pool tickets (and can pull chosen ones into the sweep) — the only
+  path on which the analyzer writes a classification label / assigns, always
+  behind a per-ticket confirm.
 Prerequisite: >
   - Linear MCP (or Atlassian MCP for Jira tickets) authenticated.
   - Batch mode requires the active repo to have a resolvable gogox project
@@ -48,6 +52,14 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 - `--team:<KEY>` — batch mode only; required when the repo's
   `branch_prefix` is `auto` (validated against `org.yaml`, same contract
   as `/ggx-dispatcher` Step 0).
+- `--triage` — batch mode only. Run a **Phase 0 intake pass** (Step 1.6)
+  BEFORE the normal sweep: classify untriaged pool tickets (no
+  classification label → invisible to `/route` and every sweep) with
+  per-ticket **human confirmation**, optionally pulling chosen ones into
+  this session's analyze queue. Always interactive — incompatible with
+  `--non-interactive` and with single mode. This is the ONLY path on which
+  the analyzer writes a classification label / changes assignee+status, and
+  only after an explicit per-ticket confirm (§C carve-out).
 
 **Verdict → label decision matrix** (the contract everything below serves):
 
@@ -89,7 +101,12 @@ timestamp is shared across all tickets in the run.
 ### Step 1: Parse input — single vs batch mode
 
 1. Strip flags from `$ARGUMENTS` first: `--dry-run`, `--non-interactive`,
-   `--team:<KEY>`. Unknown flags → STOP with the usage block.
+   `--team:<KEY>`, `--triage`. Unknown flags → STOP with the usage block.
+   - `--triage` is **batch-only and interactive-only**: if a `<ticket-id>`
+     remains after stripping, OR `--non-interactive` is also set → STOP with
+     the usage block (`--triage` is a human-confirmed pool sweep, not a
+     single-ticket or unattended path). These two STOPs are also what keep
+     the cloud routine safe — it invokes with no args, so never `--triage`.
 2. Extract `<ticket-id>` from what remains. Two paths:
    - **Present** → `<batch-mode> = False`. `<queue> = [<ticket-id>]`.
      Resolve `ticket_system` for this id per the `_ticket-lib.md`
@@ -160,7 +177,9 @@ timestamp is shared across all tickets in the run.
 
 7. **Empty case**: print
    `No analyzable To-Do tickets assigned to you on team <team_key>.` and
-   STOP cleanly (exit zero).
+   STOP cleanly (exit zero) — **UNLESS `--triage` is set**, in which case
+   continue to Step 1.6 with an empty base `<queue>` (the triage pass may
+   pull pool tickets into it; a triage run with no To-Do backlog is normal).
 
 8. **Print queue overview** — ONE row per surviving ticket (the template
    below is a format, not an output cap; never truncate the table):
@@ -182,6 +201,94 @@ timestamp is shared across all tickets in the run.
    side effects.
 
 10. Set `<queue>` = ordered ticket-id list.
+
+### Step 1.6: Triage intake pass (`--triage` only)
+
+Runs ONLY when `--triage` is set; otherwise skipped entirely (no behavior
+change for any existing invocation — AC1). This is the loop's **intake
+stage**: untriaged pool tickets carry no classification label, so `/route`
+returns `UNKNOWN_LANE` and every sweep ignores them — intake starvation.
+This pass gives them a human-confirmed path IN. It runs after Step 1.5 so it
+reuses that profile / team / To-Do resolution; conceptually it is "Phase 0".
+
+Preconditions were enforced at Step 1.1 (batch-only, interactive-only).
+One more gate here: `ticket_system == jira` → print
+`Triage intake is Linear-only in v1; skipping Phase 0.` and continue to
+Step 2 unchanged (do NOT STOP — triage is additive).
+
+1. **Fetch the untriaged pool.** `mcp__claude_ai_Linear__list_issues` for
+   `<team_key>` across the pool states (Linear `Triage` + `Backlog` + the
+   Step-1.5.3 resolved To-Do name), then KEEP only tickets carrying **none**
+   of:
+   - any classification label (`bug` / `port` / `feature` / `design bug`),
+   - any analyzer label (`ready-to-port` / `ready-to-dev` / `need-revision`
+     / `need-dependency`),
+   - any pipeline label (`need-spec-review` / `dispatcher-*-in-flight`).
+   These are the genuinely untriaged tickets. Sort priority
+   `urgent > high > medium > low > none`, then `createdAt` asc.
+   - Empty → print `No untriaged pool tickets on team <team_key>.` and
+     continue to Step 2 with the base `<queue>` unchanged.
+
+2. **Propose a classification per ticket** using the Step 3 lane-signal
+   logic (LLM judgment over title + description). Record
+   `{class ∈ bug|feature|port|design bug, reasoning, signal: strong|ambiguous}`:
+   - **strong** — clear repro + expected-vs-actual → `bug`; explicit port
+     language ("port from", "same as v1", "align with the native app") →
+     `port`; an explicit visual/layout defect with no logic → `design bug`.
+     The proposal is offered as the **Recommended** default (one keypress
+     accepts).
+   - **ambiguous** — anything else, **especially port-vs-feature** (the
+     analyzer never reads code, so whether the feature exists upstream is
+     unknowable from the ticket — a coin-flip default is worse than none).
+     NO Recommended default: the operator must choose deliberately (the
+     fast-confirm-fatigue guard).
+
+3. **Per-ticket confirmation — always human, three actions.** For each
+   surviving pool ticket fire ONE `AskUserQuestion` (NEVER skipped — there
+   is no `--auto`/`--non-interactive` here, AC4). The question states the
+   proposed class + one-line reasoning. For the chosen class `<c>`:
+   - **`Label <c> only`** — write the single classification label `<c>`;
+     **zero** assignee/status writes; the ticket stays in the shared pool
+     for anyone to pull (AC2). Marked `(Recommended)` for strong-signal rows
+     only.
+   - **`Label <c> + Pull`** — write `<c>`, then assign me + move to To-Do
+     (pulled into THIS session's analyze loop). Counts against the
+     **per-batch pull cap (default 3)**; once the cap is reached, this
+     option is dropped from every remaining row's menu with the note
+     `pull cap (3) reached — Label-only / Skip only`. (AC3 — pull is an
+     explicit per-ticket choice, capped; no bulk self-assign exists.)
+   - **`Skip`** — no writes.
+   Ambiguous rows carry NO `(Recommended)` option (forces a deliberate
+   keypress); use the question's `Other` free-text to set a different class
+   when the best guess is wrong. One prompt per ticket — never batch the
+   classification decision away from the human (§C ownership).
+
+4. **Writes** (read-before-write; reuse the Step 8 patterns):
+   - **Ensure classification labels exist** (`list_issue_labels` for the
+     team). They are normally human-created; a missing one → try
+     `create_issue_label`, and on failure print
+     `Classification label <c> missing and create failed — apply manually on <ticket>`,
+     mark the row `errored`, continue.
+   - **Label write** (`save_issue --labels`, read-before-write full-set):
+     add the confirmed `<c>`. **Stale `need-revision` boundary** — remove a
+     pre-existing `need-revision` in the SAME write ONLY when the ticket is
+     being **Pulled** (it re-enters analysis this session, so the analyze
+     pass re-judges it fresh); for **Label-only** leave any analyzer label
+     untouched — the next analyze sweep owns it. Triage never writes
+     `ready-to-*` / `need-dependency`.
+   - **Pull write** (`Label + Pull` only): `save_issue` assign = me, state =
+     the resolved To-Do name. `Label-only` and `Skip` make ZERO
+     assignee/status writes.
+   - Post no analysis comment here — that is the analyze pass's job for the
+     pulled tickets; Label-only tickets get their analysis on a later sweep
+     once someone pulls them.
+
+5. **Merge pulled tickets into `<queue>`.** Union every `Label + Pull`
+   ticket-id into `<queue>` (dedup against the Step 1.5 set; pulled tickets
+   are now To-Do + assigned-to-me and satisfy the same criteria). Print
+   `Triage: <L> labeled, <P> pulled, <S> skipped · +<P> into the analyze queue (now <total> total).`
+   `Label-only` and `Skip` tickets do NOT enter `<queue>` — they stay in the
+   pool. Proceed to Step 2 with the merged queue.
 
 ### Step 2: Fetch full ticket data + explicit relations
 
@@ -543,8 +650,15 @@ Schema rules:
 | `need-revision` label missing on team | 8.1 | Auto-create; on failure post comment + manual hint |
 | Label already at target | 8.4 | No-op write, logged |
 | 5xx on comment or label | 8.5 | Retry once; then errored + continue (batch) / STOP (single) |
-| Zero tickets after filters | 1.5.7 | STOP cleanly, exit zero |
+| Zero tickets after filters | 1.5.7 | STOP cleanly, exit zero — unless `--triage` (continue to Step 1.6 with empty base queue) |
 | `--dry-run` | 7 | Full report, zero writes of any kind |
+| `--triage` + ticket-id, or `--triage` + `--non-interactive` | 1.1 | STOP — triage is a human-confirmed batch pool sweep |
+| `--triage` on a Jira repo | 1.6 | Skip Phase 0 (Linear-only v1), continue to normal sweep |
+| `--triage`, untriaged pool empty | 1.6.1 | Note + continue to Step 2 with the base queue |
+| `--triage` ambiguous classification (esp. port vs feature) | 1.6.2 | No Recommended default — operator must choose deliberately |
+| `--triage` pull cap reached | 1.6.3 | `Label + Pull` dropped from remaining rows; Label-only / Skip only |
+| `--triage` Label-only choice | 1.6.4 | One classification label written; zero assignee/status writes; stays in pool |
+| `--triage` Pulled ticket with stale `need-revision` | 1.6.4 | `need-revision` cleared in the same label write (re-judged this session) |
 
 ## §C — Non-goals (do not extend)
 
@@ -552,12 +666,24 @@ Schema rules:
   only handoff.
 - Do NOT write classification labels (`bug` / `port` / `feature` /
   `design bug`) — those are human-owned (`/ggx-dispatcher` ownership
-  table).
+  table). **Carve-out (`--triage` Step 1.6 only):** the triage pass writes
+  the ONE confirmed classification label, and only after an explicit
+  per-ticket human confirmation (`AskUserQuestion`) — the human's confirm IS
+  the ownership step, there is no `--auto`/`--non-interactive` for Phase 0.
+  Every non-`--triage` invocation still never writes a classification label.
 - Do NOT write `dispatcher-*-in-flight` or `need-spec-review` — other
-  writers own those.
+  writers own those. (The `--triage` carve-out does NOT extend here — triage
+  writes only the classification label, and on a Pulled ticket may clear a
+  stale `need-revision`; it never writes `ready-to-*` / `need-dependency` /
+  pipeline labels.)
 - Do NOT create Linear issue relations from inferred dependencies — record
   them in the comment; humans promote them to real relations.
-- Do NOT transition ticket status or change assignee.
+- Do NOT transition ticket status or change assignee. **Carve-out
+  (`--triage` "Label + Pull" choice only):** the explicit per-ticket Pull
+  choice assigns the operator + moves the ticket to To-Do, subject to the
+  per-batch pull cap. `Label-only` (the default) and `Skip` make zero
+  assignee/status writes. No bulk self-assign exists anywhere (pull model —
+  PM never assigns; people pull their own tickets).
 - Do NOT touch the filesystem / git — pure tracker-side analysis.
 - Do NOT support resume / state files — restart-on-interrupt re-derives
   everything from live tracker state.
