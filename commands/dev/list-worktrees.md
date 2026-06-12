@@ -30,9 +30,10 @@ For each secondary worktree, collect the following. Run all worktree enrichments
 
 1. **Ticket ID**: extract `[A-Z]+-\d+` pattern from the branch name (e.g. `CAF-123` from `feat/CAF-123`).
 2. **Linear link**: if ticket ID found, format as `https://linear.app/gogox/issue/<ticket-id>`.
-3. **PR link and review status**: run `gh pr list --head "<branch>" --json url,number,state,reviewDecision --limit 1`.
+3. **PR link and review status**: run `gh pr list --head "<branch>" --state all --json url,number,state,reviewDecision --limit 1`.
+   - `--state all` is mandatory — `gh pr list` defaults to `--state open`, so a merged or closed PR returns an empty array and gets misreported as "No PR".
    - If found, store the PR URL, state (open/merged/closed), and review decision (approved/changes_requested/review_required).
-   - If not found, show "No PR".
+   - If not found (no PR in any state), show "No PR".
 4. **Dirty status**: run `git -C "<path>" status --porcelain` to check for uncommitted changes.
    - If output is non-empty, mark as "dirty" with file count.
    - If empty, mark as "clean".
