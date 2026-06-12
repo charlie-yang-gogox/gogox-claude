@@ -3,7 +3,9 @@
 // Phases A+B of the /ggx-dispatcher fan-out → Workflow migration (R5 in
 // ARCHITECTURE.md "Nested-spawn constraint"). Replaces the §5.3 N×Agent
 // fan-out + §6.1 wait loop + §6.2 per-ticket fallback + §6.4 aggregation
-// for ALL lanes.
+// for ALL lanes. GGC-21 adds an evidence cross-check between work and fallback
+// so a worker that hallucinates success without a real terminal state (open PR
+// / need-spec-review label) is demoted to failed rather than silently shipped.
 //
 // Scope:
 //   - dev / port / bug lane tickets → one /ggx-work --auto agent each (runWork).
@@ -36,6 +38,7 @@ export const meta = {
   phases: [
     { title: "work", detail: "Drive each dev/port/bug ticket through /ggx-work --auto" },
     { title: "ui-judge", detail: "ui-tweak lane: apply/preview, dual-judge panel, finisher" },
+    { title: "evidence", detail: "Cross-check terminal evidence for each success row (GGC-21)" },
     { title: "fallback", detail: "Per-ticket Linear writes on failure" },
     { title: "aggregate", detail: "Collect structured outcomes into summary" },
   ],
@@ -56,6 +59,22 @@ const WORK_SCHEMA = {
     // The final infer_*_stage value, for §6.4's stage_reached column.
     stage: { type: ["string", "null"] },
     error: { type: ["string", "null"] },
+  },
+};
+
+// ── Evidence cross-check verdict (GGC-21) — confirm a success row's terminal
+// state actually exists before the digest trusts it. ──
+const EVIDENCE_SCHEMA = {
+  type: "object",
+  required: ["verdict"],
+  additionalProperties: false,
+  properties: {
+    // confirmed = terminal evidence found; missing = checks ran cleanly and
+    // found NONE (the hallucinated-done case → demote); inconclusive = the
+    // check itself errored (auth/network) so we genuinely cannot tell → keep
+    // the success (AC2: never false-demote a genuine ship over infra flake).
+    verdict: { type: "string", enum: ["confirmed", "missing", "inconclusive"] },
+    detail: { type: ["string", "null"] },
   },
 };
 
@@ -352,6 +371,123 @@ async function runUiTweak(item) {
   };
 }
 
+// ── Evidence cross-check for SUCCESS rows (GGC-21). ──
+// runWork/runUiTweak trust the worker's self-reported outcome (WORK_SCHEMA);
+// a worker that dies mid-run yet hallucinates outcome="done" (the 2026-05-15
+// misreport pattern) otherwise produces no failure comment and a wrong digest,
+// because runFallback only fires on outcome=="failed". This stage demands cheap
+// TERMINAL evidence for every success row and demotes a row to "failed" when
+// that evidence is definitively absent — routing it through runFallback's
+// dispatch-fallback-error branch like any other worker-died failure.
+//
+// Per-lane terminal-state enumeration (Risks/Guards: completeness is the risk —
+// keep this table in lock-step with the WORK_SCHEMA outcome enum):
+//   ┌──────────┬──────────────┬───────────────────────────────────────────────┐
+//   │ lane     │ success out. │ terminal evidence checked here                 │
+//   ├──────────┼──────────────┼───────────────────────────────────────────────┤
+//   │ dev      │ done         │ an OPEN draft PR for the ticket                │
+//   │ bug      │ done         │ an OPEN draft PR for the ticket                │
+//   │ port     │ done         │ an OPEN draft PR for the ticket                │
+//   │ port     │ port-paused  │ the `need-spec-review` label on the issue      │
+//   │          │              │   (HITL spec-review gate handoff; no PR yet)   │
+//   │ ui-tweak │ done         │ an OPEN draft PR — ui-tweak's PR-open IS the    │
+//   │          │              │   terminal, so the same `done` check covers it │
+//   │          │              │   (AC2 walker-evidence edge case, no special)  │
+//   └──────────┴──────────────┴───────────────────────────────────────────────┘
+// "failed" rows are not re-derived — they already route to runFallback. Only
+// "done"/"port-paused" reach an evidence agent.
+//
+// Fail-SAFE direction (AC2): demote ONLY on verdict=="missing" (checks ran and
+// found nothing). verdict=="inconclusive" (gh/git/MCP errored — auth/network)
+// keeps the success and flags evidenceUnchecked, so a real ship is never
+// false-failed over infra flake. The in-flight label is never touched here, so
+// a demoted row still carries the resume signal (AC3).
+async function verifyEvidence(res, item) {
+  if (!res) return res;
+  if (res.outcome !== "done" && res.outcome !== "port-paused") return res;
+
+  const checkPrompt =
+    res.outcome === "done"
+      ? [
+          `Cross-check terminal evidence for ticket ${res.ticketId} (lane=${item.lane}),`,
+          `which a worker reported as outcome="done". You are a CHEAP read-only`,
+          `verifier: run at most the commands below, then return a verdict. Do NOT`,
+          `fix anything and do NOT comment on Linear.`,
+          ``,
+          `Expected terminal evidence for "done": an OPEN draft PR for this ticket.`,
+          res.prUrl
+            ? `The worker reported prUrl=${res.prUrl} — verify it with ` +
+              "`gh pr view " + res.prUrl + " --json state,isDraft`. state==OPEN ⇒ confirmed."
+            : `The worker reported NO prUrl (already suspicious for a "done").`,
+          `Independently derive the branch from the ff worktree: ` +
+            "`git -C " + item.worktreePath + " branch --show-current`, then " +
+            "`gh pr list --head <branch> --state open --json number,url`. A non-empty list ⇒ confirmed.",
+          `If the worktree is gone, fall back to ` +
+            "`gh pr list --search \"" + res.ticketId + "\" --state open --json number,url`.",
+          ``,
+          `verdict="confirmed" if ANY check shows an OPEN PR; "missing" if every`,
+          `command ran cleanly and found NO open PR (the hallucinated-done case);`,
+          `"inconclusive" ONLY if gh/git errored (auth/network) so you truly cannot tell.`,
+        ].join("\n")
+      : [
+          `Cross-check terminal evidence for ticket ${res.ticketId} (lane=${item.lane}),`,
+          `which a worker reported as outcome="port-paused". You are a CHEAP`,
+          `read-only verifier — make ONE read call, then return a verdict. Do NOT`,
+          `fix anything and do NOT comment on Linear.`,
+          ``,
+          `Expected terminal evidence for "port-paused": the ${res.ticketId} issue`,
+          `carries the \`need-spec-review\` label (port handed the work to the HITL`,
+          `spec-review gate; there is no PR yet, so do NOT look for one).`,
+          `Make ONE read call via the connected Linear MCP (find it with ToolSearch;`,
+          `prefer mcp__claude_ai_Linear__get_issue, fall back to`,
+          `mcp__linear-server__get_issue) and inspect the issue's labels.`,
+          ``,
+          `verdict="confirmed" if the need-spec-review label is present; "missing"`,
+          `if the call succeeded and the label is absent; "inconclusive" if the`,
+          `call errored.`,
+        ].join("\n");
+
+  const check = await agent(
+    [checkPrompt, ``, `Return { verdict: "confirmed"|"missing"|"inconclusive", detail: one short line }.`].join("\n"),
+    {
+      label: `evidence:${res.ticketId}`,
+      phase: "evidence",
+      agentType: "general-purpose",
+      model: "sonnet",
+      schema: EVIDENCE_SCHEMA,
+    },
+  );
+
+  // Agent died/skipped, or could not determine — treat as inconclusive: keep
+  // the success, flag it, do NOT demote (AC2). The flag is observable in the
+  // returned rows so a future sweep / the digest can note the unverified ship.
+  if (!check || check.verdict === "inconclusive") {
+    log(
+      `[evidence] ${res.ticketId} reported ${res.outcome} but evidence check was ` +
+        `INCONCLUSIVE (${check?.detail || "agent returned null"}) — keeping success, not demoting`,
+    );
+    return { ...res, evidenceUnchecked: true };
+  }
+  if (check.verdict === "confirmed") {
+    log(`[evidence] ${res.ticketId} ${res.outcome} confirmed (${check.detail || "terminal evidence found"})`);
+    return res;
+  }
+  // verdict === "missing": definitive negative ⇒ demote to failed. The row now
+  // routes through runFallback's dispatch-fallback-error branch (evidenceDemoted
+  // flag below), the digest counts it under `failed`, and the in-flight label is
+  // left untouched so the next sweep can resume.
+  log(`[evidence] ${res.ticketId} reported ${res.outcome} but terminal evidence MISSING -> DEMOTE to failed`);
+  return {
+    ...res,
+    outcome: "failed",
+    evidenceDemoted: true,
+    digestNote: "no-terminal-evidence", // §6.4 may surface this on the row
+    error: ("[evidence-demoted] reported \"" + res.outcome + "\" but " +
+      (check.detail || "no terminal evidence found") +
+      " (no-terminal-evidence; prior: " + (res.error || "none") + ")").slice(0, 300),
+  };
+}
+
 // ── Per-ticket fallback (§6.2): write Linear ONLY for the worker-died case. ──
 // Idempotency is structural, not advisory: on a NORMAL completed failure
 // (outcome:"failed", no workerDied flag) /ggx-work --auto already posted its
@@ -369,9 +505,12 @@ async function runFallback(res) {
   //   - uiTweakFailed: the script owns the ui-tweak flow end-to-end (prep →
   //     panel → finisher), so a BLOCKED/failed run has no /ggx-work and no
   //     <!-- ggx-work-error --> behind it — the dispatcher must post.
-  // A NORMAL dev/port/bug failure (outcome:"failed", neither flag) already has
-  // /ggx-work's own <!-- ggx-work-error --> comment → no-op (no double-post).
-  if (!res.workerDied && !res.uiTweakFailed) {
+  //   - evidenceDemoted (GGC-21): the worker reported a SUCCESS that failed the
+  //     terminal-evidence cross-check. It thought it succeeded, so it posted no
+  //     error comment — the dispatcher must post so the misreport is visible.
+  // A NORMAL dev/port/bug failure (outcome:"failed", none of these flags)
+  // already has /ggx-work's own <!-- ggx-work-error --> comment → no-op.
+  if (!res.workerDied && !res.uiTweakFailed && !res.evidenceDemoted) {
     log(`[fallback] ${res.ticketId} failed (sub-pipeline posted its own error) — no double-post`);
     return res;
   }
@@ -379,8 +518,9 @@ async function runFallback(res) {
   await agent(
     [
       `Ticket ${res.ticketId} failed in the dispatcher batch and no sub-pipeline`,
-      `posted its own <!-- ggx-work-error --> comment (worker died, or a`,
-      `script-orchestrated ui-tweak run was BLOCKED/failed by the audit panel).`,
+      `posted its own <!-- ggx-work-error --> comment (worker died; a`,
+      `script-orchestrated ui-tweak run was BLOCKED/failed by the audit panel; or`,
+      `a reported success was demoted by the terminal-evidence cross-check).`,
       `Via the connected Linear MCP (find it with ToolSearch): prefer`,
       `mcp__claude_ai_Linear__*, and fall back to mcp__linear-server__* if the`,
       `claude.ai connector is not authenticated — both target the same workspace`,
@@ -447,7 +587,11 @@ const results = await pipeline(
   // stage 1: route by lane. design-bug → runUiTweak (script-spawned level-1
   // dual-judge panel, Phase B); everything else → runWork (/ggx-work --auto).
   (item) => (item.uiTweak ? runUiTweak(item) : runWork(item)),
-  // stage 2: per-item fallback — immediacy comes from pipeline's per-item chaining.
+  // stage 2: evidence cross-check (GGC-21) — demote any success row whose
+  // terminal state (open PR / need-spec-review label) is definitively absent.
+  // Failed rows pass straight through. originalItem carries worktreePath/lane.
+  (res, item) => verifyEvidence(res, item),
+  // stage 3: per-item fallback — immediacy comes from pipeline's per-item chaining.
   (res) => runFallback(res),
 );
 
@@ -455,8 +599,11 @@ const results = await pipeline(
 const rows = results.filter(Boolean);
 
 // ── Final aggregation (§6.4 feed). The returned object is what the calling
-// session receives; §6.4 renders its table from it directly, with no per-ticket
-// re-derivation via get_issue (WORK_SCHEMA already carries the outcome). ──
+// session receives; §6.4 renders its table from it directly. Outcomes are
+// authoritative AFTER the GGC-21 evidence stage: success rows have had their
+// terminal state cross-checked (a demoted row now reads outcome:"failed" with
+// digestNote:"no-terminal-evidence"; an unverifiable-but-kept ship carries
+// evidenceUnchecked), so §6.4 still needs no per-ticket get_issue re-derivation. ──
 phase("aggregate");
 const counts = rows.reduce(
   (a, r) => ((a[r.outcome] = (a[r.outcome] || 0) + 1), a),
