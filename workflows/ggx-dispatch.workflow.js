@@ -29,6 +29,21 @@
 // args = DISPATCH_ROSTER: JSON array of
 //   { ticketId, lane, worktreePath, url, uiTweak: boolean }
 // serialized by the markdown main session after §4.3 locking completes.
+//
+// GGC-49 (worktree/branch isolation + earned no-op). The args may ALSO carry an
+// optional top-level `trunkSha` — the freshly-fetched default-branch tip captured
+// by the dispatcher (§5.2) the moment before the roster was built. When present it
+// is the ground-truth CLEAN-TRUNK baseline every leg's worktree must be based on.
+// Under the parallel fan-out a per-ticket worktree's HEAD/base_ref can leak to a
+// SIBLING ticket's commit (CAF-625: base_ref was 321be8fc, not trunk a6c525c7),
+// silently poisoning the diff baseline so an "already matches / no source changes"
+// verdict is computed against the wrong tree and a live bug is closed as a no-op.
+// Each leg now (1) asserts its base == trunkSha before any analysis is trusted,
+// (2) treats an empty-diff no-op as something to be EARNED — validated against the
+// ticket target and ALWAYS returned as a structured result, never a silent finish,
+// and (3) is DEMOTED to failed if the orchestrator detects its base is contaminated.
+// `trunkSha` is OPTIONAL for backward-compat: an older roster without it degrades to
+// a loud per-leg warn (assertion skipped) rather than crashing the whole batch.
 
 export const meta = {
   name: "ggx-dispatch",
@@ -96,7 +111,7 @@ const JUDGE_SCHEMA = {
 // mirrors the §5.3 rationale (heavy R1 work inlines inside this worker, so it
 // needs opus-class reasoning). isolation is omitted on purpose — the ff
 // pipelines create their own ../<ID> worktree (same rule as §5.3).
-async function runWork(item) {
+async function runWork(item, trunkSha) {
   log(`[work] ${item.ticketId} lane=${item.lane}`);
   const result = await agent(
     [
@@ -107,6 +122,21 @@ async function runWork(item) {
       `/bug:ff). Drive it to a terminal condition; do NOT stop on intermediate`,
       `stage messages.`,
       ``,
+      // GGC-49 — worktree/branch isolation. /add-worktree now self-asserts the
+      // fresh worktree's HEAD == clean trunk, but state THE EXPECTED BASE here too
+      // so the worker fails loudly rather than analyzing a contaminated tree under
+      // the parallel fan-out (the CAF-625 cross-worktree leak).
+      ...(trunkSha
+        ? [
+            `WORKTREE ISOLATION (GGC-49): once the ff pipeline has created/entered the`,
+            `../${item.ticketId} worktree, ASSERT its base is clean trunk before trusting`,
+            `any analysis: the worktree's merge-base with HEAD must descend from`,
+            `${trunkSha} (the freshly-fetched default-branch tip this batch was built on).`,
+            `If the worktree HEAD sits on an unrelated sibling commit, STOP and return`,
+            `outcome="failed" with error naming the contaminated base — never analyze it.`,
+            ``,
+          ]
+        : []),
       `The run ends by printing a deterministic machine line:`,
       `  [ggx-work-result] outcome=<done|port-paused|failed> ticket=<id>`,
       `Read that line VERBATIM and set outcome to its value — do NOT infer the`,
@@ -164,7 +194,7 @@ async function runWork(item) {
 // (figma-context read, WILL-EDIT coverage assertion, loud-fail semantics),
 // change BOTH. Failures set uiTweakFailed so runFallback posts Linear (no
 // sub-pipeline posted its own error — the script owns this flow end-to-end).
-async function runUiTweak(item) {
+async function runUiTweak(item, trunkSha) {
   log(`[ui] ${item.ticketId} apply+preview`);
 
   // Stage 1: /ui-tweak:start → :apply → :preview (R20 direct-ship build-only
@@ -184,6 +214,20 @@ async function runUiTweak(item) {
       `before /ui-tweak:audit. Leave .dev/ui-tweak/base_ref and`,
       `.dev/ui-tweak/build-pass in place for the panel.`,
       ``,
+      // GGC-49 (fix 1) — worktree/branch isolation: the base_ref the whole
+      // no-op/audit verdict trusts must be CLEAN TRUNK, not a sibling ticket's
+      // commit that leaked in under the parallel fan-out (CAF-625).
+      ...(trunkSha
+        ? [
+            `WORKTREE ISOLATION (GGC-49): after /ui-tweak:start enters the worktree and`,
+            `BEFORE any analysis, assert .dev/ui-tweak/base_ref equals the freshly-fetched`,
+            `clean-trunk tip ${trunkSha}. If it differs, the worktree base is contaminated`,
+            `(a no-op or diff computed against it is invalid) — return ok:false with`,
+            `error="base_ref <sha> != clean trunk ${trunkSha} (cross-worktree contamination)"`,
+            `and baseRef set to the contaminated sha. Do NOT proceed to the diff.`,
+            ``,
+          ]
+        : []),
       `THEN compute the audit diff ONCE so the dual-judge panel does not make`,
       `each judge re-run git: read base from .dev/ui-tweak/base_ref, run`,
       "`git diff \"$BASE\"` (full text) and `git diff \"$BASE\" --name-only`",
@@ -191,8 +235,19 @@ async function runUiTweak(item) {
       `unless it exceeds ~200KB (then return the first ~200KB and set`,
       `diffTruncated:true so the judges know to read remaining files themselves).`,
       ``,
+      // GGC-49 (fix 2+4) — a no-op must be EARNED, never silently dropped.
+      `EARNED NO-OP (GGC-49): if the diff is EMPTY (apply produced no source change`,
+      `because the screen "already matches" the target), do NOT silently finish.`,
+      `Set emptyDiff:true and VALIDATE the claim against the ticket's actual target:`,
+      `re-read the ticket reference (screenshot / Figma / described target order) and`,
+      `the live code, and decide whether the requested change is genuinely already`,
+      `present. Put that determination in noopJustification: state the target you`,
+      `verified against and why the current code already satisfies it (or does not).`,
+      `An empty diff with no justification is treated as an UNVERIFIED no-op (failed).`,
+      ``,
       `Return { ok: boolean, baseRef: string|null, diffText: string|null,`,
-      `changedFiles: string|null, diffTruncated: boolean, error: string|null }.`,
+      `changedFiles: string|null, diffTruncated: boolean, emptyDiff: boolean,`,
+      `noopJustification: string|null, error: string|null }.`,
     ].join("\n"),
     {
       label: `ui-prep:${item.ticketId}`,
@@ -209,6 +264,8 @@ async function runUiTweak(item) {
           diffText: { type: ["string", "null"] },
           changedFiles: { type: ["string", "null"] },
           diffTruncated: { type: "boolean" },
+          emptyDiff: { type: "boolean" },
+          noopJustification: { type: ["string", "null"] },
           error: { type: ["string", "null"] },
         },
       },
@@ -223,6 +280,61 @@ async function runUiTweak(item) {
       error: prep?.error || "ui-tweak apply/preview failed (or prep agent returned null)",
       uiTweak: true, // design-bug row marker (GGC-29) — lets callers filter for the demo pass
       uiTweakFailed: true,
+    };
+  }
+
+  // GGC-49 (fix 3) — orchestrator DISTRUSTS contamination. Even if the prep agent
+  // returned ok:true, deterministically re-check the base it reported against the
+  // ground-truth clean-trunk tip. A base_ref that does not match trunkSha is an
+  // INVALID run (the CAF-625 pattern: the leg ran, but on the wrong tree). Demote
+  // to failed — never let a result derived from a contaminated base ship.
+  if (trunkSha && prep.baseRef && prep.baseRef.trim() !== trunkSha) {
+    log(`[ui] ${item.ticketId} base_ref ${prep.baseRef} != clean trunk ${trunkSha} -> DEMOTE (contaminated)`);
+    return {
+      ticketId: item.ticketId,
+      outcome: "failed",
+      prUrl: null,
+      stage: "ui:apply",
+      error:
+        `UI-TWEAK INVALID (GGC-49 contamination): base_ref ${prep.baseRef} != clean trunk ` +
+        `${trunkSha} — result computed against a non-trunk base, re-run clean.`,
+      uiTweakFailed: true,
+    };
+  }
+
+  // GGC-49 (fix 2+4) — an EMPTY-DIFF no-op must be EARNED. A ui-tweak run that
+  // produced no source change is only legitimate when validated against the
+  // ticket's actual target; an unjustified empty diff is the silent-no-op trap
+  // that falsely closed CAF-625. The verdict is ALWAYS a structured result here
+  // (never a silent finish): justified ⇒ outcome "done" (no PR — nothing to ship);
+  // unjustified ⇒ failed so runFallback posts a visible Linear comment.
+  const computedEmpty =
+    prep.emptyDiff === true ||
+    (prep.diffText != null && prep.diffText.trim() === "" && !prep.diffTruncated);
+  if (computedEmpty) {
+    const justified = prep.noopJustification && prep.noopJustification.trim() !== "";
+    if (!justified) {
+      log(`[ui] ${item.ticketId} EMPTY diff with no target validation -> failed (unearned no-op)`);
+      return {
+        ticketId: item.ticketId,
+        outcome: "failed",
+        prUrl: null,
+        stage: "ui:apply",
+        error:
+          "UI-TWEAK UNEARNED NO-OP (GGC-49): empty diff but no validation against the ticket " +
+          "target — refusing to close a possibly-live bug as a no-op. Re-run and verify the target.",
+        uiTweakFailed: true,
+      };
+    }
+    log(`[ui] ${item.ticketId} EARNED no-op (validated against target): ${prep.noopJustification}`);
+    return {
+      ticketId: item.ticketId,
+      outcome: "done",
+      prUrl: null,
+      stage: "ui:noop",
+      error: null,
+      noop: true,
+      noopJustification: prep.noopJustification.slice(0, 300),
     };
   }
 
@@ -410,6 +522,15 @@ async function runUiTweak(item) {
 async function verifyEvidence(res, item) {
   if (!res) return res;
   if (res.outcome !== "done" && res.outcome !== "port-paused") return res;
+  // GGC-49 — an EARNED no-op (validated against the ticket target in runUiTweak)
+  // legitimately has NO PR: there was nothing to ship. The "done" terminal here is
+  // the target-validation, not an open PR, so the open-PR cross-check below would
+  // false-DEMOTE it. The earned-no-op gate already did the only meaningful check
+  // (justification present + base == clean trunk), so accept it as-is.
+  if (res.noop === true) {
+    log(`[evidence] ${res.ticketId} earned no-op — PR cross-check N/A (validated against target)`);
+    return res;
+  }
 
   const checkPrompt =
     res.outcome === "done"
@@ -550,15 +671,39 @@ async function runFallback(res) {
 // ticket's fallback runs as soon as its work stage returns (the §6.2 immediacy
 // requirement), while other tickets are still in their work stage.
 let roster = Array.isArray(args) ? args : [];
-// Tolerate a stringified array: the Workflow tool's `args` is delivered to the
+// GGC-49: the clean-trunk tip the dispatcher fetched before building the roster.
+// May arrive as a top-level field on a wrapper object `{ trunkSha, roster }`, or
+// be absent entirely (older callers passing a bare array — backward-compat).
+let trunkSha = null;
+// Accept the wrapper-object shape `{ trunkSha, roster: [...] }`.
+const adoptWrapper = (obj) => {
+  if (obj && typeof obj === "object" && Array.isArray(obj.roster)) {
+    roster = obj.roster;
+    if (typeof obj.trunkSha === "string" && obj.trunkSha.trim() !== "") {
+      trunkSha = obj.trunkSha.trim();
+    }
+    return true;
+  }
+  return false;
+};
+adoptWrapper(args);
+// Tolerate a stringified payload: the Workflow tool's `args` is delivered to the
 // script as a JSON STRING in this harness (confirmed 2026-06-08 CAF-371 run —
 // passing a live array still arrived as a string), so parse-and-retry rather
-// than silently falling through to the empty-roster no-op.
+// than silently falling through to the empty-roster no-op. The parsed value may
+// be a bare array (legacy) OR the `{ trunkSha, roster }` wrapper (GGC-49).
 if (roster.length === 0 && typeof args === "string") {
   try {
     const parsed = JSON.parse(args);
     if (Array.isArray(parsed)) roster = parsed;
+    else adoptWrapper(parsed);
   } catch (_) { /* not JSON — fall through to empty-roster handling */ }
+}
+if (!trunkSha) {
+  log(
+    "[ggx-dispatch] WARN: no trunkSha in args — worktree/branch contamination assertion (GGC-49) " +
+      "will be SKIPPED for every leg (legacy roster shape). Each leg still self-asserts at base_ref time.",
+  );
 }
 
 if (roster.length === 0) {
@@ -591,7 +736,7 @@ const results = await pipeline(
   roster,
   // stage 1: route by lane. design-bug → runUiTweak (script-spawned level-1
   // dual-judge panel, Phase B); everything else → runWork (/ggx-work --auto).
-  (item) => (item.uiTweak ? runUiTweak(item) : runWork(item)),
+  (item) => (item.uiTweak ? runUiTweak(item, trunkSha) : runWork(item, trunkSha)),
   // stage 2: evidence cross-check (GGC-21) — demote any success row whose
   // terminal state (open PR / need-spec-review label) is definitively absent.
   // Failed rows pass straight through. originalItem carries worktreePath/lane.
