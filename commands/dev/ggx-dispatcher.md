@@ -3,15 +3,15 @@ name: ggx-dispatcher
 description: >
   Manual batch worker for actionable Linear tickets. Sweeps the cwd repo's
   team for `ready-to-port` and `ready-to-dev` tickets, race-locks them, and
-  fans out parallel `/ggx-work <ID> --auto` agents (which in turn route to
+  fans the whole batch out (which in turn routes to
   `/port:ff` / `/dev:ff` / `/bug:ff` / `/ui-tweak:ff` via `/route`).
-  Exception (§5.0): tickets labeled `design bug` (the ui-tweak lane) run
-  `/ggx-work <ID> --auto` INLINE in the dispatcher main session instead of
-  a spawned subagent, because the ui-tweak audit panel spawns an opus
-  judge and nested opus spawns from a general-purpose subagent are
-  officially unsupported (sub-agents docs: subagents cannot spawn other
-  subagents) — sonnet nesting works in practice today but is undefined
-  behavior (see ARCHITECTURE.md "Nested-spawn constraint"). Single-repo,
+  By DEFAULT (GGC-29) the fan-out — all lanes incl. `design bug` — runs via a
+  single `Workflow` tool call (§5.2): script-spawned agents are level-1, so the
+  ui-tweak opus judge spawns cleanly and there is no nested-spawn problem.
+  `--classic` selects the legacy path: N parallel `/ggx-work <ID> --auto`
+  subagents, with `design bug` rows run INLINE in the main session (§5.0)
+  because nested opus spawns from a general-purpose subagent are officially
+  unsupported (see ARCHITECTURE.md "Nested-spawn constraint"). Single-repo,
   cwd-driven; user-invoked from a Claude session opened in the target
   repo on its default branch.
 Prerequisite: >
@@ -31,9 +31,22 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch each thr
 - `--dry-run` — Print the planned dispatch and STOP. No Linear writes, no agent spawn.
 - `--test` — Skip the default-branch + clean-tree pre-flight checks (still requires main worktree, gh auth, and lockfile).
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `3`, hard cap `20`. Out of range → abort. (Under `--workflow` this bounds the roster handed to the script; the script's `pipeline()` self-caps concurrency at `min(16, cores-2)` on top.)
-- `--workflow` — **Opt-in (Phase A, R5).** Replace the §5.3 N×`Agent` fan-out + §6.1 wait loop with a single `Workflow` tool call driving the dev/port/bug lane (see §5.2). ui-tweak rows still run §5.0-inline. Unset → today's path verbatim. Requires `~/.claude/workflows/ggx-dispatch.workflow.js` (installed by `install.sh`). See `ARCHITECTURE.md` "Nested-spawn constraint" R5 and the Phase-A migration notes.
+- `--workflow` — **Redundant no-op (default since GGC-29).** The `Workflow` path (§5.2) is now the default for ALL lanes; this flag is accepted for back-compat and changes nothing. Requires `~/.claude/workflows/ggx-dispatch.workflow.js` (installed by `install.sh`).
+- `--classic` — **Fallback (R5).** Force the legacy path instead of the default `Workflow` path: the §5.3 N×`Agent` fan-out + §6.1 wait loop, with `design bug` rows running §5.0-inline. Use only if the workflow path misbehaves, or in an environment without the `Workflow` tool. Phase C will eventually delete this path; until then it is the zero-downside reversion (kept deliberately — see `ARCHITECTURE.md` R5). Mutually exclusive with `--launch-only` and `--demo` (both require the workflow path → abort).
 - `--launch-only` — **Requires `--workflow`** (abort if passed without it). After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty --workflow` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock.
+- `--demo` — Uses the default workflow path (**aborts under `--classic`** — the demo pass needs the workflow `rows`). After §5.2 step 5 consumes `rows`, run a serial demo-capture pass (§6.6) over the shipped `design bug` PRs via `/_ui-demo-batch`. **Skipped under `--launch-only`** — the dispatcher has already returned, so the caller (`/ggx-on-duty --demo`) owns the demo pass. Best-effort / fail-soft: never blocks or fails the run. Off by default (design-bug PRs ship without an auto-captured demo, as today). See GGC-29.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
+
+> **Path selection (default = workflow, GGC-29).** The dispatcher runs the §5.2
+> `Workflow` path **by default, for all lanes**; `--classic` selects the legacy
+> §5.3 N×`Agent` + §6.1 path (with §5.0 inline ui-tweak). To keep this file's
+> existing conditional language valid under the flipped default, read it as:
+> every "under `--workflow`" / "when `--workflow` is set" / "Under `--workflow`
+> (§5.2)" now means **the default path (true unless `--classic`)**; every "the
+> DEFAULT (non-`--workflow`) path" / "when `--workflow` is unset" /
+> "non-`--workflow` path" now means **the `--classic` path**. So §5.0, §5.3, and
+> §6.1 apply **only under `--classic`**; §5.2 and the `DISPATCH_ROSTER_JSON`
+> serialization (§4.4) run by default.
 
 
 ---
@@ -271,10 +284,10 @@ labeling still works — the analyzer is additive, not mandatory.
    }
    ```
    Decision (the ONLY P2 gate — §5.2 assumes coverage was asserted here):
-   - **`--workflow` set → hard-abort** when `linear_write_covered` is false.
+   - **Default workflow path → hard-abort** when `linear_write_covered` is false.
      Release the lock, leave every label untouched (nothing was dispatched):
      > `abort "ABORT (P2): permissions.allow does not cover Linear writes — need mcp__claude_ai_Linear__* (or …__save_issue) AND the mcp__linear-server__* fallback. A --workflow worker would stall silently on its first Linear write. Add them to ~/.claude/settings.json and re-invoke. No tickets were locked."`
-   - **Interactive (no `--workflow`) → WARN-then-confirm.** The live session
+   - **`--classic` AND interactive → WARN-then-confirm.** The live session
      can answer a permission prompt, so a miss is recoverable: print the same
      gap as a `WARN (P2): …` line and proceed only on explicit human
      go-ahead. Never hard-abort the interactive path on this check.
@@ -552,12 +565,11 @@ For each row of `DISPATCH_ROSTER`, append `<ticket-id>\t<headRefName>\t<worktree
 
 ### 5.0 Spawn-shape decision — `design bug` tickets run INLINE (ui-tweak lane)
 
-> **Applies to the DEFAULT (non-`--workflow`) path only.** Under `--workflow`
-> (Phase B, §5.2), design-bug rows go INTO the script and run as a
-> script-spawned level-1 dual-judge panel (`runUiTweak`) — the inline
-> exception below is dissolved because the opus judge no longer needs the
-> main session to spawn. Everything in this section describes what happens
-> when `--workflow` is unset.
+> **Applies ONLY under `--classic`.** On the default workflow path (§5.2,
+> Phase B), design-bug rows go INTO the script and run as a script-spawned
+> level-1 dual-judge panel (`runUiTweak`) — the inline exception below is
+> dissolved because the opus judge no longer needs the main session to spawn.
+> Everything in this section describes the `--classic` path only.
 
 Tickets whose §2.1 roster row carries the **ui-tweak flag** (`design bug`
 classification label present) are **excluded from the §5.3 parallel spawn**.
@@ -628,13 +640,14 @@ designer dropping a Figma link as a follow-up comment no longer routes
 the ticket through the SKIPPED short-circuit. Dispatcher just passes
 `/ggx-work <ID> --auto`; the rest is determined downstream.
 
-### 5.2 Workflow fan-out (opt-in — `--workflow`, Phases A+B of the R5 migration)
+### 5.2 Workflow fan-out (DEFAULT path — Phases A+B of the R5 migration)
 
-When `--workflow` is set, the **entire fan-out — all four lanes** — is driven
-by a single `Workflow` tool call instead of the §5.3 N×`Agent` fan-out + the
-§5.0 inline ui-tweak lane. This is the Phase-A+B migration documented in
-`ARCHITECTURE.md` "Nested-spawn constraint" R5. When `--workflow` is unset,
-skip this entire section and use §5.3 (+ §5.0 inline) verbatim.
+By default (i.e. unless `--classic`), the **entire fan-out — all four lanes** —
+is driven by a single `Workflow` tool call instead of the §5.3 N×`Agent` fan-out
++ the §5.0 inline ui-tweak lane. This is the Phase-A+B migration documented in
+`ARCHITECTURE.md` "Nested-spawn constraint" R5, promoted to the default in
+GGC-29. Only under `--classic` do you skip this section and use §5.3 (+ §5.0
+inline) verbatim.
 
 **Phase B — ui-tweak joins the script (the §5.0 dissolution).** Under
 `--workflow`, design-bug rows are **no longer excluded**: the script's
@@ -780,7 +793,7 @@ therefore a documented, safe state, not an error.
 
 ### 5.3 Spawn
 
-**(Skip this entire section when `--workflow` is set — see §5.2.)**
+**(Default path skips this entire section — see §5.2. This section runs ONLY under `--classic`.)**
 
 **You MUST emit the §4.3 dispatch table and all N `Agent` tool calls in a single assistant message.** Print the table text first, then the N parallel `Agent` calls — back-to-back, no turn break, no intermediate "ready to spawn?" pause. Do not narrate between calls, do not split across turns, do not group by team. The orchestrating LLM may be tempted to interleave prose ("now spawning ticket X...") between calls — this serializes the join and defeats the parallelism. It may also be tempted to end the turn after the table so the user can review — do not. The table is the review; spawning follows immediately in the same turn. Narration belongs after the join in Step 6.
 
@@ -1237,7 +1250,7 @@ pre-check the config file yourself and skip the call when you don't
 find it.** `--dry-run` stops at §4.0 and never reaches here, so dry
 runs are naturally Slack-silent.
 
-STOP.
+STOP — **unless `--demo` is set**, in which case run §6.6 first, then STOP.
 
 **Render contract**: stdout and the md file render the **same six
 columns in the same order**. Don't drop columns from stdout to fit
@@ -1245,6 +1258,29 @@ terminal width — Claude Code terminals wrap markdown tables fine, and
 the value of the table is being identical across the two surfaces (you
 can paste either into a PR comment / Slack thread without re-reading
 the data).
+
+### 6.6 Demo pass (`--demo` — best-effort, after the run)
+
+Runs ONLY when `--demo` was passed (which uses the default workflow path and
+aborts under `--classic`) AND this is NOT a `--launch-only` invocation. After
+§6.5's summary, filter §5.2's `rows`
+for shipped design-bug PRs (`uiTweak === true && outcome === "done"` and a
+non-null `prUrl` — the `uiTweak` marker is set by the script's `runUiTweak`,
+GGC-29) and invoke:
+
+```
+/_ui-demo-batch '<json array of {ticketId, prUrl} for those rows>'
+```
+
+`/_ui-demo-batch` captures each PR's demo **SERIALLY on the one simulator** (so
+the parallel fan-out's N agents never drive the device at once — the race is
+gone by construction; see that helper), then attaches each as an idempotent PR
+comment. It is **fail-soft and never blocks**: no device / capture error
+degrades to a WARN and the run still completes. Empty filtered set → no-op.
+
+Under `--launch-only` the dispatcher returns before the workflow finishes, so
+there are no `rows` here — the caller that consumes the completion
+(`/ggx-on-duty --demo`) runs the demo pass instead. Then STOP.
 
 ---
 

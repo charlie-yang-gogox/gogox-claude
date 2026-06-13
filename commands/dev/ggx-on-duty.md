@@ -22,12 +22,13 @@ Prerequisite: >
 
 # /ggx-on-duty — start the working-hours watch loop
 
-**Usage**: `/ggx-on-duty [--team:<KEY>] [--no-dispatch] [--no-analyze] [--classic] [--until:HH:MM]`
+**Usage**: `/ggx-on-duty [--team:<KEY>] [--no-dispatch] [--no-analyze] [--classic] [--demo] [--until:HH:MM]`
 
 - `--team:<KEY>` — passed through to /ticket-analyze and /ggx-dispatcher (required when the repo's `branch_prefix` is `auto`).
 - `--no-dispatch` — disable Leg 1 entirely (watch-only mode).
 - `--no-analyze` — Leg 1 runs the dispatcher without the preceding analyze step.
 - `--classic` — **fallback (D21).** Force Leg 1's old single headless `claude -p` chain (analyze + dispatch chained in one detached child) instead of the **default D22 path**. Use only if the default workflow path misbehaves; the per-ticket fan-out is then NOT visible from this session. (`--workflow` is still accepted as a redundant no-op — the D22 path is the default now.) See Leg 1 → "Leg 1 invocation decision (D22)".
+- `--demo` — after a Leg-1 dispatch completes, spawn a background serial demo-capture pass (`/_ui-demo-batch`) over the design-bug PRs it just shipped, so `design bug` PRs from the local on-duty loop carry a demo recording (GGC-29). Off by default. Requires a flutter repo + a logged-in simulator the local headless child can reach (it boots the persistent sim if none is running). dev/port/bug lanes unaffected.
 - `--until:HH:MM` — optional auto-stop. Default: none (run until the user interrupts or closes the session).
 
 ## Non-negotiable guardrails
@@ -42,7 +43,7 @@ Prerequisite: >
 
 1. Run the /ggx-dispatcher pre-flight SUBSET: main worktree, default branch, clean tree, worktree prune, gh auth — its lockfile step is explicitly EXCLUDED (on-duty never touches the dispatcher lock). The dispatcher has NO Linear probe, so add on-duty's own: one Linear MCP call (e.g. `list_teams`) must succeed, and fail fast on a missing/mismatched `--team` for the repo's prefix. Abort start if any fail.
 2. Ensure `.ggx-on-duty/` exists and is gitignored (state must never be git-tracked; same in-repo-but-untracked pattern as `claude-reports/`).
-3. Init `.ggx-on-duty/state.json` if absent (resume cursors if present). On resume, **load-and-merge over defaults** — read the file, then fill in any key absent from it from the default skeleton below (a state file written by an older on-duty version, or hand-truncated, must never crash a wake cycle: a missing `self_pushed` is an empty map, not undefined). The `v` field carries the schema version; if a future bump changes a key's shape, the merge is the place to migrate. **On resume, also unconditionally reset `chain.running` and `health.running` to `false`** — a fresh session has no in-flight background agents by definition; a laptop shutdown kills agents WITH the session, so a `running=true` carried over from a dead session would otherwise make both legs skip forever (the completion notification that flips it back will never arrive).
+3. Init `.ggx-on-duty/state.json` if absent (resume cursors if present). On resume, **load-and-merge over defaults** — read the file, then fill in any key absent from it from the default skeleton below (a state file written by an older on-duty version, or hand-truncated, must never crash a wake cycle: a missing `self_pushed` is an empty map, not undefined). The `v` field carries the schema version; if a future bump changes a key's shape, the merge is the place to migrate. **On resume, also unconditionally reset `chain.running`, `health.running`, and `demo.running` to `false`** — a fresh session has no in-flight background agents by definition; a laptop shutdown kills agents WITH the session, so a `running=true` carried over from a dead session would otherwise make those legs skip forever (the completion notification that flips it back will never arrive).
 
 ```json
 {
@@ -50,6 +51,7 @@ Prerequisite: >
   "last_wake_wallclock": "<now ISO>",
   "chain":  { "running": false, "phase": null, "task_id": null, "next_due": "<now>" },
   "health": { "running": false, "task_id": null, "next_due": "<now>" },
+  "demo":   { "running": false, "task_id": null },
   "notified": {},
   "self_pushed": {},
   "analyzer_verdicts": {}
@@ -57,6 +59,7 @@ Prerequisite: >
 ```
 
    - `chain` / `health`: background-agent liveness + **time-based** due timestamps (dynamic mode has no fixed tick to take a modulus of). Every spawn records the harness task id into `task_id` so RECONCILE can verify liveness via TaskList. `chain.phase` (default D22 path `"analyze"`→`"dispatch"` | `--classic` path `"chain"` | `null` when idle) drives the completion-notification branch in Leg 1; it is absent on `health` (health has no sub-phases). Older state files without `phase` load as `null` (the on-invocation merge fills it) — treat a `running=true` chain with `phase=null` as `"chain"` (the pre-D22 headless shape) for back-compat.
+   - `demo` (`--demo` only): liveness of the post-dispatch serial demo-capture background session (GGC-29). No `next_due` — it is event-triggered (spawned on a dispatch completion that shipped design-bug PRs), not time-paced; `running` is the single-flight guard so two demo passes never drive the simulator at once. Absent on older state files → load as `{ running: false, task_id: null }`.
    - `notified`: `"<pr#>:<check>:<sha>" -> status` (CI dedup). `self_pushed`: `pr# -> sha` (suppress self-induced CI-rerun alerts). `analyzer_verdicts`: `ticketId -> verdict` (highlight changes only). No comment cursor needed — comment-actionability is judged statelessly inside /ggx-pr-resolver's two-stage gate (mechanical pre-filter + LLM judge over all open threads).
 
 4. Start the loop: invoke `/loop` **with no interval** (dynamic mode) with the wake procedure below as the recurring prompt.
@@ -85,7 +88,7 @@ Wake cycles are SERIAL: the recurring prompt is never re-entrant; completion not
   **Default (D22): two phases; the dispatch fan-out is owned by THIS session for live `/workflows` visibility.**
   - **Phase A — analyze (headless):** spawn the SAME background headless `claude -p` session, but running ONLY `/ticket-analyze --non-interactive [--team:<KEY>]` — this keeps the analyzer's per-ticket sweep context OUT of the on-duty session. Set `chain.running=true`, `chain.phase="analyze"`, store `task_id`. (Under `--no-analyze`, skip Phase A and go straight to Phase B this cycle.)
   - **Phase B — dispatch (inline, launch-only):** on Phase-A completion, invoke `/ggx-dispatcher --workflow --launch-only [--team:<KEY>]` **INLINE in this session**. Its Step 1-4 (pre-flight incl. the §1.7 P2 permissions gate, discovery, race-lock) run synchronously — bounded and fast — then §5.2 fires the `Workflow` tool, now **owned by the on-duty session**, so the per-ticket fan-out tree renders in your `/workflows`. `--launch-only` returns the workflow `runId` immediately and does NOT babysit (no §5.2 step-4 heartbeat / step-5 consume — on-duty owns those). Record the `runId` into `chain.task_id`, set `chain.phase="dispatch"` (keep `chain.running=true`). Inline-driving Step 1-4 here is allowed: the "never inline-drive blocking commands" guardrail targets the tens-of-minutes JOIN, not this bounded launch.
-  - On the dispatch workflow's completion notification: consume ONLY the structured `{counts, rows}` return (`TaskOutput` tail — never the per-ticket transcripts, so the session stays lean), then close out the chain as in the `chain.running` branch above.
+  - On the dispatch workflow's completion notification: consume ONLY the structured `{counts, rows}` return (`TaskOutput` tail — never the per-ticket transcripts, so the session stays lean), then close out the chain as in the `chain.running` branch above. **Then, when `--demo` is set, trigger the demo pass** (see "Demo pass" below) over the design-bug rows just shipped — do NOT block the close-out on it.
 - **Leg 1 invocation decision (D22 — promoted to DEFAULT 2026-06-12, supersedes D21).** The two-phase workflow path (headless analyze → inline `/ggx-dispatcher --workflow --launch-only` dispatch owned by the on-duty session, live `/workflows`) is now the **default**. Promotion followed several live validation rounds (2026-06-12) that confirmed both gating criteria: (a) on-duty context stays lean with the workflow tree owned in-session; (b) the inline Phase-B Step 1-4 launch does not stall the wake cadence. It became safe to default because D21's two blockers had already cleared — the P2 silent-stall hard-aborts **before any ticket is locked** (`ggx-dispatcher.md` Step 1.7, GGC-20), and the verify-agent level-2 deadlock is solved by the R4 headless auditor on **both** paths (GGC-19 / PR #81). **`--classic` remains as a per-run fallback** (the old single headless chain, `chain.phase="chain"`) for zero-downside reversion if a future regression appears — D21's "classic, never --workflow" reasoning survives only as the `--classic` rationale.
 - **Why chained is safe**: ticket-analyze posts the analysis comment BEFORE the label write, so the dispatcher never consumes a half-written verdict; analyzer and dispatcher touch disjoint ticket sets by construction (analyzer's Step 1.5.5 skips `ready-to-*` / `dispatcher-*-in-flight`; Step 8.2 pre-write re-check guards the reverse direction).
 - **Known edge — never hand-label verdict labels while the chain is running**: the analyzer's label write computes `current − analyzer-owned-labels + verdict` and will overwrite a `ready-to-dev` you add mid-run. The summary must state when the chain is in flight.
@@ -102,11 +105,37 @@ ONE pass over `gh pr list --author @me --state open` covering CI and resolution.
 1. **CI check (in-session, pure reads)**: key `<pr#>:<check>:<headSha>`; notify only on transition (absent|green → red), dedup via `notified`. `headSha == self_pushed[pr#]` → do NOT swallow: still report a red, but tagged `(self-pushed — rerun from our own push)`, and clear `self_pushed[pr#]` once that SHA's CI reaches a terminal state (success/failure). Never suppress by "one cycle" — cycle length is dynamic and CI duration is not. Evict keys for MERGED/CLOSED/superseded SHAs (unless DEGRADED).
 2. **Resolve (background)**: skip if `health.running`; else spawn ONE background headless CLI session (`claude -p --permission-mode bypassPermissions`, same mechanism as Leg 1) running `/ggx-pr-resolver --batch --user=@me --auto`, passing a **skip-set of branch names** (headRefName is the canonical key — PR numbers cannot work: chain-in-flight tickets may have no PR yet, `/dev:ship` opens it last): (a) branches the Leg-1 chain currently has in flight — while `chain.running`, read the dispatcher's early in-flight file `claude-reports/dispatcher/<RUN_TS>-<PID>.inflight.tsv` (written right after its §4.1 ticket race-locks, before any §5 agent spawns — see `ggx-dispatcher.md` §4.4; discover via newest-mtime glob — on-duty cannot know the background subagent's RUN_TS/PID and must never read the dispatcher's `.lock` file); do NOT rely on the resolver's own in-flight-label read — `/dev:ship` can remove the label mid-sweep and the resolver would walk into a worktree `/dev:ff` is still writing to —, and (b) nothing else — the resolver's two-stage gate and ownership guard handle the rest. On completion: flip flag, **set `health.next_due = now + 1h` HERE (on completion, not at spawn** — a 70-min batch would otherwise re-fire immediately and compress the interval), record pushed SHAs into `self_pushed`, fold `needs-human` PRs into the notification.
 
+### Demo pass (`--demo` only — event-triggered by a Leg-1 dispatch completion)
+
+Spawned (not time-paced) when a Leg-1 **workflow** dispatch completes with ≥1
+shipped design-bug PR. Mirrors GGC-29's "serial pass" design: on-duty owns the
+workflow completion (D22 `--launch-only`), so on-duty — not the dispatcher —
+triggers the demo capture.
+
+- **Trigger** (in the Leg-1 dispatch close-out, when `--demo`): from the consumed
+  `{rows}`, take rows where `uiTweak === true && outcome === "done"` with a
+  non-null `prUrl`. None → nothing to do.
+- **Single-flight**: skip if `demo.running` (a prior batch's demo pass is still
+  capturing — only one actor may drive the simulator at a time; this guard is
+  what makes the serial-by-construction guarantee hold across wake cycles).
+- **Spawn** ONE background headless CLI session (`claude -p --permission-mode
+  bypassPermissions`, same mechanism as the legs — keeps the wake cycle ~1-2 min;
+  a blocking inline pass would stall it) running
+  `/_ui-demo-batch '<json [{ticketId, prUrl}, …]>'`, cwd = this main worktree.
+  Set `demo.running=true`, store its `task_id`. The local headless child shares
+  this laptop, so it reaches the simulator (a cloud run could not — documented
+  no-op there).
+- **On its completion notification**: set `demo.running=false` and fold its
+  one-line summary (`<C> captured, <S> skipped`) into the next cycle's summary.
+- **Fail-soft**: `/_ui-demo-batch` always exits 0; a demo failure never blocks
+  ship, never fails a wake cycle, and never touches ticket/PR state beyond an
+  idempotent PR comment. A leg failure still never ends the loop (guardrail).
+
 ### Finalize (every wake)
 
 1. ONE batched notification (red CI, resolver reports, needs-human PRs, analyzer verdict CHANGES). Channel `/_slack-notify`; ALSO append to `.ggx-on-duty/digest.md` (durable fallback — Slack-unconfigured is a silent no-op).
 2. Persist state (`last_wake_wallclock`, cursors — comment cursors only post-notify). Write deterministically: render the FULL JSON to a temp file and `mv` over `state.json` (atomic; never hand-reprint partial JSON — silently dropped keys corrupt dedup).
-3. One-line summary: `wake 14:32 | chain: in-flight (CAF-583, CAF-643) | PRs: 5 green, #492 resolver spawned | sweep: due 15:10`. When `chain.running`, **surface the in-flight ticket IDs** in the `chain:` segment by reading column 1 (`<ticket-id>`) of the dispatcher's early in-flight file `claude-reports/dispatcher/<RUN_TS>-<PID>.inflight.tsv` — the SAME newest-mtime glob Leg 2 already uses for its skip-set (§ "Leg 2 — Resolve"; on-duty cannot know the background subagent's `RUN_TS`/`PID` and must never read the `.lock`). This is the only ticket-level visibility that crosses the headless-process boundary — the spawned chain's own fan-out progress tree lives in its detached `claude -p` session and is NOT visible from the on-duty session. Keep it to IDs only; per-ticket detail stays in the chain's context + its report file (lean-session guardrail). If the glob finds no current file (chain just spawned, not yet past its §4.1 race-lock), print `chain: in-flight (roster pending)` rather than guessing. _(Full per-ticket live visibility is GGC-28's job — it needs the Leg-1 fan-out moved top-level under `--workflow`, blocked by GGC-20.)_
+3. One-line summary: `wake 14:32 | chain: in-flight (CAF-583, CAF-643) | PRs: 5 green, #492 resolver spawned | sweep: due 15:10`. When `chain.running`, **surface the in-flight ticket IDs** in the `chain:` segment by reading column 1 (`<ticket-id>`) of the dispatcher's early in-flight file `claude-reports/dispatcher/<RUN_TS>-<PID>.inflight.tsv` — the SAME newest-mtime glob Leg 2 already uses for its skip-set (§ "Leg 2 — Resolve"; on-duty cannot know the background subagent's `RUN_TS`/`PID` and must never read the `.lock`). This is the only ticket-level visibility that crosses the headless-process boundary — the spawned chain's own fan-out progress tree lives in its detached `claude -p` session and is NOT visible from the on-duty session. Keep it to IDs only; per-ticket detail stays in the chain's context + its report file (lean-session guardrail). If the glob finds no current file (chain just spawned, not yet past its §4.1 race-lock), print `chain: in-flight (roster pending)` rather than guessing. _(Full per-ticket live visibility is GGC-28's job — it needs the Leg-1 fan-out moved top-level under `--workflow`, blocked by GGC-20.)_ When `demo.running` (or a demo pass completed this cycle), append a `demo:` segment (e.g. `demo: capturing (2 PRs)` / `demo: 2 captured, 1 skipped`).
 4. `--until` reached → **DRAIN, don't hard-stop** (owner decision D15): spawn nothing new from this point; if background agents are still in flight, keep waking only to collect their completions (fallback heartbeat 1800s), then write the final summary and do NOT reschedule. A clean join preserves the completion notifications and the `self_pushed` writes they carry (labels would self-recover via Q2/Q4 anyway, but drained state needs no recovery). Otherwise **choose the next wakeup dynamically**:
 
 ## Dynamic pacing (how to pick the next wakeup)

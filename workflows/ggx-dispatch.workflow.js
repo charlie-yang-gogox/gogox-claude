@@ -221,6 +221,7 @@ async function runUiTweak(item) {
       prUrl: null,
       stage: "ui:apply",
       error: prep?.error || "ui-tweak apply/preview failed (or prep agent returned null)",
+      uiTweak: true, // design-bug row marker (GGC-29) — lets callers filter for the demo pass
       uiTweakFailed: true,
     };
   }
@@ -248,7 +249,8 @@ async function runUiTweak(item) {
         stage: "ui:audit",
         error:
           "UI-TWEAK BLOCKED (structural pre-pass): added lines contain non-inert-UI logic signals (import/call/control-flow/identifier) — reverted, no changes kept.",
-        uiTweakFailed: true,
+        uiTweak: true, // design-bug row marker (GGC-29) — lets callers filter for the demo pass
+      uiTweakFailed: true,
       };
     }
   }
@@ -321,6 +323,7 @@ async function runUiTweak(item) {
       prUrl: null,
       stage: "ui:audit",
       error: `UI-TWEAK BLOCKED (${who}): ${reason}`,
+      uiTweak: true, // design-bug row marker (GGC-29) — lets callers filter for the demo pass
       uiTweakFailed: true,
     };
   }
@@ -358,11 +361,13 @@ async function runUiTweak(item) {
       prUrl: null,
       stage: "ui:ship",
       error: "ui-tweak finisher agent returned null (skip / terminal API error)",
+      uiTweak: true, // design-bug row marker (GGC-29) — lets callers filter for the demo pass
       uiTweakFailed: true,
     };
   }
   return {
     ticketId: item.ticketId,
+    uiTweak: true, // design-bug row marker (GGC-29) — the demo pass filters on uiTweak && outcome==="done" && prUrl
     outcome: ship.error ? "failed" : "done", // ui-tweak has no port-paused
     prUrl: ship.prUrl ?? null,
     stage: ship.stage || "ui:review",
