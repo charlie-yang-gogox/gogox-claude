@@ -39,6 +39,23 @@ Prerequisite: >
 - **A leg failure never ends the loop.** Each leg runs in its own try/continue boundary; an error becomes one WARN line in the cycle summary. The loop ends only on user interrupt or `--until`.
 - **Keep the session lean** (the loop lives 8+ hours in one context): each cycle contributes a one-line summary; full dispatcher / pr-resolver output stays in the spawned agents' own contexts and report files — cite paths, never paste tables back into the on-duty session.
 
+## Demo capture prerequisite (login-gated screens — GGC-50)
+
+ui-tweak (`design bug`) tickets run under `--auto` with GGC-14 navigate+capture ON, so a wake cycle may
+dispatch a `demo` pass. Capturing a **login-gated** screen (booking flow, order tracking, payment, …)
+only works when the demo device already holds a **logged-in debug `dev` build** the worktree build can
+run on. This is a **one-time human setup**, never something the loop can do (OTP login is not
+headless-drivable):
+
+- Keep a logged-in debug `com.gogox.clientapp.dev` build on the target device (one-time manual OTP login).
+- Pin the preview/demo flavor to `dev` so worktree builds don't collide on signature with the CI-signed
+  staging app: add `flavor: dev` to the app repo's `<repo>/.gogox-claude.yaml` (GGC-7 override).
+
+When this is not set up, the demo stage now **skips up-front with a surfaced reason** (no silent
+"session-blocked"; see `commands/design/ui-tweak/demo.md` Step 1.4 + "Demo device prerequisite"). A missing
+demo never blocks a PR — the draft PR still opens via the normal Demo fallback chain. So this is an
+optional capture-quality prerequisite, not a loop requirement.
+
 ## On invocation (once)
 
 1. Run the /ggx-dispatcher pre-flight SUBSET: main worktree, default branch, clean tree, worktree prune, gh auth — its lockfile step is explicitly EXCLUDED (on-duty never touches the dispatcher lock). The dispatcher has NO Linear probe, so add on-duty's own: one Linear MCP call (e.g. `list_teams`) must succeed, and fail fast on a missing/mismatched `--team` for the repo's prefix. Abort start if any fail.
