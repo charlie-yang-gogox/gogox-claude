@@ -153,8 +153,8 @@ The orchestrator's loop sees `repair-context` and routes back to `/ui-tweak:appl
 
 `--auto` DOES reach this stage (D7, revised): `/ui-tweak:ff --auto` auto-takes the direct-ship path
 after its single apply (used by `/ggx-work` / `/ggx-dispatcher` for `design bug` tickets — the
-dispatcher runs that lane inline in its main session precisely so this stage's opus judge can spawn,
-see `ggx-dispatcher.md` §5.0). **The panel is UNCHANGED under `--auto`**: both judges always spawn,
+dispatcher's `Workflow` script runs that lane as a SCRIPT-spawned level-1 leg precisely so this
+stage's opus judge can spawn, see `ggx-dispatcher.md` §5.2). **The panel is UNCHANGED under `--auto`**: both judges always spawn,
 same tiers (`ui-verify-agent` sonnet + `dev-reviewer` opus), same unanimous-CLEAR rule — full
 tier-decorrelation, no model override, neither judge skipped.
 

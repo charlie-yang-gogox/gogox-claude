@@ -585,5 +585,5 @@ Under `--auto` the deliver decision is auto-supplied via the direct-ship auto-de
 tickets whose Linear labels include `design bug` (precedence over the canonical
 `{bug,port,feature}` set — see `_ticket-lib.md` § Lane derivation); `/ggx-work` executes it like
 the other FF pipelines (terminates at PR-open, no mid-pipeline HITL gate); `/ggx-dispatcher` runs
-`design bug` tickets **inline in its main session** (not as a spawned worker) so the audit panel's
-opus judge can spawn — see `ggx-dispatcher.md` §5.0. Linear-only; Jira has no ui-tweak lane.
+`design bug` tickets as a **SCRIPT-spawned level-1 leg** in its `Workflow` script (`runUiTweak`)
+so the audit panel's opus judge can spawn — see `ggx-dispatcher.md` §5.2. Linear-only; Jira has no ui-tweak lane.

@@ -393,8 +393,8 @@ call site and, if needed, new rows to the mapping table here.
 - **`--dry-run` paths must not reach this skill.** Both callers gate the
   invocation (`/ticket-analyze` dry-run short-circuits at Step 7;
   `/ggx-dispatcher` dry-run stops at §4.0 before §4.2/§6.5).
-- **Never send between the dispatcher's §4.3 table and §5.3 spawns.**
-  The table + N Agent calls must stay in one assistant message; notify
+- **Never send between the dispatcher's §4.3 table and the §5.2 `Workflow` launch.**
+  The table + the `Workflow` tool call must stay in one assistant message; notify
   points in the dispatcher are exclusively §4.2 and §6.5.
 - **Raw signals in, rendering out.** If a caller starts passing
   pre-rendered emoji/tokens, that is drift — fix the caller.

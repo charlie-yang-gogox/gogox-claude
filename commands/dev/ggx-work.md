@@ -622,14 +622,14 @@ where it left off via `infer_dev_stage`.
 
 ## Relationship to `/ggx-dispatcher`
 
-`/ggx-dispatcher` spawns `/ggx-work <id> --auto` for every locked
-ticket regardless of lane (see `ggx-dispatcher.md` §5.1) — **with one
-exception**: `design bug` tickets run the ui-tweak lane **inline in the
-dispatcher's main session** instead of in a spawned subagent, because the
-ui-tweak audit panel spawns an opus judge (`dev-reviewer`) and nested
-opus spawns from a general-purpose subagent are officially unsupported
-(see `ggx-dispatcher.md` §5.0 and `ARCHITECTURE.md` "Nested-spawn
-constraint"). Inside each spawned subagent, `/ggx-work`
+`/ggx-dispatcher`'s `Workflow` script runs `/ggx-work <id> --auto` for every
+locked ticket regardless of lane (see `ggx-dispatcher.md` §5.1) — **with one
+exception**: `design bug` tickets run the ui-tweak lane as a **SCRIPT-spawned
+level-1 leg** (`runUiTweak`) instead of a plain `runWork` agent, because the
+ui-tweak audit panel spawns an opus judge (`dev-reviewer`) and a script-spawned
+agent is level-1, so the opus judge spawns cleanly (a level-2 opus spawn inside
+a worker is broken — see `ggx-dispatcher.md` §5.2 and `ARCHITECTURE.md`
+"Nested-spawn constraint"). Inside each agent, `/ggx-work`
 calls `/route --non-interactive` to pick `/port:ff` / `/dev:ff` /
 `/bug:ff` / `/ui-tweak:ff` from the classification label plus worktree
 filesystem state.
