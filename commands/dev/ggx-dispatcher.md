@@ -139,13 +139,22 @@ labeling still works — the analyzer is additive, not mandatory.
      - With flag: normalize via `tr '[:lower:]' '[:upper:]'` and validate against the union of known prefixes in `~/.claude/commands/profiles/org.yaml`. Unknown → STOP with:
        > `--team:<KEY> '<KEY>' is not a known prefix in org.yaml.`
      - `team_key = upper(KEY)`.
-4. Resolve `default_branch`:
+4. Resolve `default_branch` and capture the **clean-trunk tip** (GGC-49):
    ```bash
    default_branch=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
    if [ -z "$default_branch" ]; then
      default_branch=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)
    fi
    [ -z "$default_branch" ] && abort "Cannot detect default branch. Run: git remote set-head origin -a"
+   # GGC-49 — fetch and capture the default-branch tip NOW, before any worktree is
+   # created. This SHA is the ground-truth clean-trunk baseline every fan-out leg's
+   # worktree must be based on. Threaded into the roster (§5.2) so the workflow
+   # script can assert each leg's base_ref against it and DEMOTE a contaminated leg
+   # (the CAF-625 cross-worktree leak). Capture once here so the whole batch shares
+   # one consistent baseline even if trunk moves mid-run.
+   git fetch origin "$default_branch" 2>/dev/null || abort "Cannot fetch origin/$default_branch — refusing to dispatch on a stale trunk."
+   trunk_sha=$(git rev-parse "origin/$default_branch")
+   [ -z "$trunk_sha" ] && abort "Cannot resolve origin/$default_branch tip after fetch."
    ```
 
 ---
@@ -690,9 +699,11 @@ Steps:
 
 2. **Persist `run.json`** for crash recovery (§4.2 / §5.2-resume). Write
    `claude-reports/dispatcher/run.json` with `{ scriptPath, roster:
-   DISPATCH_ROSTER_JSON, ts }` (atomic `mktemp` + `mv`). `ts` comes from a
-   shell `date` call — NOT from inside the script (the script's clock is
-   frozen for resume determinism).
+   DISPATCH_ROSTER_JSON, trunkSha: $trunk_sha, ts }` (atomic `mktemp` + `mv`).
+   `ts` comes from a shell `date` call — NOT from inside the script (the
+   script's clock is frozen for resume determinism). `trunkSha` is the
+   §4.2-captured clean-trunk tip (GGC-49) — persisted so a same-session resume
+   reuses the SAME baseline the original launch asserted against.
 
 3. **Launch (P2 coverage already asserted in Step 1.7).** The Linear-MCP
    allowlist coverage gate now runs in **Step 1 pre-flight, item 7** — BEFORE
@@ -701,13 +712,18 @@ Steps:
    NOT re-grep here. **Print the §4.3 table** (same as §5.3 — the table is the
    review) and **in the same turn** invoke the `Workflow` tool:
    - `scriptPath`: `$HOME/.claude/workflows/ggx-dispatch.workflow.js`
-   - `args`: the `DISPATCH_ROSTER_JSON` value. Pass it as a JSON array — but
-     note that in THIS harness the `Workflow` tool delivers `args` to the
-     script as a **JSON string** regardless (confirmed 2026-06-08, CAF-371:
-     even a live array arrived stringified). The script tolerates both via a
-     `JSON.parse` fallback, so the roster reaches it either way. **Do not
-     rely on the script seeing a live array.** If `args` carries content yet
-     the script parses zero rows, it returns `error: "roster-parse-failed"`
+   - `args`: a JSON object `{ "trunkSha": "<$trunk_sha>", "roster":
+     DISPATCH_ROSTER_JSON }` (GGC-49 — the wrapper shape carries the
+     clean-trunk baseline alongside the roster so the script can assert each
+     leg's base against it). Note that in THIS harness the `Workflow` tool
+     delivers `args` to the script as a **JSON string** regardless (confirmed
+     2026-06-08, CAF-371: even a live object/array arrived stringified). The
+     script tolerates the wrapper object, a bare array (legacy, no trunkSha →
+     contamination assertion skipped with a loud warn), and a stringified form
+     of either via a `JSON.parse` fallback, so the roster reaches it either
+     way. **Do not rely on the script seeing a live value.** If `args` carries
+     content yet the script parses zero rows, it returns
+     `error: "roster-parse-failed"`
      LOUDLY (smoke guard) rather than a silent empty no-op — §6.4 must treat
      that error field as a batch failure, not "no work".
    The tool returns immediately with a `runId` and runs in the background;
@@ -765,6 +781,16 @@ Steps:
    the script's `runFallback` stage — including the ui-tweak BLOCKED/failed
    case, which `runFallback` posts because the script owns that flow). Under
    `--workflow` there is no separate inline-row fallback path.
+
+   **GGC-49 no-op rows.** A ui-tweak leg may return an EARNED no-op:
+   `outcome:"done", prUrl:null, stage:"ui:noop", noop:true` with a
+   `noopJustification` (validated against the ticket target on clean trunk).
+   Render it in the §6.4 table as a `done` with PR column `— (no-op)` and
+   surface the `noopJustification` so a human can sanity-check the claim — do
+   NOT silently show a blank "done". An UNEARNED no-op (empty diff with no
+   target validation) and a CONTAMINATED base both come back as
+   `outcome:"failed"` already routed through `runFallback`, so they appear in
+   the failed count with their reason — never as a silent close.
 
 **Resume (same session only).** If the dispatcher is interrupted and
 re-invoked in the same session, relaunch with

@@ -75,9 +75,32 @@ Hold these values in memory for use in later steps where you see `{deps_install}
    ```
 1. `git fetch origin "$DEFAULT_BRANCH"` — fetch the latest default branch.
    - If fetch fails (e.g. network error), show the error and stop. Do not proceed with a stale `origin/$DEFAULT_BRANCH`.
-2. `git worktree add -b "$BRANCH" "$WORKTREE_PATH" "origin/$DEFAULT_BRANCH"` — create the worktree.
-   - If Step 2 chose to reuse an existing local branch, use `git worktree add "$WORKTREE_PATH" "$BRANCH"` (without `-b`).
-   - If Step 2 chose to track a remote branch, use `git worktree add --track -b "$BRANCH" "$WORKTREE_PATH" "origin/$BRANCH"`.
+2. Create the worktree. Set `FRESH_BRANCH=1` for the default case (a brand-new branch cut off
+   `origin/$DEFAULT_BRANCH` this run); set `FRESH_BRANCH=0` on the two reuse paths below (an existing /
+   remote branch legitimately carries its own commits beyond trunk, so the Step 3 clean-trunk assertion
+   does not apply to them):
+   - Default (new branch): `FRESH_BRANCH=1; git worktree add -b "$BRANCH" "$WORKTREE_PATH" "origin/$DEFAULT_BRANCH"`.
+   - If Step 2 chose to reuse an existing local branch: `FRESH_BRANCH=0; git worktree add "$WORKTREE_PATH" "$BRANCH"` (without `-b`).
+   - If Step 2 chose to track a remote branch: `FRESH_BRANCH=0; git worktree add --track -b "$BRANCH" "$WORKTREE_PATH" "origin/$BRANCH"`.
+3. **Assert the new worktree is based on clean trunk** (GGC-49 — worktree/branch isolation). Under a
+   parallel fan-out, a per-ticket worktree's HEAD can leak to a *sibling* ticket's commit instead of the
+   freshly-fetched default-branch tip; a contaminated base silently poisons every downstream diff baseline
+   (e.g. `/ui-tweak`'s `base_ref`), which is exactly how CAF-625 was falsely closed as a no-op. For the
+   fresh-branch case, verify the resulting HEAD equals the tip we just fetched and STOP loudly on
+   mismatch — never proceed on a contaminated base:
+   ```bash
+   # Only assert for the FRESH branch case (created off origin/$DEFAULT_BRANCH this run).
+   if [ "${FRESH_BRANCH:-1}" = "1" ]; then
+     EXPECTED_TIP=$(git rev-parse "origin/$DEFAULT_BRANCH")
+     ACTUAL_HEAD=$(git -C "$WORKTREE_PATH" rev-parse HEAD)
+     if [ "$ACTUAL_HEAD" != "$EXPECTED_TIP" ]; then
+       echo "FAIL: worktree $WORKTREE_PATH HEAD ($ACTUAL_HEAD) != fresh origin/$DEFAULT_BRANCH tip ($EXPECTED_TIP)." >&2
+       echo "Cross-worktree branch contamination (GGC-49) — refusing to proceed on a non-trunk base." >&2
+       echo "Remove the worktree (git worktree remove --force $WORKTREE_PATH), re-fetch, and retry." >&2
+       exit 1
+     fi
+   fi
+   ```
 
 ## Step 4: Move session and setup
 

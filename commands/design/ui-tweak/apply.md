@@ -179,7 +179,26 @@ mkdir -p "$REPO_ROOT/.dev/ui-tweak"
 if [ "$PLATFORM" = "flutter" ]; then
   git -C "$REPO_ROOT" checkout -- pubspec.lock 2>/dev/null || true
 fi
-[ -f "$REPO_ROOT/.dev/ui-tweak/base_ref" ] || git rev-parse HEAD > "$REPO_ROOT/.dev/ui-tweak/base_ref"
+# GGC-49 — a no-op must be EARNED against CLEAN TRUNK, never a contaminated base. Before recording
+# base_ref (the cumulative-diff baseline the audit/no-op verdict trusts), assert HEAD is the freshly
+# fetched default-branch tip. Under the parallel fan-out a worktree's HEAD can leak to a sibling
+# ticket's commit (CAF-625: base_ref was 321be8fc, NOT trunk a6c525c7), making any "already
+# matches / no source changes" verdict computed against it WORTHLESS. Refuse to record a poisoned
+# base_ref. Only assert on the FIRST record (a correction/repair re-run keeps the original base_ref,
+# which was already validated when first written).
+if [ ! -f "$REPO_ROOT/.dev/ui-tweak/base_ref" ]; then
+  source "$HOME/.claude/lib/dev-mode.sh"
+  DEFAULT_BRANCH=$(default_branch)
+  EXPECTED_TIP=$(git -C "$REPO_ROOT" rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || true)
+  ACTUAL_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  if [ -n "$EXPECTED_TIP" ] && [ "$ACTUAL_HEAD" != "$EXPECTED_TIP" ]; then
+    echo "FAIL: refusing to record base_ref — HEAD ($ACTUAL_HEAD) != fresh origin/$DEFAULT_BRANCH tip ($EXPECTED_TIP)." >&2
+    echo "Cross-worktree contamination (GGC-49): a no-op/diff computed against a non-trunk base is invalid." >&2
+    echo "Recreate the worktree off clean trunk (/add-worktree re-fetches + asserts) and re-run /ui-tweak." >&2
+    exit 1
+  fi
+  git -C "$REPO_ROOT" rev-parse HEAD > "$REPO_ROOT/.dev/ui-tweak/base_ref"
+fi
 ```
 
 ## Step 6 — edit, value/UI-only
