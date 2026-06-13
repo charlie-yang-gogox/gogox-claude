@@ -244,7 +244,7 @@ labeling still works — the analyzer is additive, not mandatory.
    ```
 
 7. **Permission pre-flight (P2) — assert BEFORE any ticket is touched.**
-   `--workflow` agents run at `acceptEdits`, inherit the session tool
+   The §5.2 `Workflow` agents run at `acceptEdits`, inherit the session tool
    allowlist, and have **no way to answer a mid-run permission prompt**, so a
    required `git`/`gh`/`openspec`/Linear-MCP call that is not allowlisted
    **silently stalls the whole run**. The §4.1 race-lock happens *after*
@@ -725,7 +725,7 @@ Steps:
    `[aggregate]`):
    - Tail the workflow task's output (`TaskOutput`, tail only — keep main
      context lean; not accumulating per-ticket context is the whole point of
-     `--workflow`) every ~5 min and surface a **one-line heartbeat** to the
+     the `Workflow` path) every ~5 min and surface a **one-line heartbeat** to the
      user: agents active + the latest `log()` line.
    - **Stall judgment:** a *single* worker can legitimately run >10 min with no
      new script `log()` line (the work is inside the worker agent), so do NOT
