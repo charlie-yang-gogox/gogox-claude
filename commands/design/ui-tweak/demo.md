@@ -54,6 +54,48 @@ Android serial). **If no device is found, or the app process is no longer runnin
 fallback chain covers the PR. (Device *discovery* is read-only; the one sanctioned drive action is the
 Step 1.5 deep-link fire, and only in NAVIGATE mode.)
 
+## Step 1.4 — login-gated pre-detection (NAVIGATE mode only — GGC-50)
+
+_Skip entirely when `AUTO_NAV=0` (PASSIVE mode captures the already-approved screen — no navigation, no login wall to hit)._
+
+Before attempting ANY navigation (Tier 1 deep-link or Tier 2 tap-through), pre-detect the case the whole
+ticket is about: the target screen is **login-gated** and the running app session is **not logged in**.
+Reaching it is then impossible (nav-only never logs in — see the Login wall note below), so a nav attempt
+is a guaranteed no-op: a deep-link to a `requiresAuth` host bounces to `/logon/personal`, and a tap-through
+burns `MAX_TAPS` only to stop at the login wall. Detecting this up-front lets the stage **skip cleanly with
+a surfaced reason instead of a silent no-op** — addressing the GGC-50 finding that a whole on-duty session
+captured 0 demos with only "session-blocked" to show for it.
+
+1. **Derive the target host** exactly as Tier 1 Step 1 does (from `.dev/ui-tweak/ticket.json` + the change
+   summary). Classify it as auth-gated when it is the `login` host itself, or a host known to sit behind the
+   login wall on this repo (e.g. `payment`, `profile`, `voucher`, `order-detail`, `service-delivery`,
+   `rate-driver` — anything the app guards with `requiresAuth`). A repo MAY declare its auth-gated hosts via
+   `auth_gated_hosts:` in `<repo>/.gogox-claude.yaml` (authoritative when present); absent that, treat the
+   `login` host plus the booking/order/payment/profile family above as auth-gated.
+2. **Probe the running session's logged-in state** (read-only — never log in). Best-effort, cheap signals:
+   - Android: `adb -s "$DEV" exec-out screencap -p > /tmp/uitw-pre.png` and check whether the current screen
+     is already the login wall (a `/logon` route / login form). If the launch landed on login, the session
+     is unauthenticated.
+   - iOS: `xcrun simctl io "$DEV" screenshot /tmp/uitw-pre.png` and the same check.
+   - If the probe itself fails (device gone, app not running), fall through to Step 3 (fail-silent) — there
+     is nothing to capture either way.
+3. **Decision**:
+   - Target host is auth-gated AND the session is not logged in → **skip up-front**: do NOT navigate. Set the
+     reason and consume the request, then exit (this is the explicit, surfaced skip the ticket asks for):
+     ```bash
+     REASON="demo skipped: target screen is login-gated and the demo device is not logged in. See the Demo device prerequisite below (a logged-in debug \`dev\` build is required)."
+     printf '%s\n' "$REASON" > "$WT/.dev/ui-tweak/demo-note"   # pr's relevance gate skips embedding when a note is present
+     rm -f "$WT/.dev/ui-tweak/demo-requested"                  # consume — never loop
+     echo "demo: $REASON"
+     exit 0
+     ```
+   - Target host is NOT auth-gated, OR the session is already logged in → proceed to Step 1.5 navigation
+     normally.
+
+> This pre-detection is fail-soft: when in doubt (host classification ambiguous, probe inconclusive), it
+> **falls through to Step 1.5** rather than over-skipping a capturable screen. It only short-circuits on the
+> high-confidence "auth-gated host + provably-on-login-wall" case.
+
 ## Step 1.5 — navigate to the target screen (NAVIGATE mode only — GGC-14)
 
 _Skip entirely when `AUTO_NAV=0` (PASSIVE mode → go straight to Step 2 and capture the current screen)._
@@ -118,6 +160,12 @@ If navigation hits a **login wall** (a `requiresAuth` target lands on `/logon/pe
 feature demands login), that is a **could-not-reach** with reason "login needed to reach <screen>".
 **Never log in or tap past the login wall yourself** (no credentials; nav-only). Being logged-in is not
 assumed — a login wall is simply one reason navigation couldn't finish.
+
+Step 1.4 (GGC-50) pre-detects the high-confidence variant of this (auth-gated host + provably-on-login-wall)
+and skips up-front, so this reactive path now only fires for the residual cases the pre-check let through
+(ambiguous host classification, or a login wall encountered mid tap-through). The fix to STOP demos
+silently failing on login-gated screens is the **Demo device prerequisite** below — a logged-in debug
+`dev` build on the target device.
 
 ### On failure to reach the target (mode-aware)
 
@@ -194,6 +242,32 @@ running device (preview fell back to build-only), the app isn't up, or no host m
 `demo-requested`, print one line, exit 0; the PR opens with the normal Demo fallback chain. A capture
 failure NEVER fails the `--auto` run (the build gate + audit are the load-bearing gates; the demo is
 reviewer evidence only).
+
+## Demo device prerequisite (login-gated screens — GGC-50)
+
+NAVIGATE-mode capture of a **login-gated** screen (delivery booking flow, order tracking, payment,
+profile, …) only succeeds when the target device already holds a **logged-in session in a build the
+worktree can run**. Two conditions must both hold; today they conflict unless the operator sets this up
+once:
+
+1. **A logged-in debug `dev` build is installed on the demo device.** The demo/preview build is a fresh
+   worktree build; it can only co-exist with an already-logged-in app if they share the **same package +
+   signing**. That means a debug `com.gogox.clientapp.dev` build, logged in via a **one-time manual OTP
+   login by a human** (OTP is not headless-drivable, so the pipeline can never do this itself).
+2. **Pin the preview/demo flavor to debug `dev`** so the worktree build does NOT collide with the only
+   other logged-in build on the device — the CI-signed STAGING app (`--flavor stag`), whose signature a
+   debug worktree build cannot match. Pinning is a one-line repo override (GGC-7):
+   ```yaml
+   # <repo>/.gogox-claude.yaml
+   flavor: dev          # preview/demo build = debug com.gogox.clientapp.dev (matches the logged-in demo build)
+   ```
+   The platform default is `--flavor stag` (see `commands/dev/profiles/platform/flutter.yaml`); the
+   `flavor:` override wins and `/ui-tweak:start` probes + caches it (`.dev/ui-tweak/flavor`).
+
+When prerequisite (1) is not met for a login-gated target, **Step 1.4 skips up-front with a surfaced
+reason** rather than spawning a no-op navigation — no silent "session-blocked". A missing demo is never a
+ship blocker: the PR opens on schedule via the normal Demo fallback chain (ticket visuals → "No
+screenshot" line). See `commands/dev/ggx-on-duty.md` "Demo capture prerequisite".
 
 ## Stop
 
