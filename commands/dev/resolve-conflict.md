@@ -124,6 +124,27 @@ Run `{test_cmd}` to verify the test suite passes after the merge/rebase. Fix any
 
 Note: on platforms where `{test_cmd}` is itself a slash command (e.g. Flutter's `/check-test --all --fix`), invoke it as a slash command. On platforms where it's a raw shell command (e.g. Android's `./gradlew testDebugUnitTest`), run it via Bash.
 
+**Per-repo test profile (GGC-24).** When `{test_cmd}` is a slash command
+(`/check-test`), the android variant override (`test_task` / `test_variant`)
+and the `known_flaky_tests` quarantine are resolved inside it (its Step 0.3) —
+nothing extra to do. When `{test_cmd}` is a RAW gradle command, resolve the
+override yourself so the gate is not deaf to it, and apply the same exact-match
+flake partition before judging green/red:
+
+```bash
+source "$HOME/.claude/lib/dev-mode.sh"
+TEST_TASK=$(resolved_android_test_task "$(git rev-parse --show-toplevel)")
+# substitute $TEST_TASK for the gradle task in {test_cmd} (the repo may have
+# no testDebugUnitTest task — e.g. gogovan-client-v2-android needs
+# testStandardStagingUnitTest), then partition failures against
+# known_flaky_tests: a run whose only failures are known flakes is GREEN.
+```
+
+This is the fix the ticket calls out: the rebase tests-green gate must pick up
+the same resolved command + flake quarantine, or the android rebase lane stays
+permanently red on the ~37 environment-flaky tests (CET-8234/8424). Every
+suppression is printed verbatim in the banner.
+
 ### 5. Format
 
 Run `{format_cmd}` to apply formatter and lint fixes — without committing.

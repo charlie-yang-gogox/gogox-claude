@@ -108,3 +108,123 @@ default_branch() {
 # Echoes the remote-tracking ref for the default branch (e.g. `origin/main`).
 # Use this wherever the old code hardcoded `origin/trunk` as a diff/merge base.
 trunk_ref() { printf 'origin/%s\n' "$(default_branch)"; }
+
+# ---------------------------------------------------------------------------
+# Per-repo test profile resolution (GGC-24)
+# ---------------------------------------------------------------------------
+# Single source of truth for the OPTIONAL per-repo test-profile keys that
+# override / augment the platform yaml's `test_cmd`. All test-running
+# consumers (`/check-test`, `/dev:verify` Step 1, `/ggx-pr-resolver` /
+# `/resolve-conflict` callee tests-green gate) read these via the helpers
+# below so the override lives in ONE place, not in N auto-memories.
+#
+# Resolution order for the profile file (first hit wins) — mirrors every
+# command's "Step 0: Resolve project profile":
+#   1. `<repo-root>/.gogox-claude.yaml`  (repo self-describes)
+#   2. `~/.claude/commands/profiles/registry/<basename>.yaml`  (central map)
+#
+# Keys (all OPTIONAL, additive, empty-default → zero behavior change):
+#   test_task:    <gradle unit-test task name>  e.g. testStandardStagingUnitTest
+#                 Overrides android's default `testDebugUnitTest` task.
+#   test_variant: <build variant>               e.g. standardStaging
+#                 Convenience alias — when `test_task` is absent it is derived
+#                 as `test${Variant^}UnitTest` (capitalized). `test_task` wins
+#                 if both are set.
+#   known_flaky_tests: <YAML list> of `Class#method` (or `Class` for a whole
+#                 class) entries the flake-quarantine partition removes from the
+#                 `--fix` budget. Matching is EXACT class[+method], never a
+#                 name substring (see known_flaky_tests() below).
+
+# profile_file [<worktree_root>]
+#   Echoes the absolute path of the resolved profile yaml, or empty if none.
+profile_file() {
+  local wt root base reg
+  wt="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+  [ -z "$wt" ] && return 0
+  if [ -f "$wt/.gogox-claude.yaml" ]; then
+    printf '%s\n' "$wt/.gogox-claude.yaml"; return 0
+  fi
+  base=$(basename "$wt")
+  reg="$HOME/.claude/commands/profiles/registry/$base.yaml"
+  [ -f "$reg" ] && { printf '%s\n' "$reg"; return 0; }
+  # Repo-local registry fallback (dev checkout of gogox-claude itself).
+  root=$(git rev-parse --show-toplevel 2>/dev/null)
+  reg="$root/commands/dev/profiles/registry/$base.yaml"
+  [ -f "$reg" ] && printf '%s\n' "$reg"
+}
+
+# profile_value <key> [<worktree_root>]
+#   Echoes the scalar value of <key> from the resolved profile, or empty.
+#   Grep-based (no yq dependency) — reads a single top-level `key: value` line.
+profile_value() {
+  local key="$1" wt="$2" pf
+  pf=$(profile_file "$wt")
+  [ -n "$pf" ] && [ -f "$pf" ] || return 0
+  grep -E "^[[:space:]]*$key:" "$pf" 2>/dev/null \
+    | head -1 \
+    | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]*$//; s/^["'\'']//; s/["'\'']$//'
+}
+
+# capitalize <word>  — first letter upper, rest unchanged (portable, no ${^}).
+_dm_capitalize() {
+  local s="$1"
+  [ -z "$s" ] && return 0
+  printf '%s%s\n' "$(printf '%s' "${s%"${s#?}"}" | tr '[:lower:]' '[:upper:]')" "${s#?}"
+}
+
+# resolved_test_task [<worktree_root>]
+#   Echoes the android gradle unit-test TASK NAME the repo should run:
+#     1. profile `test_task`               (explicit, wins)
+#     2. derived from profile `test_variant` as test${Variant^}UnitTest
+#     3. empty → caller uses its platform default (testDebugUnitTest)
+#   Empty output means "no override" so callers keep their existing default.
+resolved_test_task() {
+  local wt="$1" task variant
+  task=$(profile_value test_task "$wt")
+  [ -n "$task" ] && { printf '%s\n' "$task"; return 0; }
+  variant=$(profile_value test_variant "$wt")
+  [ -n "$variant" ] && printf 'test%sUnitTest\n' "$(_dm_capitalize "$variant")"
+}
+
+# resolved_android_test_task [<worktree_root>]
+#   Like resolved_test_task but ALWAYS echoes a usable task name, falling back
+#   to the platform default `testDebugUnitTest`. Use where a concrete task is
+#   required (e.g. building the `./gradlew :module:<task>` command line).
+resolved_android_test_task() {
+  local t
+  t=$(resolved_test_task "$1")
+  [ -n "$t" ] && printf '%s\n' "$t" || printf 'testDebugUnitTest\n'
+}
+
+# known_flaky_tests [<worktree_root>]
+#   Echoes the profile's known_flaky_tests entries, one per line (empty if
+#   none). Accepts the YAML inline-list form `[A#x, B#y]` and the block-list
+#   form (subsequent `  - A#x` lines). Entries are emitted verbatim, trimmed.
+known_flaky_tests() {
+  local wt="$1" pf
+  pf=$(profile_file "$wt")
+  [ -n "$pf" ] && [ -f "$pf" ] || return 0
+  # Inline form: known_flaky_tests: [A#x, B#y]
+  local inline
+  inline=$(grep -E '^[[:space:]]*known_flaky_tests:[[:space:]]*\[' "$pf" 2>/dev/null \
+    | head -1 | sed -E 's/^[^[]*\[//; s/\][[:space:]]*$//')
+  if [ -n "$inline" ]; then
+    printf '%s\n' "$inline" | tr ',' '\n' \
+      | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^["'\'']//; s/["'\'']$//' \
+      | grep -v '^$'
+    return 0
+  fi
+  # Block form: known_flaky_tests:\n  - A#x\n  - B#y
+  awk '
+    /^[[:space:]]*known_flaky_tests:[[:space:]]*$/ { inblk=1; next }
+    inblk && /^[[:space:]]*-[[:space:]]*/ {
+      line=$0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+      gsub(/^["'\'']|["'\'']$/, "", line)
+      gsub(/[[:space:]]+$/, "", line)
+      if (line != "") print line
+      next
+    }
+    inblk && /^[^[:space:]-]/ { inblk=0 }
+  ' "$pf" 2>/dev/null
+}

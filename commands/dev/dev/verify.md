@@ -71,9 +71,50 @@ FIGMA_RAW=""
 
 ## Step 1: Run tests
 
-Run `/check-test --fix` if available for `{platform}`, else fall back to `{test_cmd}` directly. Auto-fix failures.
+Run `/check-test --fix` if available for `{platform}`, else fall back to the
+**resolved** test command directly. Auto-fix failures.
 
-If still failing after fix attempts, note in the eventual verify report and proceed (the verify-agent + reviewer can still catch issues; abort decision is downstream).
+**Per-repo test profile (GGC-24).** The gradle unit-test task and the
+known-flake quarantine are resolved from the repo profile, not hardcoded:
+
+- When delegating to `/check-test`, the resolution happens inside it (its
+  Step 0.3) — nothing extra to do here; the android variant override
+  (`test_task` / `test_variant`) and the `known_flaky_tests` partition both
+  apply automatically.
+- When falling back to a raw `{test_cmd}` (no `/check-test` branch for the
+  platform), resolve the override yourself so the fallback is not deaf to it:
+
+  ```bash
+  source "$HOME/.claude/lib/dev-mode.sh"
+  TEST_TASK=$(resolved_android_test_task "$WT")   # android: profile override or testDebugUnitTest
+  KNOWN_FLAKES=$(known_flaky_tests "$WT")          # one Class[#method] per line
+  FLAKE_COUNT=$(printf '%s\n' "$KNOWN_FLAKES" | grep -c . )
+  ```
+
+  Substitute `$TEST_TASK` for the gradle task in `{test_cmd}`, and apply the
+  same exact-match flake partition (`/check-test` Step 5a) to the failures: a
+  run whose only failures are known flakes is GREEN, and known flakes consume
+  ZERO fix budget. This is what keeps the android `/ggx-pr-resolver` rebase
+  lane from being permanently red on the ~37 environment-flaky tests
+  (CET-8234/8424).
+
+**Suppression banner (always present, verbatim).** Whenever any known flake is
+suppressed, surface the same banner `/check-test` prints —
+
+```
+Known flakes suppressed: <N>
+  - <Class#method>
+  ...
+```
+
+— and record a `Known flakes suppressed: <N>` line in the eventual
+`.dev/verify-pass.md` report (line just below `Status:`), listing each
+suppressed test verbatim. If `FLAKE_COUNT == 0`, omit the line entirely
+(no behavior change for repos without the keys).
+
+If still failing after fix attempts (REAL failures, not flakes), note in the
+eventual verify report and proceed (the verify-agent + reviewer can still catch
+issues; abort decision is downstream).
 
 ## Step 2: Spawn verify-agent
 

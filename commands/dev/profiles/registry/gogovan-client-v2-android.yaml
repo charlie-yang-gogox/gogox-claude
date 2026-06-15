@@ -2,3 +2,15 @@ platform: android
 product: ca
 branch_prefix: CET
 ticket_system: jira
+
+# Per-repo test profile (GGC-24). See registry/_SCHEMA.md.
+# This repo has NO `testDebugUnitTest` task — unit tests run via the
+# standardStaging variant. Knowledge moved here out of auto-memory.
+test_task: testStandardStagingUnitTest
+
+# Tests that fail in a full-suite run but pass individually (CET-8234/8424,
+# both triaged as environment issues). Quarantined out of the `--fix` budget;
+# every suppression is printed verbatim in the run banner. Exact class+method
+# matching only — a regression in another method of these classes is NOT masked.
+# Extend with the precise `Class#method` ids as they are confirmed flaky.
+known_flaky_tests: []
