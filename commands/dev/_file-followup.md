@@ -1,6 +1,6 @@
 ---
 name: _file-followup
-description: "Internal helper invoked on pipeline failure paths (/ggx-dispatcher §6.2 infra-class failures, ggx-dispatch.workflow.js worker-died / platform-bug + inline design-bug lane, /dev:verify BLOCKED abort, /monkey-test crash report). Appends ONE markdown breadcrumb per failure to a LOCAL, gitignored sink (.ggx-followups/followups.md) — NO Linear ticket creation, NO GitHub, NO network. v1 closes the loop's missing stage-8 (feedback → follow-up capture) with a zero-risk local file the maintainer reviews later; promoting any entry to a real ticket stays a manual human action. Dedup by a stable class+signature key carried in an HTML marker; whitelisted failure classes only; hard cap of 3 appends per run. Fail-soft: any helper failure logs ONE WARN and NEVER blocks or fails the calling pipeline. Not user-invoked."
+description: "Internal helper invoked on pipeline failure paths (/ggx-dispatcher §6.2 infra-class failures, dispatch-fanout.workflow.js worker-died / platform-bug + inline design-bug lane, /dev:verify BLOCKED abort, /monkey-test crash report). Appends ONE markdown breadcrumb per failure to a LOCAL, gitignored sink (.ggx-followups/followups.md) — NO Linear ticket creation, NO GitHub, NO network. v1 closes the loop's missing stage-8 (feedback → follow-up capture) with a zero-risk local file the maintainer reviews later; promoting any entry to a real ticket stays a manual human action. Dedup by a stable class+signature key carried in an HTML marker; whitelisted failure classes only; hard cap of 3 appends per run. Fail-soft: any helper failure logs ONE WARN and NEVER blocks or fails the calling pipeline. Not user-invoked."
 ---
 
 # `/_file-followup <class> summary=<text> [report=<path>] [signature=<text>]`
@@ -45,9 +45,9 @@ ticket / label stays a **manual human action** — this helper only records.
 | `<class>`          | Fired by                                                                 |
 |--------------------|--------------------------------------------------------------------------|
 | `dispatcher-infra` | `/ggx-dispatcher` §6.2 — a derived `failed` outcome (infra-class).        |
-| `worker-died`      | `ggx-dispatch.workflow.js` `triageUnknownFallback` — worker agent died.   |
-| `platform-bug`     | `ggx-dispatch.workflow.js` `triagePlatformBug` — suspected platform defect.|
-| `design-bug-failed`| `ggx-dispatch.workflow.js` inline design-bug (`runUiTweak`) lane failure. |
+| `worker-died`      | `dispatch-fanout.workflow.js` `triageUnknownFallback` — worker agent died.   |
+| `platform-bug`     | `dispatch-fanout.workflow.js` `triagePlatformBug` — suspected platform defect.|
+| `design-bug-failed`| `dispatch-fanout.workflow.js` inline design-bug (`runUiTweak`) lane failure. |
 | `verify-blocked`   | `/dev:verify` Step 2a — `Status: BLOCKED` still present after recovery.    |
 | `audit-blocked`    | ui-tweak audit panel BLOCKED (the dispatcher inline design-bug handler).   |
 | `monkey-crash`     | `/monkey-test` Step 5 — crashes remain (`--no-fix` or unfixable).          |
@@ -193,7 +193,7 @@ best-effort observability artifact — losing one must never fail a pipeline.
 
 - `/ggx-dispatcher` §6.2 — `commands/dev/ggx-dispatcher.md` (`any failed`
   row → `class=dispatcher-infra`).
-- `ggx-dispatch.workflow.js` — `triageUnknownFallback` (`class=worker-died`),
+- `dispatch-fanout.workflow.js` — `triageUnknownFallback` (`class=worker-died`),
   `triagePlatformBug` (`class=platform-bug`), and the inline design-bug
   (`runUiTweak`) failure path (`class=design-bug-failed` / `audit-blocked`).
   The workflow is JS, so it appends inline via the same file + marker contract

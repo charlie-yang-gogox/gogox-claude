@@ -1,4 +1,4 @@
-// ggx-dispatch.workflow.js
+// dispatch-fanout.workflow.js
 //
 // Phases A+B of the /ggx-dispatcher fan-out → Workflow migration (R5 in
 // ARCHITECTURE.md "Nested-spawn constraint"). Replaces the §5.3 N×Agent
@@ -46,7 +46,7 @@
 // a loud per-leg warn (assertion skipped) rather than crashing the whole batch.
 
 export const meta = {
-  name: "ggx-dispatch",
+  name: "dispatch-fanout",
   description:
     "Fan out one /ggx-work --auto agent per locked dev/port/bug ticket; design-bug tickets run apply->dual-judge(sonnet+opus)->finish as script-spawned level-1 agents (dissolves dispatcher §5.0 inline lane). Structured per-ticket result replaces §6.1 text parsing; per-ticket failure fallback writes Linear immediately.",
   // phases is a pure literal — /workflows progress view only, no exec semantics.
@@ -986,7 +986,7 @@ if (roster.length === 0 && typeof args === "string") {
 }
 if (!trunkSha) {
   log(
-    "[ggx-dispatch] WARN: no trunkSha in args — worktree/branch contamination assertion (GGC-49) " +
+    "[dispatch-fanout] WARN: no trunkSha in args — worktree/branch contamination assertion (GGC-49) " +
       "will be SKIPPED for every leg (legacy roster shape). Each leg still self-asserts at base_ref time.",
   );
 }
@@ -1004,7 +1004,7 @@ if (roster.length === 0) {
     (Array.isArray(args) && args.length > 0);
   if (argsCarriedWork) {
     log(
-      "[ggx-dispatch] ERROR: args carried a roster but parsed to 0 rows — " +
+      "[dispatch-fanout] ERROR: args carried a roster but parsed to 0 rows — " +
         "serialization/parse mismatch (P2 class), NOT a no-op. Spawned 0 agents.",
     );
     return {
@@ -1013,7 +1013,7 @@ if (roster.length === 0) {
       rows: [],
     };
   }
-  log("[ggx-dispatch] empty roster — nothing to fan out");
+  log("[dispatch-fanout] empty roster — nothing to fan out");
   return { counts: { done: 0, "port-paused": 0, failed: 0 }, rows: [] };
 }
 
