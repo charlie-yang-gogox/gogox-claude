@@ -76,12 +76,42 @@ Before spawning the judges, run a **deterministic, LLM-free structural scan** ov
 (grep only — no model call). It looks for added-line signals that are unambiguously NOT inert UI:
 new imports, new call heads / function definitions, renamed or new identifiers, control-flow
 keywords, changed `@+id` references, etc. — the same structural signals `dev-reviewer` would catch,
-but computed in milliseconds:
+but computed in milliseconds.
+
+**Design-system style/token import allowlist (GGC-38).** A large class of legitimately pure-visual
+fixes must add a **design-system style/token import** to reference a style constant (e.g. `+import
+'.../theme/app_typography.dart';` so a `TextStyle` can use `AppTypography.fontSizeCaption`). Such an
+added import — and the use of its `App*`-prefixed const identifiers — is **inert UI**, not logic, so
+it must NOT trip the pre-pass. Before the structural scan, drop these allowlisted lines from the
+`ADDED` set. The allowlist is deliberately narrow — a **style/token module path** OR a **bare
+`App*`-prefixed const use** — never the whole `theme/` tree and never a behavioral import
+(service / provider / controller / repository / router / bloc / cubit / notifier / state):
 
 ```bash
 # Examine ADDED lines only (leading '+', excluding the '+++' file header).
 ADDED=$(printf '%s\n' "$DIFF_TEXT" | grep -E '^\+' | grep -vE '^\+\+\+')
-STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE \
+
+# GGC-38: exempt design-system style/token imports + their App*-prefixed const
+# uses. STYLE_IMPORT_RE matches an `import`/`#import`/`using` line whose module
+# path is a known style/token module: theme/app_<token>.dart (colors, color,
+# typography, type, spacing, space, radius, radii, elevation, shadow, opacity,
+# dimens, dimension, breakpoint, theme, tokens, palette), OR a *_tokens / *_theme
+# / design_tokens / design_system style barrel. STYLE_CONST_RE matches a bare use
+# of an App*-prefixed const accessor (AppColors.blue100 / AppTypography.fontSizeCaption)
+# whose member is terminated by punctuation (, ; ) }) or end-of-line — a call head
+# like `AppFoo.bar(` (with or without a space before `(`) is NOT inert and is left
+# to trip the scan. The leading `[^(]*` keeps the line free of a call before the
+# const, so an App* const nested inside a call (e.g. `EdgeInsets.all(AppSpacing.md)`)
+# is conservatively NOT exempted here — it carries no other structural signal so
+# the main scan passes it anyway. Behavioral imports never match either pattern.
+STYLE_IMPORT_RE='^\+[[:space:]]*(import|#import|using)[[:space:]].*(theme/app_(colors?|typography|type|spacing|space|radi[ui]|radius|elevation|shadows?|opacit(y|ies)|dimens?(ions?)?|breakpoints?|theme|tokens?|palette)\.|(design_)?tokens?\.|design_system\.|_tokens\.|_theme\.)'
+STYLE_CONST_RE='^\+[[:space:]]*[^(]*\bApp[A-Z][A-Za-z0-9]*\.[A-Za-z_][A-Za-z0-9_]*([,;)}]|$)'
+
+ADDED_SCANNED=$(printf '%s\n' "$ADDED" \
+  | grep -vE "$STYLE_IMPORT_RE" \
+  | grep -vE "$STYLE_CONST_RE")
+
+STRUCTURAL_HIT=$(printf '%s\n' "$ADDED_SCANNED" | grep -cE \
   'import |require\(|=>|function |def |class |return |if \(|for \(|while \(|switch |await |async |new [A-Z]|@\+id/')
 ```
 
@@ -91,6 +121,15 @@ STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE \
   produces an early CLEAR — it only ever BLOCKs earlier, so the both-must-be-CLEAR contract in Step 3
   is unchanged (a CLEAR still requires BOTH judges to actually run and return CLEAR).
 - `STRUCTURAL_HIT == 0` → proceed to Step 2 and spawn BOTH judges normally.
+
+> **Allowlist is a pre-pass relaxation, NOT a CLEAR.** Removing a style/token import (or an `App*`
+> const use) from the scanned set only stops the *deterministic* short-circuit from firing — it does
+> **not** pass the change. The decorrelated dual-judge panel (Step 2/3) still runs in full on the
+> complete diff (including the allowlisted lines) and both judges must return CLEAR. So a diff whose
+> only "logic signal" was a design-system style/token import now reaches the panel instead of being
+> reverted outright (the GGC-38 / CAF-514 friction), while behavioral imports
+> (service / provider / controller / repository / router / state) still trip the scan exactly as
+> before.
 
 ## Step 2 — dual judge, decorrelated (R6), on the FINAL cumulative diff
 

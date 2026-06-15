@@ -56,7 +56,12 @@ git diff <base> | grep -nE '^\+' | grep -vE '^\+\+\+'   # added lines only
 Scan the added lines for, and **BLOCK** on any of these unless each one demonstrably maps to a
 recognized **inert UI-element constructor** (a widget/view that renders and does nothing else):
 
-- a new `import` / `#import` / `using` of a non-UI module;
+- a new `import` / `#import` / `using` of a non-UI module — **except** a design-system style/token
+  module (GGC-38): `theme/app_*.dart` token files (`app_colors`, `app_typography`, `app_spacing`,
+  `app_radius`, `app_elevation`, …), a `*_tokens` / `*_theme` / `design_tokens` / `design_system`
+  style barrel, and use of their `App*`-prefixed const accessors (`AppColors.blue100`,
+  `AppTypography.fontSizeCaption`) are **inert UI** and CLEAR-eligible; a behavioral import
+  (service / provider / controller / repository / router / bloc / cubit / notifier / state) is NOT;
 - a new **call head** — `identifier(` that is not a known inert UI element (e.g. `Divider(`,
   `Spacer(`, `Text(` are inert; `logPayment(`, `fetch(`, `save(`, `viewModel.x(` are not);
 - an **added / removed / renamed identifier** (function, type, parameter, `val`/`var`/`let`);

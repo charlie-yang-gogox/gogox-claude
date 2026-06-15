@@ -373,9 +373,25 @@ async function runUiTweak(item, trunkSha) {
     const added = prep.diffText
       .split("\n")
       .filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+    // GGC-38: exempt design-system style/token imports + their App*-prefixed
+    // const uses from the structural scan (mirrors audit.md Step 1c). A style/
+    // token import (theme/app_<token>.dart, *_tokens, *_theme, design_system,
+    // design_tokens) and a bare `App*.member` const accessor are inert UI, not
+    // logic — they must not short-circuit to BLOCKED. The allowlist is narrow
+    // (style/token module paths + non-call App* const uses only); behavioral
+    // imports (service/provider/controller/repository/router/state) never match.
+    // Removing them here only suppresses the deterministic short-circuit — the
+    // dual-judge panel below still runs on the FULL diff and remains the gate.
+    const STYLE_IMPORT_RE =
+      /^\+\s*(import|#import|using)\s.*(theme\/app_(colors?|typography|type|spacing|space|radi[ui]|radius|elevation|shadows?|opacit(y|ies)|dimens?(ions?)?|breakpoints?|theme|tokens?|palette)\.|(design_)?tokens?\.|design_system\.|_tokens\.|_theme\.)/;
+    const STYLE_CONST_RE =
+      /^\+\s*[^(]*\bApp[A-Z]\w*\.[A-Za-z_]\w*\b(?!\w|\s*\()/;
+    const addedScanned = added.filter(
+      (l) => !STYLE_IMPORT_RE.test(l) && !STYLE_CONST_RE.test(l),
+    );
     const STRUCTURAL_RE =
       /\bimport\b|require\(|=>|\bfunction\b|\bdef\b|\bclass\b|\breturn\b|\bif\s*\(|\bfor\s*\(|\bwhile\s*\(|\bswitch\b|\bawait\b|\basync\b|\bnew\s+[A-Z]|@\+id\//;
-    const structuralHit = added.some((l) => STRUCTURAL_RE.test(l));
+    const structuralHit = addedScanned.some((l) => STRUCTURAL_RE.test(l));
     if (structuralHit) {
       log(`[ui] ${item.ticketId} structural pre-pass BLOCKED (logic signal in diff) — opus judge skipped`);
       return {
