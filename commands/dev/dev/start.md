@@ -22,6 +22,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 - `--no-figma` — pre-declare that this ticket has no Figma source. Atomic-writes `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` so `/dev:figma` is skipped by the walker. **`/dev:start` is the SOLE writer of the SKIPPED first-line variant** (figma-subagent only writes `Fetched: <ISO>` or `Fetched: FAILED`).
 - `--bug` — bug-fix mode. Skips `/dev:detect` / `/dev:align` (no OpenSpec change to align), and `/dev:apply` takes its Step 0-bug branch: the agent re-fetches the ticket, investigates the codebase, writes the fix, and commits — autonomously. The human is NOT asked to find root cause or write code. In `default` mode there is one HITL gate confirming the agent's fix plan; in `--auto` even that is skipped. Writes `.dev/mode.md` so downstream stages take the bug branch.
 - `--no-ticket-init` — Skip the Linear ticket-init step (status → `In Progress`, drop `ready-to-dev` label, assignee → self, estimate=1, starting comment). Use when running the pipeline locally for inspection / debugging without flipping the ticket on Linear. Default: enabled (init runs in both default and `--auto` modes; the underlying `/_ticket-init` skill is idempotent).
+- `--port-handoff` — port→need-spec-review→ready-to-dev handoff entry (GGC-56). Set by `/dev:ff --port-handoff` when adopting a committed `openspec/changes/<name>` that `/port:ship` produced. Adopts the existing port worktree/branch instead of creating a fresh one (Step 3), exempts the committed openspec change from the re-entry refusal (Step 2), and writes `.dev/mode.md` = `port-handoff` so `/dev:apply` rides the feature OpenSpec flow but can hard-fail if it ever runs without the spec-review directives this stage captures (Step 4c). Rides the feature flow — does NOT combine with `--bug`.
 - Linear ticket (fetched).
 - Project profile (`{platform}`, `{deps_install}`, `{test_cmd}`).
 
@@ -41,7 +42,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 
 ## Step 1: Parse input
 
-- Extract `<ticket-id>` from `$ARGUMENTS`. Detect `--auto`. Detect `--no-figma`. Detect `--bug`. Detect `--no-ticket-init`.
+- Extract `<ticket-id>` from `$ARGUMENTS`. Detect `--auto`. Detect `--no-figma`. Detect `--bug`. Detect `--no-ticket-init`. Detect `--port-handoff` → `PORT_HANDOFF` (1/0).
 - Missing ticket-id in `<auto-mode>` → STOP.
 - Missing ticket-id in default mode → use **AskUserQuestion**. Stop if still missing.
 
@@ -53,6 +54,8 @@ A pipeline is in flight in this worktree if any of these are true:
 - `.dev/` contains any marker file (`.dev/figma-context.md`, `.dev/align-result.md`, `.dev/verify-pass.md`). Note: `.dev/spec-review-directives.md` is intentionally NOT in this list — it is written every run by Step 4c and would otherwise refuse re-entry on a re-run of `/dev:start`.
 
 If in flight, STOP with: `Pipeline already in flight in this worktree. Resume with /dev:ff, or /dev:ff --from <stage> to reset.`
+
+**Port-handoff exemption (GGC-56)**: when `PORT_HANDOFF == 1`, EXEMPT only the first bullet — a committed `openspec/changes/<name>` is the EXPECTED input of a port handoff (`/port:ship` produced it), not an in-flight dev pipeline, so its presence must NOT refuse re-entry. The second bullet (`.dev/` marker files) stays active: if a dev marker like `.dev/figma-context.md` or `.dev/verify-pass.md` already exists, a real dev pipeline is genuinely in flight and `/dev:start` must still refuse (resume via `/dev:ff` instead). In short: `--port-handoff` only waives the openspec-change-dir signal, never the dev-marker signal.
 
 ## Step 3: Pre-flight + ticket assignment
 
@@ -132,7 +135,43 @@ fi
 2. Read the ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`):
    - **Linear**: `mcp__claude_ai_Linear__get_issue` (already done in ownership check; reuse the snapshot). Branch type heuristic: `bug` label → `fix`; otherwise default to `feat`.
    - **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` (already done; reuse). Branch type heuristic: `.fields.issuetype.name == "Bug"` → `fix`; otherwise `feat`. The `--bug` flag (when set by `/bug:ff`) is the authoritative override in both trackers.
-3. Invoke `/add-worktree <ticket-id> --type <type>` — handles fetch, branch, EnterWorktree, port-settings, `{deps_install}`.
+3. **Worktree.** Normal path: invoke `/add-worktree <ticket-id> --type <type>` — handles fetch, branch, EnterWorktree, port-settings, `{deps_install}`.
+
+   **Port-handoff path (GGC-56)**: when `PORT_HANDOFF == 1`, do NOT `/add-worktree` — the port pipeline already created the worktree/branch that holds the committed openspec change. Reuse it instead of branching fresh (a fresh branch off `origin/<default>` would not contain the ported change):
+
+   ```bash
+   ticket_lc=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
+   cwd_base=$(basename "$PWD" | tr '[:upper:]' '[:lower:]')
+   branch="<the port worktree's branch, e.g. feat/$TICKET_ID — resolve from worktree list below>"
+
+   if [ "$cwd_base" = "$ticket_lc" ]; then
+     : # already inside ../<ticket-id> — no-op, we are in the port worktree.
+   elif git worktree list --porcelain \
+          | awk -v t="$ticket_lc" '/^worktree / && tolower($2) ~ t"$" {found=1} END{exit !found}'; then
+     # Existing worktree at ../<ticket-id> → enter it (EnterWorktree).
+     wt=$(git worktree list --porcelain \
+            | awk -v t="$ticket_lc" '/^worktree / && tolower($2) ~ t"$" {print $2; exit}')
+     # EnterWorktree "$wt"
+   else
+     # No worktree yet, but /port:ship pushed the branch. Create a worktree that
+     # CHECKS OUT THE EXISTING branch (never `-b` a new one — that would lose the
+     # ported change). Resolve the branch: prefer a local branch containing the
+     # ticket id, else origin/<branch>.
+     existing_branch=$(git for-each-ref --format='%(refname:short)' refs/heads \
+                         | grep -iE "/${ticket_lc}$|${TICKET_ID}" | head -1)
+     [ -z "$existing_branch" ] && existing_branch=$(git for-each-ref --format='%(refname:short)' refs/remotes/origin \
+                         | grep -iE "/${ticket_lc}$|${TICKET_ID}" | head -1 | sed 's|^origin/||')
+     if [ -n "$existing_branch" ]; then
+       git fetch origin "$existing_branch" 2>/dev/null || true
+       git worktree add "../$ticket_lc" "$existing_branch"
+       # EnterWorktree "../$ticket_lc"
+     else
+       echo "abort: --port-handoff but no port worktree/branch for $TICKET_ID found" >&2
+       exit 1
+     fi
+   fi
+   ```
+
 4. Write the full ticket content to `/tmp/<ticket-id>.md` (whatever tracker returned).
 
 **Default mode**:
@@ -226,6 +265,18 @@ fi
 
 `.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. Default (feature) mode does NOT write this file — readers resolve absent via `pipe_mode` (lib/dev-mode.sh): `feature` when the repo has an `openspec/` dir, `feature-direct` when it doesn't (GGC-17). `feature-direct` is deliberately marker-less — dynamic detection means pre-existing worktrees pick it up on re-run with zero migration. This keeps existing dev-pipeline runs unchanged and makes bug mode opt-in.
 
+## Step 4b-port: Port-handoff marker (when --port-handoff)
+
+```bash
+if [ "$PORT_HANDOFF" = "1" ]; then
+  mkdir -p .dev
+  printf 'port-handoff\n' > .dev/mode.md.tmp
+  mv .dev/mode.md.tmp .dev/mode.md   # atomic
+fi
+```
+
+`.dev/mode.md` with value `port-handoff` (GGC-56) is the canonical signal that this dev run was reached via the port→need-spec-review→ready-to-dev handoff rather than a fresh scaffold. `pipe_mode` (lib/dev-mode.sh) returns `port-handoff`; the `/dev:apply` walker rides the FEATURE OpenSpec flow (Steps 1–5, normal figma/detect/align chain) for it, but `/dev:apply`'s feature spec-review consumers HARD-FAIL when this marker is present and `.dev/spec-review-directives.md` is absent — proof that `/dev:start` (and therefore Step 4c's directive capture) was skipped. Runs in both auto and default modes. Mutually exclusive with `--bug`; `/dev:ff` never passes both.
+
 ## Step 4c: Capture spec-review directives (if any)
 
 After `/spec-review` runs, the authoritative reviewer decisions live in a
@@ -311,5 +362,6 @@ Print one of:
 - Figma path: `Started /dev pipeline for <ticket-id> (<title>). Mode: <auto|default>. Next: /dev:figma`
 - `--no-figma` path: `Started /dev pipeline for <ticket-id> (<title>). Mode: <auto|default>. Figma source pre-declared as none. Next: /dev:apply (figma + align skipped via .dev/figma-context.md SKIPPED first line)`
 - `--bug` path: `Started /bug pipeline for <ticket-id> (<title>). Mode: <auto|default>. Next: /dev:apply (bug branch) — the agent will investigate the codebase, write the fix, and commit autonomously. OpenSpec stages (detect / align) are skipped.`
+- `--port-handoff` path: `Adopted port handoff for <ticket-id> (<title>). Mode: <auto|default>. Reusing the existing port worktree/branch; spec-review directives captured to .dev/spec-review-directives.md. Next: /dev:figma (rides the feature OpenSpec flow over the ported openspec change).`
 
 In auto mode, the chain orchestrator (`/dev:ff`) will continue automatically. STOP this stage's body.

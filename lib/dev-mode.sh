@@ -24,6 +24,15 @@
 #                      migration. OpenSpec-initialized repos always have
 #                      `openspec/` committed at the root, so they can never
 #                      misdetect into this branch.
+#   `port-handoff`   — .dev/mode.md exists and its first line is exactly
+#                      `port-handoff` (written by /dev:start --port-handoff,
+#                      GGC-56). Rides the FEATURE flow — the OpenSpec apply
+#                      Steps 1-5 and the normal figma / detect / align chain —
+#                      but is REACHED via the port→need-spec-review→ready-to-dev
+#                      handoff entry (a committed openspec change adopted from
+#                      /port) rather than a fresh /dev:start scaffold. The
+#                      distinct marker lets /dev:apply hard-fail if it ever runs
+#                      without the spec-review directives /dev:start captured.
 #   `feature`        — everything else (the OpenSpec-driven default).
 # Absent / unreadable / unexpected mode.md content falls through to the
 # openspec-dir check, so unmarked legacy worktrees keep their behavior.
@@ -38,6 +47,9 @@ pipe_mode() {
   if [ -f "$wt/.dev/mode.md" ] \
      && [ "$(head -1 "$wt/.dev/mode.md" 2>/dev/null)" = "bug" ]; then
     echo bug
+  elif [ -f "$wt/.dev/mode.md" ] \
+     && [ "$(head -1 "$wt/.dev/mode.md" 2>/dev/null)" = "port-handoff" ]; then
+    echo port-handoff
   elif [ ! -d "$wt/openspec" ]; then
     echo feature-direct
   else

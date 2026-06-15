@@ -274,7 +274,7 @@ Run the two binary probes below. The full decision matrix is:
 |--------------------|--------------------------|---------------------------------|------------------------|
 | absent             | (any)                    | `/port:ff <ticket-id>`          | `porting`              |
 | present            | present                  | `/spec-review <ticket-id>`      | `spec-review-pending`  |
-| present            | absent                   | `/dev:ff <ticket-id>`           | `ready-for-dev`        |
+| present            | absent                   | `/dev:ff <ticket-id> --port-handoff` | `ready-for-dev`        |
 
 **Probe 1: `port:ship marker`**
 
@@ -351,8 +351,8 @@ fi
   > so an LLM-written spec is not implemented by another LLM without a
   > human gate."
 - `next_after_recommended`:
-  - phase=porting → `/spec-review <ticket-id>` (then `/dev:ff`)
-  - phase=spec-review-pending → `/dev:ff <ticket-id>`
+  - phase=porting → `/spec-review <ticket-id>` (then `/dev:ff <ticket-id> --port-handoff`)
+  - phase=spec-review-pending → `/dev:ff <ticket-id> --port-handoff`
   - phase=ready-for-dev → `(none — /dev:ff terminates at /dev:ship)`
 
 ### Step 5: Print the recommendation
