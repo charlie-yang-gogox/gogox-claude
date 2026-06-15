@@ -9,10 +9,17 @@ description: >
   `ri:v1` records (joined by ID, routed by `verify`: `unconfirmed`/`n/a`
   items need a human decision, `confirmed`/`refuted` items are shown as
   verified-FYI and not prompted), plus legacy `[AUTO-ACCEPTED]` / `A-N` /
-  `R-N` shapes for older comments — captures decisions (Confirm / Revise /
-  Defer), posts a single structured Linear comment with a stable marker, and
-  flips the label to `ready-to-dev`. Does NOT modify OpenSpec artifacts, does
-  NOT commit, does NOT touch the filesystem. Pure Linear-side review gate.
+  `R-N` shapes for older comments. For PORT tickets it first runs an
+  investigate-first phase (Step 3.5): every `kind=empirical verify=unconfirmed`
+  item is batch-investigated against the origin codebase (resolved from
+  `originalProjectPath`) before the decision loop, refuted claims are
+  pre-tagged Reject with a code-grounded directive, and "investigate origin"
+  is a first-class per-item option — a no-op for non-port tickets or when no
+  origin resolves. It then captures decisions (Confirm / Revise / Defer),
+  posts a single structured Linear comment with a stable marker, and flips the
+  label to `ready-to-dev`. Does NOT modify OpenSpec artifacts, does NOT commit,
+  does NOT touch the filesystem (the investigate phase only reads the origin
+  codebase). Pure Linear-side review gate.
 Prerequisite: >
   - Linear MCP authenticated.
   - Ticket has typically been processed by /port:ff (label `need-spec-review`).
@@ -327,7 +334,127 @@ For a `refuted` FYI item, always print its `Reality:` line — that is the
 single most useful thing in the whole review (the pipeline caught a false
 premise and corrected it). This forces the reviewer to see the shape of the
 review before the per-item flow starts. No prompt at the end of this step —
-just print and move on to step 4.
+just print and move on to step 3.5.
+
+### Step 3.5: Investigate-first phase (port lane only)
+
+**Why this phase exists.** For PORT tickets the origin codebase is ground
+truth and is available locally, yet without this phase the Step 4 loop asks
+the human to accept/reject/defer every `verify=unconfirmed` empirical claim
+with no tooling to settle it. Worse, items were decided in a fixed sorted
+order on the spot, so an investigation triggered while walking item N could
+refute an item already accepted earlier in the same run (the CAF-233
+AP-3/AG-4 provenance re-open failure). This phase moves all origin
+investigation **before** the decision loop, so every Step 4 decision runs
+against frozen, code-verified ground truth — no later read can contradict an
+earlier decision.
+
+This phase runs **after** Step 3's overview and **before** Step 4's decision
+loop. It computes findings for the whole batch up front; Step 4 then consumes
+them.
+
+#### Step 3.5.0: No-op gate (zero behavior change when not applicable)
+
+Compute `<port-lane>` and skip this entire phase (proceed directly to Step 4
+with no findings) unless **all** of the following hold:
+
+1. **Lane is port.** The ticket reached `/spec-review` via the port pipeline.
+   Heuristic (no extra MCP call — reuse Step 1.2's `<labels>` and Step 2's
+   parse): `<port-lane> = True` when `port` ∈ `<labels>` (case-insensitive)
+   OR `<port_summary_seen>` is `True` AND the active repo resolves an origin
+   path in 3.5.1 below. Non-port tickets (feature/bug `need-spec-review`
+   created by hand, or any ticket with no resolvable origin) → `<port-lane> =
+   False`.
+2. **An origin path resolves.** Read `<repo-root>/.claude/port-settings.json`;
+   expand `~` and `$ENV_VAR` in `originalProjectPath`. If the file is missing,
+   the field is absent, or the path is not a directory → treat as **no origin
+   available** → skip the phase. Do **not** prompt (this skill must stay a
+   pure review gate; a missing origin is a legitimate no-op, not an error).
+3. **There is at least one `kind=empirical verify=unconfirmed` review item**
+   (`queue == "review"`). If zero such items exist → skip the phase.
+
+If any condition fails, print one line and proceed to Step 4 unchanged:
+
+```
+Investigate-first: skipped (<reason: not-port-lane | no-origin-path | no-unconfirmed-empirical>). No origin investigation; decision loop runs as-is.
+```
+
+This satisfies the zero-behavior-change contract: for non-port tickets and for
+tickets with no unconfirmed empirical items, **no Explore agent is dispatched**
+and Step 4 behaves exactly as before.
+
+#### Step 3.5.1: Resolve origin + collect the investigation set
+
+```bash
+ORIGIN=$(jq -r '.originalProjectPath // ""' "$(git rev-parse --show-toplevel)/.claude/port-settings.json" 2>/dev/null)
+# Expand ~ and env vars.
+ORIGIN=$(eval printf '%s' "$ORIGIN")
+[ -n "$ORIGIN" ] && [ -d "$ORIGIN" ] || { echo "Investigate-first: skipped (no-origin-path)."; }
+```
+
+Build `<investigate-set>` = every review item with `kind == "empirical"` AND
+`verify == "unconfirmed"`. These are exactly the claims the upstream pipeline
+could not settle against the code — the items where origin investigation has
+value.
+
+#### Step 3.5.2: Batch-investigate against the origin codebase (inline)
+
+Run the investigation **inline in the current session** — do NOT spawn a
+nested `Agent`. `/spec-review` runs HITL from a main session, but inlining
+keeps the phase robust regardless of caller and mirrors `/port:explore`'s
+`--auto` inline reasoning (nested-Agent spawns are officially unsupported —
+see `ARCHITECTURE.md` "Nested-spawn constraint"). The "Explore agent"
+contract here is the dev-consult investigation pattern from
+`agents/dev/dev-consult-agent.md`: read the origin codebase with
+`Grep` / `Glob` / `Read` and settle each claim against real code.
+
+For each item in `<investigate-set>`:
+
+1. Extract the claim's subject from its body (Summary + Why + Evidence) —
+   provider/class/symbol names, feature paths, boolean-flag names, trigger
+   framing, etc.
+2. `Grep` / `Glob` / `Read` the origin at `$ORIGIN` for those symbols. Read
+   suspect files end-to-end, not snippets — state/lifecycle/ordering claims are
+   not visible in narrow windows (same discipline as `/dev:apply` Step 0-bug.2).
+3. Decide a `finding` for the item:
+   - `confirmed` — the origin code supports the claim. Record the file + symbol
+     evidence (`<path>:<line or symbol>`).
+   - `refuted` — the origin code contradicts the claim. Record the file + symbol
+     evidence AND a one-line `reality` describing what the code actually does.
+   - `inconclusive` — the origin read neither confirms nor refutes (symbol not
+     found, ambiguous). Record why. These remain genuine human-decision items.
+4. Hold per item: `{id, finding, evidence, reality?, directive?}`. For a
+   `refuted` item, also compose a **code-grounded `directive`**: the
+   replacement instruction `/dev:apply` should follow, citing the file +
+   symbol (e.g. `Reject: origin sets the flag in
+   RouteSelectionRepository.kt:onSelect(), not via the provenance boolean
+   claimed — implement against the setter, not the boolean.`).
+
+#### Step 3.5.3: Surface findings BEFORE the decision loop
+
+Print all findings up front (this is the "surface findings before any
+accept/reject/defer prompt" contract — AC-1):
+
+```
+Origin investigation (origin: <ORIGIN>) — <K> empirical claim(s) checked:
+
+  [✓ confirmed]   <id> — <Summary>   (evidence: <path:symbol>)
+  [✗ refuted]     <id> — <Summary>   → Reality: <…>   (evidence: <path:symbol>)
+                                       → pre-tagged Reject; directive: <…>
+  [? inconclusive]<id> — <Summary>   (origin read could not settle: <why>)
+```
+
+Then build `<findings>` keyed by item `id` and hand it to Step 4. Refuted
+items carry `pre_tag = "Reject"` + their `directive`; confirmed items carry
+`finding = "confirmed"` + evidence (shown to the reviewer but they still
+decide); inconclusive items carry `finding = "inconclusive"` and are walked
+normally.
+
+> **Pure review-gate guardrail (unchanged contract).** This phase only
+> **reads** the origin codebase. It writes NO files, runs NO `openspec
+> validate` / `/spec-lint`, makes NO commits, and does NOT touch the ticket
+> worktree. The findings live in session memory only, consumed by Step 4 and
+> recorded in the Step 5 comment. See §C.
 
 ### Step 4: HITL decision loop
 
@@ -335,7 +462,30 @@ Iterate the **review queue only** (`<review-items>`, `queue == "review"`) in
 the sorted order from step 3. FYI items (`queue == "fyi"`) are NEVER prompted —
 they were settled against the code upstream and are recorded as-is in Step 5.
 
-For each item:
+**Investigate-first ground truth (Step 3.5).** If Step 3.5 ran, each item may
+carry a `<findings>[id]` entry. The loop runs against this frozen ground
+truth, so no decision here can be silently contradicted by a later
+investigation (AC-3):
+
+- **`finding == "refuted"` (pre-tagged Reject).** Do NOT prompt the human to
+  accept a claim the origin code already disproved. Record the decision
+  directly as `Reject` with the code-grounded `directive` from Step 3.5.2,
+  print a one-line confirmation, and continue to the next item:
+  ```
+  Item <i>/<R> <id>: pre-tagged Reject (origin refuted). Directive: <directive>
+  ```
+  Append `{item_index, verdict: "Reject", directive, source_hash}` to
+  `<decisions>` and skip the AskUserQuestion for this item. (The reviewer can
+  still re-open it on a later `/spec-review` re-run if they disagree — the
+  source_hash + the Step 5 `[REVISED]` block make the override auditable.)
+- **`finding == "confirmed"`.** Surface the evidence line in the item header
+  (step 1 below) and fall through to the normal prompt — the human still
+  decides, now with code backing the claim.
+- **`finding == "inconclusive"` or no finding.** Normal prompt, with the
+  `Investigate origin` option available (step 2 below) for any item that is
+  still `verify == "unconfirmed"` and empirical.
+
+For each remaining item (i.e. not auto-recorded as a refuted pre-tag):
 
 1. Print the **full** body of the item (not truncated). Format:
    ```
@@ -350,11 +500,30 @@ For each item:
    - When `verify == "unconfirmed"`, append a one-line hint:
      `↳ empirical claim the pipeline could not settle against the code — confirm against external source before accepting.`
 
-2. `AskUserQuestion` with four options:
+2. `AskUserQuestion` with the decision options:
    - `Accept as-is` (mark Recommended only when severity is `low`)
    - `Reject — needs change`
    - `Defer — note only`
+   - `Investigate origin` — **port lane only**, offered as a first-class
+     option for any item that is `kind == "empirical"` AND
+     `verify == "unconfirmed"` AND a Step 3.5 origin path resolved. Omit this
+     option for non-port tickets, non-empirical items, items not unconfirmed,
+     or when no origin path is available. When chosen, run the same inline
+     origin investigation as Step 3.5.2 for **this one item** (Grep / Glob /
+     Read against `$ORIGIN`), print the finding + evidence, then re-ask this
+     question with the finding in hand:
+     - origin `refuted` → pre-fill the Reject path (step 4) with the
+       code-grounded directive; the human confirms or edits it.
+     - origin `confirmed` → re-prompt with the evidence shown; human decides.
+     - origin `inconclusive` → re-prompt noting the origin could not settle it.
    - `Other`
+
+   Keep the option set to four at a time where the platform limits choices:
+   when `Investigate origin` is offered it replaces `Other` in the first
+   prompt (a free-text "Other" is still reachable — pick `Reject` / `Defer`
+   and use their free-text follow-ups, or re-ask). For items where
+   `Investigate origin` does not apply, the original four options are shown
+   unchanged.
 
 3. **High-severity gate**: if `severity == "high"` AND user picks `Accept as-is`,
    issue a follow-up `AskUserQuestion`:
@@ -610,6 +779,12 @@ item body, re-review is required.**
 | Comment has `ri:v1` records (current writers) | 2.3 | Primary path; join by `id`, route by `verify` |
 | `ri:v1` item `verify=confirmed`/`refuted` | 2.3a | `queue=fyi` — shown, recorded, NOT prompted |
 | `ri:v1` item `verify=unconfirmed`/`n/a` | 2.3a | `queue=review` — walked in Step 4 |
+| Port lane + origin resolves + ≥1 unconfirmed empirical | 3.5 | Investigate-first phase runs: batch-investigate origin, surface findings before Step 4 |
+| Non-port ticket, OR no `originalProjectPath`, OR zero unconfirmed empirical | 3.5.0 | Phase is a NO-OP — no Explore dispatch, Step 4 unchanged (zero behavior change) |
+| Origin read refutes an unconfirmed empirical claim | 3.5.2 / 4 | Pre-tagged `Reject` with a code-grounded directive; Step 4 records it without prompting accept |
+| Origin read confirms a claim | 3.5.2 / 4 | Evidence surfaced; human still decides in Step 4 |
+| Origin read inconclusive (symbol not found / ambiguous) | 3.5.2 / 4 | Stays a normal review item; `Investigate origin` option still offered |
+| Reviewer picks `Investigate origin` mid-loop | 4.2 | Inline single-item origin check, re-ask with finding in hand (port lane, unconfirmed empirical only) |
 | All items are FYI, zero review items | 2.9 | Not a parse error; print FYI + lite-confirm (Step 7) |
 | Old comment, no `ri:v1` (legacy `[AUTO-ACCEPTED]` / bare `A-N`) | 2.3b-2.4 | Legacy fallback paths; regex keeps `A` so still parses |
 | Port summary has only `### Assumptions` / `### Risks` (no markers) | 2.4-2.5 | Reviewed with default severities (A=low, R=medium) |
@@ -636,7 +811,10 @@ item body, re-review is required.**
 
 ## §C — Non-goals (do not extend)
 
-- Do NOT read or modify any file under the ticket's worktree.
+- Do NOT read or modify any file under the ticket's worktree. (The Step 3.5
+  investigate-first phase reads the **origin** codebase at
+  `originalProjectPath`, never the ticket worktree, and writes nothing — it is
+  read-only investigation whose findings live in session memory only.)
 - Do NOT run `openspec validate` or `/spec-lint`.
 - Do NOT git-commit anything.
 - Do NOT push.
