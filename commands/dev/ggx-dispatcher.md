@@ -29,7 +29,7 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch the whol
 - `--dry-run` — Print the planned dispatch and STOP. No Linear writes, no agent spawn.
 - `--test` — Skip the default-branch + clean-tree pre-flight checks (still requires main worktree, gh auth, and lockfile).
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `3`, hard cap `20`. Out of range → abort. This bounds the roster handed to the script; the script's `pipeline()` self-caps concurrency at `min(16, cores-2)` on top.
-- `--workflow` — **Redundant no-op (the `Workflow` path is now the only path).** Accepted for back-compat and changes nothing. The fan-out always runs via §5.2; requires `~/.claude/workflows/ggx-dispatch.workflow.js` (installed by `install.sh`).
+- `--workflow` — **Redundant no-op (the `Workflow` path is now the only path).** Accepted for back-compat and changes nothing. The fan-out always runs via §5.2; requires `~/.claude/workflows/dispatch-fanout.workflow.js` (installed by `install.sh`).
 - `--launch-only` — After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock. **Also emits a sibling `<RUN_TS>-<PID>.args.json` artifact** (§5.2 step 2a) holding the EXACT `{ trunkSha, roster }` payload passed to the `Workflow` tool — the durable record of the dispatch args the inline `--launch-only` run does NOT otherwise hold, so `/ggx-on-duty`'s RECONCILE resume (GGC-41) can re-supply identical args via `resumeFromRunId` and hit the journal cache. Discovered by the same newest-mtime glob on-duty already uses for the in-flight TSV.
 - `--demo` — After §5.2 step 5 consumes `rows`, run a serial demo-capture pass (§6.6) over the shipped `design bug` PRs via `/_ui-demo-batch`. **Skipped under `--launch-only`** — the dispatcher has already returned, so the caller (`/ggx-on-duty --demo`) owns the demo pass. Best-effort / fail-soft: never blocks or fails the run. Off by default (design-bug PRs ship without an auto-captured demo, as today). See GGC-29.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
@@ -639,11 +639,11 @@ There is no runtime introspection in a prompt skill for "is the `Workflow`
 tool present?", so the abort is wired as the **error branch of the step-3
 `Workflow` invocation below**: if the tool call itself fails as
 not-found / unavailable (the tool is not registered in this session, or
-`~/.claude/workflows/ggx-dispatch.workflow.js` is missing), **hard-abort —
+`~/.claude/workflows/dispatch-fanout.workflow.js` is missing), **hard-abort —
 do NOT silently route anywhere.** Release the run-lock, leave the
 `dispatcher-*-in-flight` labels in place (the tickets were locked but never
 worked — they are re-pickable next sweep), and abort:
-> `abort "ABORT: the Workflow tool is unavailable (not registered in this session, or ~/.claude/workflows/ggx-dispatch.workflow.js missing). The fan-out has no other path (the --classic fallback was retired in GGC-55). Run ./install.sh from gogox-claude to (re)install the workflow script, confirm the Workflow tool is available, and re-invoke. Locked tickets keep their dispatcher-*-in-flight label and re-dispatch next sweep."`
+> `abort "ABORT: the Workflow tool is unavailable (not registered in this session, or ~/.claude/workflows/dispatch-fanout.workflow.js missing). The fan-out has no other path (the --classic fallback was retired in GGC-55). Run ./install.sh from gogox-claude to (re)install the workflow script, confirm the Workflow tool is available, and re-invoke. Locked tickets keep their dispatcher-*-in-flight label and re-dispatch next sweep."`
 
 **Permissions precondition (load-bearing — read before first use).**
 Workflow agents run at `acceptEdits` and inherit the **session's tool
@@ -733,7 +733,7 @@ Steps:
    **in the same turn** invoke the `Workflow` tool. **If the tool call fails
    as not-found / unavailable, take the fail-fast guard abort above** (do not
    route anywhere else — there is no other path):
-   - `scriptPath`: `$HOME/.claude/workflows/ggx-dispatch.workflow.js`
+   - `scriptPath`: `$HOME/.claude/workflows/dispatch-fanout.workflow.js`
    - `args`: a JSON object `{ "trunkSha": "<$trunk_sha>", "roster":
      DISPATCH_ROSTER_JSON }` (GGC-49 — the wrapper shape carries the
      clean-trunk baseline alongside the roster so the script can assert each
@@ -1175,7 +1175,7 @@ there are no `rows` here — the caller that consumes the completion
 ## Guardrails
 
 - **Never fire the §5.2 `Workflow` launch before Step 4 lock completes.** A second invocation triggered seconds after the first must see locked tickets, not race-pickable ones.
-- **The §5.2 script's agents must run at `bypassPermissions` and without worktree isolation** — these are set in `workflows/ggx-dispatch.workflow.js` (the only place agents are now spawned). Interactive permission prompts inside background agents would stall the whole batch, and the ff pipelines (`/port:ff` / `/dev:ff`) create their own worktrees so script-level isolation would collide. Do not reintroduce a dispatcher-level `Agent`-tool spawn (the legacy `--classic` path that did so was retired in GGC-55).
+- **The §5.2 script's agents must run at `bypassPermissions` and without worktree isolation** — these are set in `workflows/dispatch-fanout.workflow.js` (the only place agents are now spawned). Interactive permission prompts inside background agents would stall the whole batch, and the ff pipelines (`/port:ff` / `/dev:ff`) create their own worktrees so script-level isolation would collide. Do not reintroduce a dispatcher-level `Agent`-tool spawn (the legacy `--classic` path that did so was retired in GGC-55).
 - **Never auto-checkout or auto-clean (discard) the user's tree.** The ONE permitted mutation is the Step 1.3 labeled auto-stash of **residue-allowlisted files only** (`pubspec.lock`-class machine-regenerated lockfiles) — non-destructive, announced on stdout, recoverable via `git stash pop`, never auto-popped. Tracked modifications OUTSIDE the allowlist are a human's in-progress work and still abort — the dispatcher never sweeps real edits into a stash the user didn't ask for. Checkout, reset, and clean stay forbidden; remaining pre-flight aborts are explicit and the user fixes their own state.
 - **Never proceed past Step 4.0 dry-run gate.** `--dry-run` must be 100% read-only end-to-end.
 - **Q1/Q3 omit the `state` filter — never re-add one.** The label is the dispatch signal; status is filtered post-fetch (§2.0). Re-adding `state: unstarted` to Q3 silently drops every post-port dev handoff (port leaves the ticket at `In Progress` and the human reviewer relabels without touching status). Q2/Q4 deliberately use the state name `In Progress` for recovery — that's the only path where a state-name filter is used.

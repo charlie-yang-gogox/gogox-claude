@@ -11,7 +11,7 @@
 設計提案的一部分**已落地**，此檔同時作為設計依據與進度追蹤：
 
 - **Phase A — 已 merge（PR #50）**：`/ggx-dispatcher --workflow` opt-in；dev/port/bug lane 走
-  `workflows/ggx-dispatch.workflow.js`；ui-tweak 仍 §5.0 inline。markdown 整合在 §5.2 + §5.3/§6.1/§6.2/§6.4 guards。
+  `workflows/dispatch-fanout.workflow.js`；ui-tweak 仍 §5.0 inline。markdown 整合在 §5.2 + §5.3/§6.1/§6.2/§6.4 guards。
 - **e2e 發現修正 — 已 merge（PR #51）**：(1) 全 lane PR 查詢改 head-branch（原 `gh pr view <ticket-id>` 在
   branch=`<prefix>/<id>` 時回空 → resume 誤判）；(2) workflow Linear-MCP fallback 一致性（script runFallback +
   §5.2 precondition + allowlist 兩 prefix）。
@@ -119,7 +119,7 @@ main session (/ggx-dispatcher markdown)         ── 保留：互動 / Linear 
   │
   └─ Workflow({ scriptPath, args: roster })   ───────────────────┐ 背景執行
                                                                   │
-   ┌──────────────── ggx-dispatch.workflow.js (level-0 script) ──┘
+   ┌──────────────── dispatch-fanout.workflow.js (level-0 script) ──┘
    │  ※ script 無 FS / 無 MCP / 無 shell；Date.now/Math.random 會 throw
    │
    │  pipeline(roster,
@@ -171,20 +171,20 @@ Linear/gh 即時狀態判斷」的步驟留在 markdown；純編排 + 把 I/O �
 
 ## 3. 完整可讀的範例 Workflow script（centerpiece）
 
-> 檔名建議 `~/.claude/workflows/ggx-dispatch.workflow.js`（personal）或 `.claude/workflows/`（shared）。
+> 檔名建議 `~/.claude/workflows/dispatch-fanout.workflow.js`（personal）或 `.claude/workflows/`（shared）。
 > 這份 script 忠實對應 §§ 語義：`WORK_SCHEMA` 取代 §6.1 的 `[ggx-work-result]` 文字解析；
 > `pipeline` 的 per-item barrier 取代 §6.1 wait loop；ui-tweak stage 由 script 直接 spawn
 > 兩位 judge（§5.0 消失點）；fallback stage 即時跑（§6.2）。
 
 ```javascript
-// ggx-dispatch.workflow.js
+// dispatch-fanout.workflow.js
 // 對應 /ggx-dispatcher §5.3 fan-out + §6.1 wait + §6.2 fallback + §6.4 aggregation。
 // args = DISPATCH_ROSTER：JSON array of
 //   { ticketId, lane, worktreePath, url, uiTweak: boolean }
 // 由 markdown 主 session 在 §4.3 鎖定完成後序列化傳入。
 
 export const meta = {
-  name: "ggx-dispatch",
+  name: "dispatch-fanout",
   description:
     "Fan out one /ggx-work --auto agent per locked Linear ticket; " +
     "design-bug tickets run apply→dual-judge(sonnet+opus)→finish as " +

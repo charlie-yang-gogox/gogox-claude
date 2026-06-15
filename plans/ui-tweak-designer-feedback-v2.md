@@ -372,7 +372,7 @@ judge 前序列跑。
 
 **改法**:
 
-1. **驗證並強制真並行**:確保 orchestrator(含 `workflows/ggx-dispatch.workflow.js` 的 `runUiTweak`)真在
+1. **驗證並強制真並行**:確保 orchestrator(含 `workflows/dispatch-fanout.workflow.js` 的 `runUiTweak`)真在
    單一 message 發兩個 Agent call。
 2. **diff 只算一次**:預先算好 `git diff` + changed-files,把 diff 文字 inline 餵兩個 judge,避免各自重跑
    git / 重讀檔。

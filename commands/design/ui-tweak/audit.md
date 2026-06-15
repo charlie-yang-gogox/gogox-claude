@@ -5,7 +5,7 @@ description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — th
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
 
-<!-- SYNC: workflows/ggx-dispatch.workflow.js `runUiTweak` (Phase B of the R5
+<!-- SYNC: workflows/dispatch-fanout.workflow.js `runUiTweak` (Phase B of the R5
      migration) re-implements this panel's contract when /ggx-dispatcher runs
      with --workflow: the SCRIPT spawns ui-verify-agent (sonnet) + dev-reviewer
      (opus) as level-1 agents, BOTH must be CLEAR, --auto is loud-fail (no
