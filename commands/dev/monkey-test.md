@@ -196,6 +196,14 @@ Summarise:
 - Test coverage added.
 - Total events fuzzed.
 
+When the verdict is ❌ (crashes remain — `--no-fix` mode, or a crash that could
+not be fixed), append a local breadcrumb (GGC-23) per remaining distinct crash
+(respecting the helper's per-run cap of 3): run `/_file-followup monkey-crash
+summary="<PKG>: <one-line crash root cause>" signature="<crash signature>"`. It
+is fail-soft (never blocks the report) and writes only the local gitignored
+`.ggx-followups/followups.md` — NO Linear ticket / GitHub. A ✅ survived verdict
+writes nothing.
+
 ## Rules
 
 - **Always build a debug/profile build for triage** — never run monkey against an

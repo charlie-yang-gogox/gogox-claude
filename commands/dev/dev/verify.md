@@ -274,7 +274,7 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
 3. Re-run the auditor with the same inputs — re-spawn `verify-agent`; or, if the spawn was unavailable and Step 2b's inline path (prompt platform) produced the report, re-run that same inline audit (preserving its `Provenance:` banner); or, if Step 2b's R4 headless path (code platforms) produced it, re-run the same `claude -p` headless audit (the wrapper re-injects the `headless-r4-auditor` provenance line).
 4. Read `.dev/verify-pass.md` again:
    - `Status: CLEAR` → proceed to Step 3.
-   - `Status: BLOCKED` (still) → ABORT. STOP. The walker will see `Status: BLOCKED` next iteration and refuse to advance until the report is fixed (or `/dev:ff --from verify` is used to discard and re-run).
+   - `Status: BLOCKED` (still) → ABORT. STOP. The walker will see `Status: BLOCKED` next iteration and refuse to advance until the report is fixed (or `/dev:ff --from verify` is used to discard and re-run). Before stopping, append a local breadcrumb (GGC-23): run `/_file-followup verify-blocked summary="<ticket-id>: verify still BLOCKED after recovery" report=.dev/verify-pass.md signature="<ticket-id>:verify"`. It is fail-soft (never blocks the abort) and writes only the local gitignored `.ggx-followups/followups.md` — NO Linear ticket / GitHub.
 
 ## Step 3: Format
 
