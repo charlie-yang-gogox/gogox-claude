@@ -269,10 +269,14 @@ labeling still works — the analyzer is additive, not mandatory.
    )
    # Linear MCP must be covered BOTH ways (claude.ai connector AND the
    # linear-server fallback — a background worker cannot fall back
-   # interactively), and the cover must extend to save_issue *creation*: the
-   # GGC-23 /_file-followup outcome-filer writes NEW issues, so a read-only
-   # allowlist (…__list_issues only) would stall it. A wildcard (…__*) covers
+   # interactively), and the cover must extend to save_issue *writes*: the
+   # §6.2 per-ticket fallback uses save_issue to flip status / drop the
+   # in-flight label, and /dev:ship / /port:ship do likewise, so a read-only
+   # allowlist (…__list_issues only) would stall them. A wildcard (…__*) covers
    # it; otherwise the exact …__save_issue entry must be present.
+   # NOTE: GGC-23's /_file-followup does NOT need this — it was narrowed
+   # (2026-06-15) to a LOCAL gitignored file only (no save_issue / GitHub /
+   # network), so it imposes no Linear-write permission requirement.
    linear_write_covered() {
      printf '%s\n' "$ALLOW" | grep -qE \
        'mcp__(claude_ai_Linear|linear-server)__(\*|save_issue)'
@@ -954,7 +958,7 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
    | ui-tweak `done`    | status `In Review` AND `dispatcher-dev-in-flight ∉ labels`                           | Same write as dev `done`. NOTE: unlike `/dev:ship`, ui-tweak's `pr` stage deliberately does NOT transition ticket status (its only ticket write is the read-only PR-link comment), so for ui-tweak this fallback is the **primary** status writer, not a safety net — expect it to fire on every shipped design bug. |
    | port `port-paused` | `need-spec-review ∈ labels` AND `dispatcher-port-in-flight ∉ labels`                  | `save_issue` to add `need-spec-review` and remove `dispatcher-port-in-flight`. Same re-fetch-before-write to avoid racing a slow `/port:ship`.                                                                                          |
    | port `done`        | `dispatcher-port-in-flight ∉ labels`                                                  | `save_issue` to remove `dispatcher-port-in-flight`. Re-fetch labels first.                                                                                                                                                              |
-   | any `failed`       | `dispatcher-*-in-flight` STAYS (resume signal for Q2/Q4 on the next sweep)            | If no failure comment exists yet on the ticket, post one via `save_comment`. Do NOT remove the in-flight label — that's the resume signal.                                                                                              |
+   | any `failed`       | `dispatcher-*-in-flight` STAYS (resume signal for Q2/Q4 on the next sweep)            | If no failure comment exists yet on the ticket, post one via `save_comment`. Do NOT remove the in-flight label — that's the resume signal. ALSO append a local breadcrumb via `/_file-followup dispatcher-infra summary="<ticket-id> failed: <short reason>" signature="<ticket-id>:<walker_stage>"` (GGC-23 — fail-soft, local gitignored sink only; NO ticket creation). |
 
 6. Carry the derived `outcome` (plus the fresh `labels` / `status.name` /
    `walker_stage` / `pr_state` signals) into the in-memory roster row

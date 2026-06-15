@@ -13,3 +13,7 @@ commands/dev/profiles/ggx-slack.json
 # /dev:* runtime artifacts (proof-of-work, not source)
 .dev/
 claude-reports/
+
+# Local pipeline-failure breadcrumbs (GGC-23 /_file-followup sink).
+# Per-repo, never committed, never pushed. Schema: see commands/dev/_file-followup.md.
+.ggx-followups/

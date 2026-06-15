@@ -858,14 +858,14 @@ async function triageTicketContent(res, verdict) {
   return res;
 }
 
-// platform-bug → STUB now (Q4 = A). /_file-followup does NOT exist yet (GGC-23
-// is in Todo). v1 posts a visible/searchable comment with a distinct marker;
-// the real auto-file is a 1-line swap behind the TODO when GGC-23 lands.
+// platform-bug → visible/searchable Linear comment (Q4 = A) PLUS a local
+// /_file-followup breadcrumb (GGC-23). GGC-23 narrowed (2026-06-15) to a LOCAL
+// gitignored sink only — it does NOT auto-file a Linear ticket; promotion to a
+// real ticket stays a manual human action. So the comment stays (it is the
+// visible signal) and /_file-followup adds the durable local record that closes
+// the loop's stage-8 (feedback capture).
 async function triagePlatformBug(res, verdict) {
-  log(`[triage] ${res.ticketId} platform-bug -> comment stub (dispatch-triage-platform)`);
-  // TODO(GGC-23): replace this stub comment with a /_file-followup call that
-  // auto-files a platform ticket. GGC-23 (Todo) lands /_file-followup; when it
-  // does this becomes a single-line swap — the surrounding triage stays.
+  log(`[triage] ${res.ticketId} platform-bug -> comment (dispatch-triage-platform) + /_file-followup`);
   await agent(
     [
       `Ticket ${res.ticketId} failed in the dispatcher batch and was triaged as a`,
@@ -877,9 +877,13 @@ async function triagePlatformBug(res, verdict) {
       `this ticket yet, post one that: (1) starts with the literal marker line`,
       `"<!-- dispatch-triage-platform -->", (2) flags the suspected platform`,
       `defect with class=platform-bug, the stage=${res.stage || "unknown"}, and`,
-      `the reason "${(res.error || verdict.reason || "suspected platform defect").slice(0, 200)}",`,
-      `so it is visible and searchable until an auto-file lands (GGC-23).`,
+      `the reason "${(res.error || verdict.reason || "suspected platform defect").slice(0, 200)}".`,
       `DO NOT change ANY label. DO NOT remove the dispatcher-*-in-flight label.`,
+      ``,
+      `THEN, as a SEPARATE local breadcrumb (GGC-23), run the skill`,
+      `/_file-followup platform-bug summary="${res.ticketId} platform-bug: ${(res.error || verdict.reason || "suspected platform defect").slice(0, 120)}" signature="${res.ticketId}:${res.stage || "unknown"}"`,
+      `It appends ONE entry to the local gitignored .ggx-followups/followups.md and`,
+      `is fail-soft (never blocks). NO Linear ticket / GitHub — local file only.`,
     ].join("\n"),
     {
       label: `triage-platform:${res.ticketId}`,
@@ -915,6 +919,11 @@ async function triageUnknownFallback(res) {
       `ticket yet, post one summarizing: "${(res.error || "worker died").slice(0, 200)}".`,
       `DO NOT remove the dispatcher-dev-in-flight / dispatcher-port-in-flight`,
       `label — it is the resume signal for the next sweep.`,
+      ``,
+      `THEN, as a SEPARATE local breadcrumb (GGC-23), run the skill`,
+      `/_file-followup ${res.uiTweakFailed ? "design-bug-failed" : "worker-died"} summary="${res.ticketId}: ${(res.error || "worker died").slice(0, 120)}" signature="${res.ticketId}:${res.stage || "unknown"}"`,
+      `It appends ONE entry to the local gitignored .ggx-followups/followups.md and`,
+      `is fail-soft (never blocks). NO Linear ticket / GitHub — local file only.`,
     ].join("\n"),
     {
       label: `fallback:${res.ticketId}`,
