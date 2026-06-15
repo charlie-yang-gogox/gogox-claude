@@ -28,6 +28,7 @@ AUTO_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo 1 || echo 0)
 NO_FIGMA_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--no-figma' && echo 1 || echo 0)
 BUG_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--bug' && echo 1 || echo 0)
 NO_TICKET_INIT_FLAG=$(echo "$ARGUMENTS" | grep -q -- '--no-ticket-init' && echo 1 || echo 0)
+PORT_HANDOFF=$(echo "$ARGUMENTS" | grep -q -- '--port-handoff' && echo 1 || echo 0)
 FROM_STAGE="<parsed --from <stage>, may be empty>"
 
 # Detect whether a pipeline is already in flight in this worktree.
@@ -37,8 +38,15 @@ PIPELINE_IN_FLIGHT="no"
 ```
 
 - If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "no"`: invoke `/dev:start <ticket-id> [--auto] [--no-figma] [--bug] [--no-ticket-init]`, then continue with `infer_dev_stage`. Pass `--no-ticket-init` through verbatim when `NO_TICKET_INIT_FLAG == 1`.
-- If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "yes"`: refuse (use `/dev:start`'s re-entry rules — do not silently overwrite).
-- If `$TICKET_FROM_ARGS` is empty AND `PIPELINE_IN_FLIGHT == "yes"`: resume via walker.
+- If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "yes"` AND `PORT_HANDOFF == 1`: **adopt the port handoff** (GGC-56). The in-flight signal here is a committed `openspec/changes/<name>` produced by `/port:ship`, NOT a dev-pipeline marker — `/dev:start` must run so spec-review `[REVISED]` directives are captured before apply. Invoke `/dev:start <ticket-id> --port-handoff` (pass `--auto` and/or `--no-ticket-init` through verbatim when their flags are set; never pass `--bug`), then continue with `infer_dev_stage`. This branch has HIGHER priority than the no-flag refuse below.
+- If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "yes"` (and `PORT_HANDOFF == 0`): refuse (use `/dev:start`'s re-entry rules — do not silently overwrite).
+- If `$TICKET_FROM_ARGS` is empty AND `PIPELINE_IN_FLIGHT == "yes"`: resume — but first distinguish a genuine in-flight dev pipeline from an **un-started port handoff** (a committed openspec change with no dev markers yet):
+  - If `.dev/figma-context.md` exists OR `.dev/` contains any marker file → genuine in-flight dev pipeline → resume via walker (unchanged behavior).
+  - Elif `openspec/changes/` has a non-archive change dir AND `.dev/figma-context.md` is ABSENT → this is an **un-started port handoff** (`/port:ship` committed the change but `/dev:start` has not run). STOP — do NOT resume via the walker (a bare resume would skip `/dev:start` and silently drop the spec-review directives). Derive `<ticket-id>` from the branch name exactly as `infer_dev_stage` does (`git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1`) and print:
+    ```
+    Un-started port handoff detected: a committed openspec change exists but .dev/ has no dev markers. Run /dev:ff <ticket-id> --port-handoff to enter the dev lane (captures spec-review directives). If this is NOT a port handoff, run /dev:ff --from figma to reset.
+    ```
+  - Else → resume via walker.
 - If `$TICKET_FROM_ARGS` is empty AND `PIPELINE_IN_FLIGHT == "no"`: STOP with usage.
 - `--from <stage>` flag: delete markers (Step 0a) before dispatching.
 - `--auto` flag is per-invocation. There is no persisted mode; passing `--auto` on resume simply runs the rest of the pipeline in auto mode.

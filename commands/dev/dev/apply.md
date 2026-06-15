@@ -55,7 +55,7 @@ fi
 **Mode dispatch**:
 
 - `PIPE_MODE == bug` or `PIPE_MODE == feature-direct` → jump to **Step 0-bug** (the direct-edit branch) below. Steps 1–5 (OpenSpec artifact prep + apply) are SKIPPED entirely. There is no `change_name`, no `tasks.md`, no `/opsx:*` invocation. (`feature-direct` = feature work on a repo without OpenSpec — GGC-17; same flow as bug, feature semantics.)
-- `PIPE_MODE == feature` → continue with the OpenSpec precondition below, then Steps 1–5.
+- `PIPE_MODE == feature` or `PIPE_MODE == port-handoff` → continue with the OpenSpec precondition below, then Steps 1–5. (`port-handoff` — GGC-56 — rides the SAME feature OpenSpec path: the ported `openspec/changes/<name>` is adopted and applied via Steps 1–5; it does NOT take the Step 0-bug direct-edit path. Its only divergence from plain `feature` is the C-apply spec-review guard in Step 4A / Step 4D.1 below.)
 
 ```bash
 # Feature (OpenSpec) mode only — direct modes do not need an OpenSpec change directory.
@@ -232,7 +232,7 @@ else:
 
 ### Step 4A: `--auto` path — inline `/opsx:apply`
 
-**Spec-review overrides (authoritative — override conflicting design.md / tasks.md guidance).** Before invoking `/opsx:apply`, read `.dev/spec-review-directives.md` (written one-shot by `/dev:start` Step 4c). If its first line is `Status: PRESENT`, hold the entire file contents in your working context for the duration of `/opsx:apply`. Each `### [REVISED]` block's `Directive:` line is a human override that supersedes any conflicting guidance the `/opsx:apply` task list pulls from `design.md` / `tasks.md` / ticket description — apply it verbatim and reference it in any commit message touching the relevant task. A `Verify: refuted` block is the strongest override (verified-false premise; `Reality:` is ground truth); `### [FYI] Verified upstream` items are established facts already in the spec — do not re-open them. If `Status: NONE`, no overrides apply. Missing file → treat as `Status: NONE` (legacy worktree).
+**Spec-review overrides (authoritative — override conflicting design.md / tasks.md guidance).** Before invoking `/opsx:apply`, read `.dev/spec-review-directives.md` (written one-shot by `/dev:start` Step 4c). If its first line is `Status: PRESENT`, hold the entire file contents in your working context for the duration of `/opsx:apply`. Each `### [REVISED]` block's `Directive:` line is a human override that supersedes any conflicting guidance the `/opsx:apply` task list pulls from `design.md` / `tasks.md` / ticket description — apply it verbatim and reference it in any commit message touching the relevant task. A `Verify: refuted` block is the strongest override (verified-false premise; `Reality:` is ground truth); `### [FYI] Verified upstream` items are established facts already in the spec — do not re-open them. If `Status: NONE`, no overrides apply. Missing file handling is **mode-aware** (GGC-56): if `PIPE_MODE == port-handoff` AND `.dev/spec-review-directives.md` is ABSENT → HARD-FAIL/STOP with `FAIL (GGC-56): port-handoff mode but no .dev/spec-review-directives.md — /dev:start was skipped; re-enter via /dev:ff <id> --port-handoff` (a port handoff that reached apply without the directives means `/dev:start` Step 4c never ran — the exact deadlock-skip this fix prevents — so silently implementing the unreviewed spec must NOT happen). For all OTHER modes, missing file → treat as `Status: NONE` (legacy worktree), unchanged.
 
 Run `/opsx:apply <change-name>` directly in the current session. No HITL — `--auto` is unattended by definition.
 
@@ -257,7 +257,7 @@ Proceed to Step 5 on success.
 
 #### Step 4D.1: Dispatch dev-agent
 
-**Spec-review overrides — resolve the path before dispatch.** Before spawning, check `.dev/spec-review-directives.md` (written one-shot by `/dev:start` Step 4c). If its first line is `Status: PRESENT`, pass the file path through the input block as `spec_review_directives: .dev/spec-review-directives.md`. If `Status: NONE` or the file is missing, pass `spec_review_directives: none`. The dev-agent (per `agents/dev/dev-agent.md`) is instructed to read this file and treat its `### [REVISED]` directives as authoritative overrides of conflicting `design.md` / `tasks.md` guidance.
+**Spec-review overrides — resolve the path before dispatch.** Before spawning, check `.dev/spec-review-directives.md` (written one-shot by `/dev:start` Step 4c). If its first line is `Status: PRESENT`, pass the file path through the input block as `spec_review_directives: .dev/spec-review-directives.md`. **Missing-file handling is mode-aware (GGC-56)**: if `PIPE_MODE == port-handoff` AND `.dev/spec-review-directives.md` is ABSENT → HARD-FAIL/STOP with `FAIL (GGC-56): port-handoff mode but no .dev/spec-review-directives.md — /dev:start was skipped; re-enter via /dev:ff <id> --port-handoff` (a port handoff missing its directives means `/dev:start` Step 4c was skipped — do NOT dispatch dev-agent on the unreviewed spec). For all OTHER modes, if `Status: NONE` or the file is missing, pass `spec_review_directives: none`, unchanged. The dev-agent (per `agents/dev/dev-agent.md`) is instructed to read this file and treat its `### [REVISED]` directives as authoritative overrides of conflicting `design.md` / `tasks.md` guidance.
 
 Spawn `dev-agent` (opus, worktree-isolated) with these inputs:
 
