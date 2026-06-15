@@ -54,7 +54,7 @@ export const meta = {
     { title: "work", detail: "Drive each dev/port/bug ticket through /ggx-work --auto" },
     { title: "ui-judge", detail: "ui-tweak lane: apply/preview, dual-judge panel, finisher" },
     { title: "evidence", detail: "Cross-check terminal evidence for each success row (GGC-21)" },
-    { title: "fallback", detail: "Per-ticket Linear writes on failure" },
+    { title: "fallback", detail: "Triage each failure (classify, bounded-retry, comment per class)" },
     { title: "aggregate", detail: "Collect structured outcomes into summary" },
   ],
 };
@@ -105,6 +105,30 @@ const JUDGE_SCHEMA = {
     reason: { type: ["string", "null"] },
   },
 };
+
+// ── Failure-triage verdict (GGC-40) — classify a failed row so the dispatcher
+// can act: retry transient infra flakes, flag thin tickets, surface platform
+// defects. The cheap sonnet triage agent only runs for ambiguous error strings;
+// the deterministic flag pre-pass (classifyFailure) resolves the common cases
+// first. confidence drives the ambiguity default (low ⇒ unknown). ──
+const TRIAGE_SCHEMA = {
+  type: "object",
+  required: ["class", "confidence"],
+  additionalProperties: false,
+  properties: {
+    class: {
+      type: "string",
+      enum: ["transient-infra", "ticket-content", "platform-bug", "unknown"],
+    },
+    confidence: { type: "string", enum: ["high", "low"] },
+    reason: { type: ["string", "null"] },
+  },
+};
+
+// One opus worker's typical cost — the reserve we keep free before allowing a
+// transient-infra retry to spend another worker (GGC-40 Q5). When no budget
+// target is configured the retry is always allowed (see budgetAllowsRetry).
+const RETRY_RESERVE = 100_000;
 
 // ── Drive one roster row through /ggx-work --auto (dev / port / bug lane). ──
 // agentType general-purpose mirrors today's §5.3 subagent_type; model "opus"
@@ -160,8 +184,8 @@ async function runWork(item, trunkSha) {
   // agent() returns null on user-skip or a terminal API error AFTER retries —
   // i.e. the worker DIED before /ggx-work could finish (so /ggx-work did NOT
   // post its own <!-- ggx-work-error --> comment). Map that to a synthetic
-  // failed row flagged workerDied so (a) it never NPEs the fallback stage and
-  // (b) runFallback knows it must post the failure itself. A normal completed
+  // failed row flagged workerDied so (a) it never NPEs the triage stage and
+  // (b) triageAndFallback knows it must post the failure itself. A normal completed
   // failure (validated object with outcome:"failed") is NOT flagged — its
   // comment was already posted by /ggx-work, so the script must not double-post.
   if (!result) {
@@ -192,7 +216,7 @@ async function runWork(item, trunkSha) {
 // contract here is kept in lock-step with commands/dev/ui-tweak/audit.md — there
 // is a SYNC note at the top of audit.md. If audit.md's judge contract changes
 // (figma-context read, WILL-EDIT coverage assertion, loud-fail semantics),
-// change BOTH. Failures set uiTweakFailed so runFallback posts Linear (no
+// change BOTH. Failures set uiTweakFailed so triageAndFallback posts Linear (no
 // sub-pipeline posted its own error — the script owns this flow end-to-end).
 async function runUiTweak(item, trunkSha) {
   log(`[ui] ${item.ticketId} apply+preview`);
@@ -307,7 +331,7 @@ async function runUiTweak(item, trunkSha) {
   // ticket's actual target; an unjustified empty diff is the silent-no-op trap
   // that falsely closed CAF-625. The verdict is ALWAYS a structured result here
   // (never a silent finish): justified ⇒ outcome "done" (no PR — nothing to ship);
-  // unjustified ⇒ failed so runFallback posts a visible Linear comment.
+  // unjustified ⇒ failed so triageAndFallback posts a visible Linear comment.
   const computedEmpty =
     prep.emptyDiff === true ||
     (prep.diffText != null && prep.diffText.trim() === "" && !prep.diffTruncated);
@@ -492,9 +516,9 @@ async function runUiTweak(item, trunkSha) {
 // runWork/runUiTweak trust the worker's self-reported outcome (WORK_SCHEMA);
 // a worker that dies mid-run yet hallucinates outcome="done" (the 2026-05-15
 // misreport pattern) otherwise produces no failure comment and a wrong digest,
-// because runFallback only fires on outcome=="failed". This stage demands cheap
+// because triageAndFallback only fires on outcome=="failed". This stage demands cheap
 // TERMINAL evidence for every success row and demotes a row to "failed" when
-// that evidence is definitively absent — routing it through runFallback's
+// that evidence is definitively absent — routing it through triageAndFallback's
 // dispatch-fallback-error branch like any other worker-died failure.
 //
 // Per-lane terminal-state enumeration (Risks/Guards: completeness is the risk —
@@ -511,7 +535,7 @@ async function runUiTweak(item, trunkSha) {
 //   │          │              │   terminal, so the same `done` check covers it │
 //   │          │              │   (AC2 walker-evidence edge case, no special)  │
 //   └──────────┴──────────────┴───────────────────────────────────────────────┘
-// "failed" rows are not re-derived — they already route to runFallback. Only
+// "failed" rows are not re-derived — they already route to triageAndFallback. Only
 // "done"/"port-paused" reach an evidence agent.
 //
 // Fail-SAFE direction (AC2): demote ONLY on verdict=="missing" (checks ran and
@@ -599,7 +623,7 @@ async function verifyEvidence(res, item) {
     return res;
   }
   // verdict === "missing": definitive negative ⇒ demote to failed. The row now
-  // routes through runFallback's dispatch-fallback-error branch (evidenceDemoted
+  // routes through triageAndFallback's dispatch-fallback-error branch (evidenceDemoted
   // flag below), the digest counts it under `failed`, and the in-flight label is
   // left untouched so the next sweep can resume.
   log(`[evidence] ${res.ticketId} reported ${res.outcome} but terminal evidence MISSING -> DEMOTE to failed`);
@@ -614,28 +638,264 @@ async function verifyEvidence(res, item) {
   };
 }
 
-// ── Per-ticket fallback (§6.2): write Linear ONLY for the worker-died case. ──
+// ── Failure triage (GGC-40) — classify a failed row's cause. ──
+// Deterministic pre-pass on the structured flags FIRST (cheap, reliable); only
+// an ambiguous error-string case reaches the sonnet agent. NO repo/Bash access:
+// the classifier sees only signals we already hold ({ error, stage, lane,
+// outcome } + flags). Returns { class, confidence, reason }.
+//
+// Deterministic rules (Q2/Q3 resolved):
+//   - workerDied === true            → transient-infra (agent died / terminal
+//                                       API error after retries), high confidence.
+//   - uiTweakFailed && structural/    → platform-bug? NO — an expected loud-fail
+//     judge BLOCK on a ui-tweak row     (audit BLOCKED / structural pre-pass) is
+//                                       NOT transient and must not retry; we
+//                                       classify it `unknown` (today's comment),
+//                                       since the BLOCK is the designed outcome.
+//   - evidenceDemoted === true       → unknown (a demoted success is not
+//                                       obviously any single class).
+// Anything else with an error string → ask the sonnet agent; low confidence or
+// content/platform both-plausible ⇒ default `unknown` (the safe low-noise path).
+async function classifyFailure(res) {
+  // Strong deterministic signal: a dead worker is a transient infra failure.
+  if (res.workerDied === true) {
+    return { class: "transient-infra", confidence: "high", reason: "worker agent died / terminal API error after retries" };
+  }
+  // ui-tweak loud-fail (audit BLOCKED / structural pre-pass / finisher null) is
+  // an EXPECTED failure, never transient — do not retry it here (GGC-44 owns
+  // ui-tweak repair). Treat as unknown ⇒ today's fallback comment.
+  if (res.uiTweakFailed === true) {
+    return { class: "unknown", confidence: "high", reason: "ui-tweak loud-fail (audit/structural BLOCK) — expected, not transient; retry is GGC-44 scope" };
+  }
+  // A demoted success (GGC-21) is ambiguous by default.
+  if (res.evidenceDemoted === true) {
+    return { class: "unknown", confidence: "high", reason: "evidence-demoted success — not obviously any single class" };
+  }
+  // Ambiguous error-string case → one cheap read-only sonnet call (no repo access).
+  const triage = await agent(
+    [
+      `Classify why ticket ${res.ticketId} FAILED in the dispatcher batch. You are`,
+      `a CHEAP read-only classifier: decide from the signals below ONLY. Do NOT`,
+      `read the repo, run any command, or comment on Linear.`,
+      ``,
+      `Signals:`,
+      `  outcome: ${res.outcome}`,
+      `  lane:    ${res.lane || "unknown"}`,
+      `  stage:   ${res.stage || "unknown"}`,
+      `  error:   ${(res.error || "(none)").slice(0, 400)}`,
+      ``,
+      `Classes:`,
+      `  transient-infra — an infra flake: API 5xx / 503, gh/network hiccup, a`,
+      `    rate-limit or timeout, an agent that died with no ticket-content or`,
+      `    code cause. Retryable.`,
+      `  ticket-content  — the ticket itself is incomplete/contradictory/too thin`,
+      `    to implement (missing repro, no acceptance criteria, ambiguous ask).`,
+      `  platform-bug    — a defect in the PIPELINE/platform itself: a walker`,
+      `    misfire, an R-rule violation, a skill/command bug — not the ticket and`,
+      `    not infra.`,
+      `  unknown         — none clearly dominates, OR ticket-content vs`,
+      `    platform-bug are both plausible. This is the safe default.`,
+      ``,
+      `Default to "unknown" with confidence "low" whenever you are unsure or two`,
+      `classes are both plausible. Only return "high" confidence when one class is`,
+      `unmistakable from the error string.`,
+    ].join("\n"),
+    {
+      label: `triage:${res.ticketId}`,
+      phase: "fallback",
+      agentType: "general-purpose",
+      model: "sonnet",
+      schema: TRIAGE_SCHEMA,
+    },
+  );
+  // Agent died/skipped, or low-confidence, or content↔platform ambiguity ⇒
+  // fall back to the safe low-noise default (today's behavior).
+  if (!triage || triage.confidence === "low") {
+    return { class: "unknown", confidence: "low", reason: triage?.reason || "triage agent returned null / low-confidence — defaulting to unknown" };
+  }
+  return triage;
+}
+
+// Budget gate for the transient-infra retry (GGC-40 Q5). A retry spends roughly
+// one more opus worker (~RETRY_RESERVE), so skip it when the remaining budget
+// cannot cover the reserve. The workflow harness here exposes no `budget` global
+// (confirmed: grep found none) — so probe defensively: when a budget object IS
+// present at runtime and carries a total, honor remaining() < RETRY_RESERVE;
+// when there is NO budget target (the global is absent, or budget.total is
+// falsy), the retry is ALWAYS allowed (ticket Q5 — "allowed when no budget
+// target"). Never throws.
+function budgetAllowsRetry() {
+  try {
+    const b = typeof budget !== "undefined" ? budget : null;
+    if (!b || !b.total) return { allowed: true, reason: "no budget target — retry allowed" };
+    if (typeof b.remaining !== "function") return { allowed: true, reason: "budget present but no remaining() — retry allowed" };
+    const remaining = b.remaining();
+    if (typeof remaining === "number" && remaining < RETRY_RESERVE) {
+      return { allowed: false, reason: `remaining ${remaining} < RETRY_RESERVE ${RETRY_RESERVE}` };
+    }
+    return { allowed: true, reason: `remaining ${remaining} >= RETRY_RESERVE ${RETRY_RESERVE}` };
+  } catch (_) {
+    // A budget-probe error must never block the pipeline — fail open (allow).
+    return { allowed: true, reason: "budget probe errored — failing open (retry allowed)" };
+  }
+}
+
+// ── Per-ticket triage + fallback (§6.2 + GGC-40): classify, bounded-retry, and
+// write Linear on failure. Renamed from runFallback; on outcome!=="failed" it
+// passes straight through unchanged. On "failed" it classifies the row, then
+// acts per class.
+//
 // Idempotency is structural, not advisory: on a NORMAL completed failure
 // (outcome:"failed", no workerDied flag) /ggx-work --auto already posted its
 // own <!-- ggx-work-error --> comment (ggx-work.md:347) before exiting, so the
-// script must NOT post again (that was the double-post bug). The script only
-// posts when the worker DIED before /ggx-work could write its comment
-// (res.workerDied) — and it uses a DISTINCT marker so the two writers can never
-// collide. Neither path removes the in-flight label (the durable §6.2 resume
-// signal); the script never touches labels.
-async function runFallback(res) {
+// script must NOT post again (that was the double-post bug). The unknown branch
+// posts ONLY when the worker DIED / a ui-tweak run was script-orchestrated /
+// a success was evidence-demoted — and EACH triage class uses its OWN DISTINCT
+// marker so the writers can never collide. Neither path removes the in-flight
+// label (the durable §6.2 resume signal); the script never touches labels.
+//
+// `item` (roster row) and `trunkSha` are threaded in so a transient-infra row
+// can be retried with a fresh runWork(item, trunkSha) + verifyEvidence(res,item).
+async function triageAndFallback(res, item, trunkSha) {
   if (!res) return res;                       // belt-and-suspenders (should not happen after runWork's null map)
   if (res.outcome !== "failed") return res;   // done / port-paused already wrote their own state
-  // Post ONLY when no sub-pipeline wrote its own error comment:
-  //   - workerDied: the worker agent died before /ggx-work could post.
-  //   - uiTweakFailed: the script owns the ui-tweak flow end-to-end (prep →
-  //     panel → finisher), so a BLOCKED/failed run has no /ggx-work and no
-  //     <!-- ggx-work-error --> behind it — the dispatcher must post.
-  //   - evidenceDemoted (GGC-21): the worker reported a SUCCESS that failed the
-  //     terminal-evidence cross-check. It thought it succeeded, so it posted no
-  //     error comment — the dispatcher must post so the misreport is visible.
-  // A NORMAL dev/port/bug failure (outcome:"failed", none of these flags)
-  // already has /ggx-work's own <!-- ggx-work-error --> comment → no-op.
+
+  const verdict = await classifyFailure(res);
+  log(`[triage] ${res.ticketId} class=${verdict.class} confidence=${verdict.confidence} (${verdict.reason || ""})`);
+
+  switch (verdict.class) {
+    case "transient-infra":
+      return triageTransientInfra(res, item, trunkSha);
+    case "ticket-content":
+      return triageTicketContent(res, verdict);
+    case "platform-bug":
+      return triagePlatformBug(res, verdict);
+    default: // "unknown"
+      return triageUnknownFallback(res);
+  }
+}
+
+// transient-infra → ONE fresh in-run retry, dev/port/bug (runWork) ONLY.
+// ui-tweak rows are NOT retried here (GGC-44 scope) — they fall through to the
+// unknown fallback comment. Cap = 1 (a row carrying retried:true is never
+// retried again, and never re-retry when the retry would be a 2nd workerDied).
+// Budget-gated (skip logged, never silent). Success on retry ⇒ no fallback.
+async function triageTransientInfra(res, item, trunkSha) {
+  // Scope guard: ui-tweak transient retry/repair is GGC-44, out of scope here.
+  if (res.uiTweak === true || res.uiTweakFailed === true) {
+    log(`[triage] ${res.ticketId} transient but ui-tweak lane — NOT retried here (GGC-44 scope), falling through to fallback`);
+    return triageUnknownFallback(res);
+  }
+  // Cap = 1: never retry a row already retried once.
+  if (res.retried === true) {
+    log(`[triage] ${res.ticketId} transient but already retried once (cap=1) — falling through to fallback`);
+    return triageUnknownFallback(res);
+  }
+  // Budget gate (Q5).
+  const gate = budgetAllowsRetry();
+  if (!gate.allowed) {
+    log(`[triage] ${res.ticketId} transient retry SKIPPED — budget gate (${gate.reason})`);
+    return triageUnknownFallback({
+      ...res,
+      error: `[retry-skipped: ${gate.reason}] ${res.error || "transient-infra"}`.slice(0, 300),
+    });
+  }
+  if (!item) {
+    // No roster row in scope (should not happen — stage callback passes it) —
+    // cannot re-invoke runWork, so just post the fallback.
+    log(`[triage] ${res.ticketId} transient but no roster item in scope — cannot retry, falling through to fallback`);
+    return triageUnknownFallback(res);
+  }
+
+  log(`[triage] ${res.ticketId} transient-infra -> ONE fresh runWork retry (${gate.reason})`);
+  // Fresh re-invoke (Q1): the ff walkers infer state from the persistent
+  // ../<ID> worktree's filesystem markers, so a fresh /ggx-work --auto resumes
+  // naturally — no new resume logic. Then re-run the evidence cross-check.
+  let retryRes = await runWork(item, trunkSha);
+  retryRes = await verifyEvidence(retryRes, item);
+
+  // Never re-retry: if the retry itself died (2nd consecutive workerDied) or
+  // failed again, do NOT loop — mark retried and fall through to fallback.
+  if (retryRes && retryRes.outcome !== "failed") {
+    log(`[triage] ${res.ticketId} retry SUCCEEDED (${retryRes.outcome}) — suppressing fallback comment`);
+    return { ...retryRes, retried: true };
+  }
+  log(`[triage] ${res.ticketId} retry still failed — falling through to fallback (retried:true)`);
+  return triageUnknownFallback({
+    ...(retryRes || res),
+    retried: true,
+    error: `[retried once, still failed] ${(retryRes && retryRes.error) || res.error || "transient-infra"}`.slice(0, 300),
+  });
+}
+
+// ticket-content → comment only, NO label write (decision 1 = A). Distinct
+// marker <!-- dispatch-triage-content -->; idempotent on the marker. Preserves
+// the "script never touches labels" invariant — /ticket-analyze or a human
+// flips need-revision next cycle.
+async function triageTicketContent(res, verdict) {
+  log(`[triage] ${res.ticketId} ticket-content -> comment (dispatch-triage-content), NO label change`);
+  await agent(
+    [
+      `Ticket ${res.ticketId} failed in the dispatcher batch and was triaged as`,
+      `TICKET-CONTENT incomplete: ${(verdict.reason || "the ticket looks too thin / ambiguous to implement").slice(0, 200)}.`,
+      `Via the connected Linear MCP (find it with ToolSearch): prefer`,
+      `mcp__claude_ai_Linear__*, and fall back to mcp__linear-server__* if the`,
+      `claude.ai connector is not authenticated. If no comment containing the`,
+      `marker <!-- dispatch-triage-content --> exists on this ticket yet, post one`,
+      `that: (1) starts with the literal marker line "<!-- dispatch-triage-content -->",`,
+      `(2) recommends a human / /ticket-analyze flip the ticket to need-revision,`,
+      `(3) explains what looks incomplete: "${(res.error || verdict.reason || "incomplete ticket").slice(0, 200)}".`,
+      `DO NOT add, remove, or change ANY label — labels are human/ /ticket-analyze`,
+      `owned. DO NOT remove the dispatcher-*-in-flight resume label.`,
+    ].join("\n"),
+    {
+      label: `triage-content:${res.ticketId}`,
+      phase: "fallback",
+      agentType: "general-purpose",
+      model: "sonnet",
+    },
+  );
+  return res;
+}
+
+// platform-bug → STUB now (Q4 = A). /_file-followup does NOT exist yet (GGC-23
+// is in Todo). v1 posts a visible/searchable comment with a distinct marker;
+// the real auto-file is a 1-line swap behind the TODO when GGC-23 lands.
+async function triagePlatformBug(res, verdict) {
+  log(`[triage] ${res.ticketId} platform-bug -> comment stub (dispatch-triage-platform)`);
+  // TODO(GGC-23): replace this stub comment with a /_file-followup call that
+  // auto-files a platform ticket. GGC-23 (Todo) lands /_file-followup; when it
+  // does this becomes a single-line swap — the surrounding triage stays.
+  await agent(
+    [
+      `Ticket ${res.ticketId} failed in the dispatcher batch and was triaged as a`,
+      `suspected PLATFORM-BUG (a defect in the pipeline/platform itself, not the`,
+      `ticket or infra): ${(verdict.reason || "suspected platform defect").slice(0, 200)}.`,
+      `Via the connected Linear MCP (find it with ToolSearch): prefer`,
+      `mcp__claude_ai_Linear__*, and fall back to mcp__linear-server__*. If no`,
+      `comment containing the marker <!-- dispatch-triage-platform --> exists on`,
+      `this ticket yet, post one that: (1) starts with the literal marker line`,
+      `"<!-- dispatch-triage-platform -->", (2) flags the suspected platform`,
+      `defect with class=platform-bug, the stage=${res.stage || "unknown"}, and`,
+      `the reason "${(res.error || verdict.reason || "suspected platform defect").slice(0, 200)}",`,
+      `so it is visible and searchable until an auto-file lands (GGC-23).`,
+      `DO NOT change ANY label. DO NOT remove the dispatcher-*-in-flight label.`,
+    ].join("\n"),
+    {
+      label: `triage-platform:${res.ticketId}`,
+      phase: "fallback",
+      agentType: "general-purpose",
+      model: "sonnet",
+    },
+  );
+  return res;
+}
+
+// unknown → today's runFallback behavior verbatim. Post ONLY when no sub-pipeline
+// wrote its own error comment (workerDied / uiTweakFailed / evidenceDemoted);
+// a NORMAL dev/port/bug failure already has /ggx-work's <!-- ggx-work-error -->
+// comment → no-op. Distinct marker <!-- dispatch-fallback-error -->.
+async function triageUnknownFallback(res) {
   if (!res.workerDied && !res.uiTweakFailed && !res.evidenceDemoted) {
     log(`[fallback] ${res.ticketId} failed (sub-pipeline posted its own error) — no double-post`);
     return res;
@@ -741,8 +1001,11 @@ const results = await pipeline(
   // terminal state (open PR / need-spec-review label) is definitively absent.
   // Failed rows pass straight through. originalItem carries worktreePath/lane.
   (res, item) => verifyEvidence(res, item),
-  // stage 3: per-item fallback — immediacy comes from pipeline's per-item chaining.
-  (res) => runFallback(res),
+  // stage 3: per-item triage + fallback (GGC-40) — classify the failed row,
+  // bounded-retry transient infra (dev/port/bug only), comment per class.
+  // Immediacy comes from pipeline's per-item chaining; item + trunkSha are
+  // threaded so a transient row can re-invoke runWork(item, trunkSha).
+  (res, item) => triageAndFallback(res, item, trunkSha),
 );
 
 // pipeline drops a throwing item to null; filter so aggregation never NPEs.
