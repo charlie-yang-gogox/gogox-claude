@@ -30,7 +30,7 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch the whol
 - `--test` — Skip the default-branch + clean-tree pre-flight checks (still requires main worktree, gh auth, and lockfile).
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `3`, hard cap `20`. Out of range → abort. This bounds the roster handed to the script; the script's `pipeline()` self-caps concurrency at `min(16, cores-2)` on top.
 - `--workflow` — **Redundant no-op (the `Workflow` path is now the only path).** Accepted for back-compat and changes nothing. The fan-out always runs via §5.2; requires `~/.claude/workflows/ggx-dispatch.workflow.js` (installed by `install.sh`).
-- `--launch-only` — After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock.
+- `--launch-only` — After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock. **Also emits a sibling `<RUN_TS>-<PID>.args.json` artifact** (§5.2 step 2a) holding the EXACT `{ trunkSha, roster }` payload passed to the `Workflow` tool — the durable record of the dispatch args the inline `--launch-only` run does NOT otherwise hold, so `/ggx-on-duty`'s RECONCILE resume (GGC-41) can re-supply identical args via `resumeFromRunId` and hit the journal cache. Discovered by the same newest-mtime glob on-duty already uses for the in-flight TSV.
 - `--demo` — After §5.2 step 5 consumes `rows`, run a serial demo-capture pass (§6.6) over the shipped `design bug` PRs via `/_ui-demo-batch`. **Skipped under `--launch-only`** — the dispatcher has already returned, so the caller (`/ggx-on-duty --demo`) owns the demo pass. Best-effort / fail-soft: never blocks or fails the run. Off by default (design-bug PRs ship without an auto-captured demo, as today). See GGC-29.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
 
@@ -566,6 +566,8 @@ For each row of `DISPATCH_ROSTER`, append `<ticket-id>\t<headRefName>\t<worktree
 
 **What this file is FOR**: `/ggx-on-duty`'s Leg-2 resolver skip-set (E-3, D11) reads the newest one of these by mtime while `chain.running` to avoid sending `/ggx-pr-resolver` into a worktree `/dev:ff` is still writing. The canonical skip-set key is the branch name (`headRefName`, D11). The on-duty reader discovers this file via newest-mtime glob — it cannot know the background subagent's `RUN_TS`/`PID` and must never read the lock. A crashed run's stale `*.inflight.tsv` is tolerated (consumers always take the newest-mtime file; a fresh dispatcher run writes a newer one, and §6.4 deletes this run's own file when the final report supersedes it). Rows with the §2.1 ui-tweak flag are included like any other — their worktrees are written by the script's `runUiTweak` leg, but they are equally in-flight and equally off-limits to the resolver.
 
+The `RUN_TS`/`$$` stem established here is also the stem for the optional sibling `<RUN_TS>-<$$>.args.json` (GGC-41), written under `--launch-only` at §5.2 step 2a so `/ggx-on-duty`'s RECONCILE resume can find it via the SAME newest-mtime glob and re-supply identical dispatch args on `resumeFromRunId`. Keeping the two files on one stem means on-duty discovers both with one glob and never has to read the lock.
+
 > **§5.0 and §5.3 retired in GGC-55.** The legacy `--classic` fan-out — §5.0
 > (inline ui-tweak lane) and §5.3 (N×`Agent` parallel spawn) — was deleted when
 > the `Workflow` path became the only path. §5.1 survives, trimmed to the
@@ -678,6 +680,46 @@ Steps:
    script's clock is frozen for resume determinism). `trunkSha` is the
    §4.2-captured clean-trunk tip (GGC-49) — persisted so a same-session resume
    reuses the SAME baseline the original launch asserted against.
+
+   2a. **(`--launch-only` only.) Emit the dispatch-args artifact (GGC-41).**
+   `run.json` is the dispatcher's OWN same-session resume cache and is
+   overwritten by the next dispatcher run; it is not a durable, per-run record a
+   *different* process (the on-duty session that fired `--launch-only` inline)
+   can rely on across its wake cycles. Under `--launch-only`, also write the
+   EXACT `args` object this launch will hand the `Workflow` tool to a per-run
+   sibling of §4.4's in-flight TSV, so `/ggx-on-duty`'s RECONCILE resume can
+   re-supply byte-identical args on `resumeFromRunId` (a bare
+   `Workflow({scriptPath, resumeFromRunId})` with no `args` computes an empty
+   roster → 0 agents → nothing matches the journal → resume silently does
+   nothing). Skip this entirely when NOT `--launch-only` (the non-launch-only
+   caller babysits the run in-session and never needs the artifact).
+
+   Run this block ONLY when `--launch-only` is set (otherwise skip it — see
+   above):
+
+   ```bash
+   # RUN_TS / $$ are the SAME values §4.4 used for the in-flight TSV — share
+   # the stem so on-duty's newest-mtime glob finds both with one pattern.
+   ARGS_JSON="claude-reports/dispatcher/$RUN_TS-$$.args.json"
+   ARGS_TMP="$(mktemp)"
+   # Identical shape to the Workflow `args` below: { trunkSha, roster }.
+   printf '{"trunkSha":%s,"roster":%s}\n' \
+     "$(jq -Rn --arg t "$trunk_sha" '$t')" \
+     "$DISPATCH_ROSTER_JSON" > "$ARGS_TMP"
+   mv "$ARGS_TMP" "$ARGS_JSON"   # atomic
+   echo "dispatcher: wrote launch-only args artifact $ARGS_JSON" >&2
+   ```
+
+   The contents MUST equal the step-3 `args` object verbatim — if step 3's
+   shape ever changes, change this in lockstep, or a resume re-supplies stale
+   args and silently misses the journal cache. The args.json is written ONLY on
+   the `--launch-only` path, which returns at step 3 below and never reaches
+   §6.4 — so the §6.4 in-flight-TSV cleanup never sees an args.json to delete.
+   The on-duty session that fired `--launch-only` owns this artifact's
+   lifecycle: a stale `*.args.json` is tolerated exactly like a stale
+   `*.inflight.tsv` (consumers — here, on-duty's RECONCILE resume — always glob
+   the newest by mtime; the next dispatch run writes a newer pair). No
+   dispatcher-side cleanup is required.
 
 3. **Launch (P2 coverage already asserted in Step 1.7).** The Linear-MCP
    allowlist coverage gate runs in **Step 1 pre-flight, item 7** — BEFORE
