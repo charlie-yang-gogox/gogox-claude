@@ -73,46 +73,51 @@ opus model latency, not the diff size, which is exactly what Step 1c targets.)
 ## Step 1c — deterministic structural pre-pass (fast; may short-circuit the opus call)
 
 Before spawning the judges, run a **deterministic, LLM-free structural scan** over `$DIFF_TEXT`
-(grep only — no model call). It looks for added-line signals that are unambiguously NOT inert UI:
-new imports, new call heads / function definitions, renamed or new identifiers, control-flow
-keywords, changed `@+id` references, etc. — the same structural signals `dev-reviewer` would catch,
-but computed in milliseconds.
+(grep only — no model call). It short-circuits to BLOCKED **only** on added-line signals that are
+**unambiguously runtime behavior** — never on inert UI. This is a **latency optimization, not the
+gate**: when it fires, the slow opus `dev-reviewer` call is skipped; when it does NOT fire, BOTH
+judges still run on the full diff (Step 2/3) and that panel — opus `dev-reviewer` doing the real
+structural reasoning — is the actual arbiter. So **under-matching here is safe** (the panel catches
+it); **over-matching is the harm** (a false BLOCK reverts a legitimate UI change). The signal set is
+therefore deliberately tight: allow-by-default, deny only unambiguous behavior.
 
-**Design-system style/token import allowlist (GGC-38).** A large class of legitimately pure-visual
-fixes must add a **design-system style/token import** to reference a style constant (e.g. `+import
-'.../theme/app_typography.dart';` so a `TextStyle` can use `AppTypography.fontSizeCaption`). Such an
-added import — and the use of its `App*`-prefixed const identifiers — is **inert UI**, not logic, so
-it must NOT trip the pre-pass. Before the structural scan, drop these allowlisted lines from the
-`ADDED` set. The allowlist is deliberately narrow — a **style/token module path** OR a **bare
-`App*`-prefixed const use** — never the whole `theme/` tree and never a behavioral import
-(service / provider / controller / repository / router / bloc / cubit / notifier / state):
+**Not scanned / not a signal** (these are inert UI — they fall through to the panel):
+
+- **Any `import`.** An import line is inert; behavior comes from *using* the symbol, which the
+  behavior signals below (or the panel) catch. (Generalizes GGC-38 — which previously allowlisted
+  only design-system style/token imports — to: no import trips the scan at all. A behavioral import
+  like a service / controller is caught by the *use* of its symbol, not the import line. CAF-555's
+  `import '.../gestures.dart'` no longer trips the scan; it still BLOCKs, but on its
+  `TapGestureRecognizer` + `initState`/`dispose`, which is genuine behavior.)
+- **Pure layout / structure widgets** — `LayoutBuilder`, `ConstrainedBox`, `IntrinsicHeight`, `Row`,
+  `Column`, `Stack`, `Padding`, `SizedBox`, `Align`, `Center`, `Expanded`, `Flexible`, `Wrap`, …
+  and their `builder:` closures (`=>`), `BoxConstraints`, and collection-`if` / `for` inside a widget
+  list. These ARE ui-tweak's allowed scope (visual / layout / structure). (This is why CAF-540 —
+  `LayoutBuilder` + `ConstrainedBox` + `IntrinsicHeight` for vertical centering — must NOT be blocked
+  here: it reaches the panel and, being pure layout, clears.)
+- **Style / token references** — `App*`-prefixed const accessors (`AppColors.blue100`,
+  `AppTypography.fontSizeCaption`, `AppSpacing.medium`).
+- **Generic syntactic shapes** — bare `=>`, `return `, `new X`, `class `, `if (` / `for (` are NOT
+  flagged: they appear constantly in declarative widget trees (builder closures, collection-`if`,
+  `return SomeWidget(...)`). A genuine behavioral conditional / closure is caught by the panel.
+
+**Behavior signal set (the ONLY short-circuit triggers).** Scan ADDED lines for tokens that are
+essentially always runtime behavior — Flutter lifecycle, state mutation, gesture recognizers,
+event-listener wiring, async, navigation/routing, and provider/state-container access:
 
 ```bash
 # Examine ADDED lines only (leading '+', excluding the '+++' file header).
 ADDED=$(printf '%s\n' "$DIFF_TEXT" | grep -E '^\+' | grep -vE '^\+\+\+')
 
-# GGC-38: exempt design-system style/token imports + their App*-prefixed const
-# uses. STYLE_IMPORT_RE matches an `import`/`#import`/`using` line whose module
-# path is a known style/token module: theme/app_<token>.dart (colors, color,
-# typography, type, spacing, space, radius, radii, elevation, shadow, opacity,
-# dimens, dimension, breakpoint, theme, tokens, palette), OR a *_tokens / *_theme
-# / design_tokens / design_system style barrel. STYLE_CONST_RE matches a bare use
-# of an App*-prefixed const accessor (AppColors.blue100 / AppTypography.fontSizeCaption)
-# whose member is terminated by punctuation (, ; ) }) or end-of-line — a call head
-# like `AppFoo.bar(` (with or without a space before `(`) is NOT inert and is left
-# to trip the scan. The leading `[^(]*` keeps the line free of a call before the
-# const, so an App* const nested inside a call (e.g. `EdgeInsets.all(AppSpacing.md)`)
-# is conservatively NOT exempted here — it carries no other structural signal so
-# the main scan passes it anyway. Behavioral imports never match either pattern.
-STYLE_IMPORT_RE='^\+[[:space:]]*(import|#import|using)[[:space:]].*(theme/app_(colors?|typography|type|spacing|space|radi[ui]|radius|elevation|shadows?|opacit(y|ies)|dimens?(ions?)?|breakpoints?|theme|tokens?|palette)\.|(design_)?tokens?\.|design_system\.|_tokens\.|_theme\.)'
-STYLE_CONST_RE='^\+[[:space:]]*[^(]*\bApp[A-Z][A-Za-z0-9]*\.[A-Za-z_][A-Za-z0-9_]*([,;)}]|$)'
+# Unambiguous runtime-behavior signals only. macOS/BSD grep -E safe (no \b). Tight
+# by design: imports, layout/structure widgets, style tokens, and generic syntactic
+# shapes (=>, return, if (, for (, new X, class) are intentionally ABSENT — they are
+# inert UI and are left for the dual-judge panel. Add a token here ONLY if it is
+# essentially never pure UI (a miss just defers to the panel; a false hit reverts a
+# legit UI change).
+BEHAVIOR_RE='(initState|dispose|didChangeDependencies|didUpdateWidget|deactivate|setState|notifyListeners|addListener|removeListener)\(|GestureRecognizer|await |async[ ({]|\.then\(|ref\.(read|watch|listen)\(|Navigator\.|GoRouter|context\.(go|push|pop)|\.pushNamed\(|\.pushReplacement|StreamSubscription|StreamController'
 
-ADDED_SCANNED=$(printf '%s\n' "$ADDED" \
-  | grep -vE "$STYLE_IMPORT_RE" \
-  | grep -vE "$STYLE_CONST_RE")
-
-STRUCTURAL_HIT=$(printf '%s\n' "$ADDED_SCANNED" | grep -cE \
-  'import |require\(|=>|function |def |class |return |if \(|for \(|while \(|switch |await |async |new [A-Z]|@\+id/')
+STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE "$BEHAVIOR_RE")
 ```
 
 - `STRUCTURAL_HIT > 0` → **short-circuit to BLOCKED** without spawning the opus `dev-reviewer` at all
@@ -122,14 +127,14 @@ STRUCTURAL_HIT=$(printf '%s\n' "$ADDED_SCANNED" | grep -cE \
   is unchanged (a CLEAR still requires BOTH judges to actually run and return CLEAR).
 - `STRUCTURAL_HIT == 0` → proceed to Step 2 and spawn BOTH judges normally.
 
-> **Allowlist is a pre-pass relaxation, NOT a CLEAR.** Removing a style/token import (or an `App*`
-> const use) from the scanned set only stops the *deterministic* short-circuit from firing — it does
-> **not** pass the change. The decorrelated dual-judge panel (Step 2/3) still runs in full on the
-> complete diff (including the allowlisted lines) and both judges must return CLEAR. So a diff whose
-> only "logic signal" was a design-system style/token import now reaches the panel instead of being
-> reverted outright (the GGC-38 / CAF-514 friction), while behavioral imports
-> (service / provider / controller / repository / router / state) still trip the scan exactly as
-> before.
+> **A non-hit is NOT a CLEAR (GGC-57).** `STRUCTURAL_HIT == 0` only means the deterministic
+> short-circuit did not fire — it does **not** pass the change. The decorrelated dual-judge panel
+> (Step 2/3) still runs in full on the complete diff and BOTH judges must return CLEAR. So a
+> pure-layout diff (CAF-540: `LayoutBuilder`/`ConstrainedBox`/`IntrinsicHeight`) or an import-only
+> diff now reaches the panel instead of being reverted outright, while genuine behavior (CAF-555's
+> `TapGestureRecognizer` + `initState`/`dispose`) still short-circuits to BLOCK exactly as before.
+> Tightening the pre-pass shifts borderline diffs from a false deterministic BLOCK to the opus
+> `dev-reviewer`'s judgement — strictly more scrutiny, never less.
 
 ## Step 2 — dual judge, decorrelated (R6), on the FINAL cumulative diff
 
