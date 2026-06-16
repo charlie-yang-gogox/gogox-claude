@@ -271,7 +271,16 @@ attribute (never fuzzy-matching prose)**.
    fall back to the old rule: if the same `A-N`/`R-N` ID appears both inside an
    `[AUTO-ACCEPTED]` body AND as a standalone assumption/risk item, keep the
    auto-accept.
-8. Compute `<source_hash[i]> = sha256(<items[i].body>)`. Keep first 16 hex chars.
+8. Compute `<source_hash[i]>` from the **exact substring captured as
+   `<items[i].body>`** in steps 3–6 (the verbatim `ri:v1` block, or the legacy
+   body) — never a retyped reconstruction. Canonicalize before hashing per the
+   single rule in **§A → "Source-hash canonicalization"**: UTF-8 bytes,
+   CRLF/CR → LF, strip trailing whitespace + newline(s) from the end of the
+   block, **retain** the leading `- ` / `- **<id>** —` marker, no other
+   normalization (no markdown re-render, no `—`→`-` folding). Then
+   `<source_hash[i]> = sha256(<canonical_body>)`, keep the first 16 lowercase
+   hex chars. (As of 2026-06-16 no live consumer recompares this hash — see
+   §A — so this is a forward-looking contract, not a runtime gate.)
 9. **Cross-check (defends silent zero-acceptance)**:
    - Let `<review-items>` = items with `queue == "review"`,
      `<fyi-items>` = items with `queue == "fyi"`.
@@ -764,9 +773,48 @@ item body, re-review is required.**
 - Original / Directive / Note text are passed through verbatim except for
   trailing whitespace strip; do NOT re-render markdown inside.
 - Source hash format: literal string `sha256:` followed by exactly 16
-  lowercase hex chars (first 16 of `sha256(body)`).
+  lowercase hex chars (first 16 of `sha256(canonical_body)` — see below).
 - Footer + precedence hint are fixed text — copy them exactly so downstream
   parsers can grep.
+
+### Source-hash canonicalization
+
+The `Source hash` on every decision block is the contract a future re-review
+consumer would use to detect whether an item body changed since review. So
+writer and reader must canonicalize the body **identically** — a one-byte
+difference (trailing newline, `—` vs `-`, leading `- `) would otherwise
+mismatch and trigger a spurious "re-review required".
+
+`canonical_body` is derived from the **exact substring `/spec-review` Step 2
+captured as `<items[i].body>`** (the verbatim `ri:v1` marker block — its
+boundaries are defined in Step 2.3 — or the legacy body), with:
+
+1. **Encoding:** UTF-8 bytes. No transliteration — `—` stays `—`, never folded
+   to `-`.
+2. **Newlines:** normalize CRLF / CR → **LF** (`\n`) before hashing.
+3. **Trailing whitespace:** strip trailing whitespace **and** trailing
+   newline(s) from the END of the captured block only.
+4. **Leading marker:** the leading `- ` / `- **<id>** —` of the first bullet is
+   **RETAINED** (it is part of the captured block; do not strip it).
+5. **Interior:** no other normalization — interior whitespace, the indentation
+   of `Why` / `Impact` / `Evidence` / `Reality` continuation lines, and
+   backticks / fences are all preserved (no markdown re-rendering, per §C).
+
+`source_hash` = first 16 lowercase hex chars of `sha256(canonical_body)`.
+
+**Self-consistency rule:** the writer hashes the *identical substring it
+extracted in Step 2* — never a retyped reconstruction. A future reader MUST
+re-extract the same `ri:v1` block boundaries and apply rules 1–5 before
+hashing.
+
+> **No live consumer (as of 2026-06-16).** Nothing currently recomputes or
+> compares this hash: `/dev:start` Step 4c captures the **entire**
+> `spec-review:v1` comment verbatim into `.dev/spec-review-directives.md`, and
+> `/dev:apply` applies each `[REVISED]` `Directive:` verbatim — neither
+> re-extracts per-item bodies or re-hashes. The "If `source_hash` mismatches
+> the current item body, re-review is required" footer is therefore
+> forward-looking. This canonicalization exists so that *when* such a consumer
+> is built, it and this writer share one rule.
 
 ---
 
@@ -801,7 +849,8 @@ item body, re-review is required.**
 | Linear 5xx on label flip (single) | 6.3 | Print comment id, exit non-zero |
 | Linear 5xx on label flip (batch) | 6.3 | Print recovery hint, continue batch, mark errored |
 | Older `spec-review:v1` comment exists | 5 | Allowed (intentional re-review), latest wins |
-| Item body has backticks / fences | 2.8 | Hash raw text, do not re-render |
+| Item body has backticks / fences | 2.8 | Hash raw text, do not re-render (§A canonicalization) |
+| Trailing newline / CRLF / leading `- ` marker in body | 2.8 | Canonicalize per §A before hashing: UTF-8, CRLF/CR→LF, strip trailing ws+newline, retain leading `- ` |
 | User aborts mid-loop | any | No side effects; restart from top. Batch mode auto-skips already-flipped tickets on the next run. |
 | Batch mode profile unresolvable | 1.5 | STOP with profile-config hint before any Linear call |
 | Batch mode finds zero tickets | 1.5 | STOP cleanly, no side effects |
