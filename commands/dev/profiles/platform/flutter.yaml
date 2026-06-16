@@ -39,3 +39,14 @@ ui_build_cmd: flutter build apk --debug --flavor stag   # or `flutter build ios 
 # .fvm/flutter_sdk/bin/flutter SDK binary). Keep templates written with the bare `flutter` token
 # (and the flavor at the END) so the leading-token rewrite stays mechanical.
 ui_preview_cmd: flutter run -d {device} --debug --flavor stag
+
+# iOS navigation / capture requirement — `idb` (GGC-6).
+# /ui-tweak:preview Step 2.5 navigates to the target screen before capturing it. Two tiers:
+#   • Tier-1 `ggv://` deep-link — uses `xcrun simctl openurl`, needs NO idb → works on iOS as-is.
+#   • Tier-2 codebase-planned tap-through — needs `idb ui tap` on iOS (`xcrun simctl` cannot tap).
+# Without `idb`, iOS Tier-2 is unavailable, so iOS is effectively CAPTURE-CURRENT-SCREEN ONLY: deep-linkable
+# screens still get a real shot via Tier-1; non-deep-linkable screens fail-silent (no capture, the run is
+# never blocked — see preview.md "On failure to reach the target → FAIL-SILENT"). Android is unaffected
+# (it taps via `adb`, always present in the toolchain). To enable iOS Tier-2 navigation, install idb:
+#   brew tap facebook/fb && brew install idb-companion
+#   pipx install fb-idb        # or: pip3 install fb-idb

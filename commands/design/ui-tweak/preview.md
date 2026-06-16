@@ -316,6 +316,20 @@ continue. The orchestrator's C1 (looks-good) card then shows no image (honest "c
 screen" wording) and the PR uses the Demo fallback chain. Any navigation/capture error is likewise
 swallowed here — it NEVER fails the build gate or the run.
 
+**iOS-only actionable hint when the cause is missing `idb` (GGC-6).** When (and only when) the device is
+an iOS simulator AND Tier-2 could not run because `idb` is absent, additionally emit ONE non-blocking,
+informational stderr line so the designer learns how to enable iOS navigation next time — capture still
+fail-silents exactly as above (no stall, no drive prompt, no gate, no retry):
+
+```
+note: couldn't auto-navigate to the target screen on iOS — Tier-2 tap-through needs `idb` (not found),
+so nothing was captured. To enable iOS auto-navigation next time: `brew tap facebook/fb && brew install
+idb-companion` then `pipx install fb-idb`. (Tier-1 ggv:// deep-link works without idb; Android is unaffected.)
+```
+
+This hint is purely informational. Do NOT print it on Android (taps via `adb`), nor when the fail-silent
+cause is a login wall / no-route / tap-through-stuck rather than a missing `idb`.
+
 ## Step 3 — quarantine build side-effects (F3) + record success
 
 ```bash
