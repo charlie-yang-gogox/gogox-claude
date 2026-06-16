@@ -1,6 +1,6 @@
 ---
 name: _ui-demo-batch
-description: "Internal helper invoked by /ggx-dispatcher (--demo, after the §5.2 workflow join) and /ggx-on-duty (--demo, after the Leg-1 dispatch completion). Runs the ui-tweak demo capture for a batch of shipped `design bug` PRs as a SINGLE SERIAL pass — only one actor ever touches the simulator, so the device race that an inline per-ticket demo would create in the parallel fan-out is gone by construction (no lock, no TTL). Acquires the device ONCE (a running logged-in device, else boots the designated persistent sim), then per ticket: worktree-liveness check (+ fresh-checkout fallback so a concurrently-reset worktree never demos the wrong code) → install-not-rebuild → /ui-tweak:demo (NAVIGATE capture) → idempotent PR comment carrying a `<!-- ui-tweak-demo -->` marker (never a blind PR-body overwrite). Fail-soft per ticket and overall: NEVER blocks or fails the caller. Linear-only / flutter-only v1; design-bug demos only. Not user-invoked. (Inline-renderable PR images are GGC-30, separate.)"
+description: "Internal helper invoked by /ggx-dispatcher (--demo, after the §5.2 workflow join) and /ggx-on-duty (--demo, after the Leg-1 dispatch completion). Runs the ui-tweak demo capture for a batch of shipped `design bug` PRs as a SINGLE SERIAL pass — only one actor ever touches the simulator, so the device race that an inline per-ticket demo would create in the parallel fan-out is gone by construction (no lock, no TTL). Acquires the device ONCE (a running logged-in device, else boots the designated persistent sim), then per ticket: worktree-liveness check (+ fresh-checkout fallback so a concurrently-reset worktree never demos the wrong code) → install-not-rebuild → navigate+capture (the same Tier-1 deep-link / Tier-2 nav-only procedure as /ui-tweak:preview Step 2.5, fail-silent) → idempotent PR comment carrying a `<!-- ui-tweak-demo -->` marker (never a blind PR-body overwrite). Fail-soft per ticket and overall: NEVER blocks or fails the caller. Linear-only / flutter-only v1; design-bug demos only. Not user-invoked. (Inline-renderable PR images are GGC-30, separate.)"
 Prerequisite: >
   - A flutter repo with a resolvable ui-tweak preview command (`ui_preview_cmd`);
     on non-flutter / build-only profiles this helper is a no-op.
@@ -97,18 +97,22 @@ move to the next ticket (never abort the batch):
      builds + installs + launches) onto `$DEV`. Rebuild is the acceptable
      fallback for a best-effort stage; install-first keeps the common path to
      seconds, not minutes.
-   - Leave the app running on `$DEV` so `/ui-tweak:demo` Step 1 can discover it
-     (demo.md does READ-ONLY device discovery — it never boots or launches).
+   - Leave the app running on `$DEV` so the step-3 capture can navigate it
+     (the capture is navigation + screenshot/record only — it never boots,
+     launches, or rebuilds).
 
-3. **Capture via `/ui-tweak:demo` (reuse — do not re-implement navigation).**
-   In `$WT`: write `.dev/ui-tweak/demo-requested` + `.dev/ui-tweak/auto-navigate`
-   (NAVIGATE mode), export `UI_TWEAK_FF=1` (clears demo.md's Step 0a misdirect
-   guard), and invoke `/ui-tweak:demo`. It fires the Tier-1 `ggv://` deep-link
-   (or the Tier-2 codebase-planned nav-only tap-through), captures a screenshot
-   + short recording into `.dev/ui-tweak/demo-files`, and is itself fail-silent.
-   A capture failure here leaves `demo-files` empty → skip the embed for this
-   ticket (WARN, continue). Running unattended (headless), demo.md takes its
-   fail-silent path rather than the interactive nav-help prompt.
+3. **Capture using the same procedure as `/ui-tweak:preview` Step 2.5 (the sole
+   capture point — do not re-implement).** The app is already running on `$DEV`
+   (step 2). In `$WT`, run the **Tier-1 → Tier-2 navigate + capture** exactly as
+   `commands/design/ui-tweak/preview.md` Step 2.5 documents: derive the target
+   host from `.dev/ui-tweak/ticket.json`, fire ONE `ggv://` deep-link (or the
+   Tier-2 codebase-planned nav-only tap-through), then a screenshot + short
+   recording (`xcrun simctl io` / `adb exec-out screencap` + `screenrecord`) into
+   `.dev/ui-tweak/demo-files`. It is **fail-silent**: if the target can't be
+   reached (no route / tap-through stuck / login wall) it captures NOTHING and
+   leaves `demo-files` empty → skip the embed for this ticket (WARN, continue).
+   There is no demo stage or marker handshake to set up here — the capture is a
+   direct, self-contained navigate+screenshot/record pass.
 
 4. **Idempotent embed — PR COMMENT with a marker (NOT a body overwrite).** When
    `.dev/ui-tweak/demo-files` is non-empty:
@@ -126,8 +130,8 @@ move to the next ticket (never abort the batch):
      marker (idempotent the same way). Best-effort.
 
 5. **Per-ticket cleanup.** If a `../<ticketId>-demo` throwaway worktree was
-   created in step 1, `git worktree remove --force` it. Consume
-   `.dev/ui-tweak/demo-requested`. Leave `$DEV` running for the next ticket.
+   created in step 1, `git worktree remove --force` it. Leave `$DEV` running for
+   the next ticket.
 
 ## Step 2 — summary
 

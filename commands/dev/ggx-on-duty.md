@@ -50,10 +50,11 @@ headless-drivable):
 - Pin the preview/demo flavor to `dev` so worktree builds don't collide on signature with the CI-signed
   staging app: add `flavor: dev` to the app repo's `<repo>/.gogox-claude.yaml` (GGC-7 override).
 
-When this is not set up, the demo stage now **skips up-front with a surfaced reason** (no silent
-"session-blocked"; see `commands/design/ui-tweak/demo.md` Step 1.4 + "Demo device prerequisite"). A missing
-demo never blocks a PR — the draft PR still opens via the normal Demo fallback chain. So this is an
-optional capture-quality prerequisite, not a loop requirement.
+When this is not set up, navigate+capture simply **fail-silents** on a login-gated screen (it never logs
+in; see `commands/design/ui-tweak/preview.md` Step 2.5 — capture is the sole job of `preview`, and the
+batch path reuses that same procedure via `/_ui-demo-batch`). A missing demo never blocks a PR — the
+draft PR still opens via the normal Demo fallback chain. So this is an optional capture-quality
+prerequisite, not a loop requirement.
 
 ## On invocation (once)
 

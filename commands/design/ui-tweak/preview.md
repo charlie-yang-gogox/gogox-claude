@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and screenshot it FOR the designer (Step 2.5), so they review the result without driving. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, never logs in. If it can't reach the screen (no route / login needed) it sets nav-help-needed and the orchestrator asks the designer to finish navigating (the only path where the designer drives). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it becomes a pure build-only compile gate — no device cascade, no preview-shown, no card; the walker then advances straight to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
+description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, never logs in. If it can't reach the screen (no route / login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -8,15 +8,16 @@ description: "Phase-1 stage of the /ui-tweak pipeline — build + install + laun
 # `/ui-tweak:preview`
 
 > **Single responsibility (Phase 1)**: build + install + launch the change onto a device, then (GGC-14
-> reorientation) **navigate to the target screen and screenshot it FOR the designer** (Step 2.5), so
-> they review the *result* instead of driving the device. Driving is bounded to **navigation only**
-> (deep-link + nav-only taps) — the agent never edits code, never taps state-mutating controls, and
-> never logs in (see the Drive policy in Step 2). If it cannot reach the screen (no route / login
-> needed) it asks the designer to finish navigating (the nav-help fallback) — that is the ONLY path
-> where the designer drives. Reached when `.dev/ui-tweak/preview-requested` exists (designer picked
-> "I'm done — show me"). It does NOT run the LLM logic audit — that is Phase 2 (`/ui-tweak:audit`),
-> gated behind the designer confirming the look. Build is folded in here — `flutter run` builds +
-> installs + launches in one step.
+> reorientation) **navigate to the target screen and capture it — screenshot + short recording — FOR
+> the designer** (Step 2.5), so they review the *result* instead of driving the device. This is the
+> **sole capture point** in the pipeline (there is no separate post-commit demo stage). Driving is
+> bounded to **navigation only** (deep-link + nav-only taps) — the agent never edits code, never taps
+> state-mutating controls, and never logs in (see the Drive policy in Step 2). If it cannot reach the
+> screen (no route / login wall) it **FAIL-SILENTs** — captures nothing and the designer is never asked
+> to drive (the C1 card simply shows no image). Reached when `.dev/ui-tweak/preview-requested` exists
+> (designer picked "I'm done — show me"). It does NOT run the LLM logic audit — that is Phase 2
+> (`/ui-tweak:audit`), gated behind the designer confirming the look. Build is folded in here —
+> `flutter run` builds + installs + launches in one step.
 
 ## Inputs
 
@@ -131,8 +132,8 @@ look), so by default this stage is a **build-only compile gate** — NOT a devic
   loop (max 3, then Ce). This gate exists precisely because the designer's hand-build may predate the
   latest tweak.
 
-**Exception — `DIRECT_SHIP=1` AND `AUTO_NAV=1` (GGC-14): launch onto an already-running device so the
-`demo` stage can navigate + capture.** A pure build-only gate leaves no running app for `demo` to
+**Exception — `DIRECT_SHIP=1` AND `AUTO_NAV=1` (GGC-14): launch onto an already-running device so
+preview itself can navigate + capture (Step 2.5).** A pure build-only gate leaves no running app to
 deep-link into, so when navigation is requested we must actually install + launch — but only onto a
 device that is **already running** (the designer's pre-warmed, already-logged-in device). Concretely:
 
@@ -140,11 +141,13 @@ device that is **already running** (the designer's pre-warmed, already-logged-in
   physical handset). **Do NOT cold-boot (skip path (b))**: booting an emulator unattended is heavy and
   the booted device would not be logged in, so it adds nothing. If (a) yields a device → go to Step 2's
   **device path** (`ui_preview_cmd`) to build+install+launch and leave the app up; the build gate still
-  keys on exit code exactly as the normal path.
+  keys on exit code exactly as the normal path, then **Step 2.5 navigates + captures** before the
+  walker advances.
 - If (a) yields **no running device** → fall back to the **build-only path** (`ui_build_cmd`) exactly as
-  above. `demo` will then find no running app and FAIL-SILENT (the PR uses the Demo fallback chain).
+  above. Step 2.5 is skipped (no live app) and FAIL-SILENT (the PR uses the Demo fallback chain).
 - **Still do NOT write `preview-shown`** (direct-ship has no "looks good?" card) and the walker still
-  advances to `audit`. The launch here exists solely to give `demo` a live, logged-in app to navigate.
+  advances to `audit` after the capture. The launch here exists solely to give Step 2.5 a live,
+  logged-in app to navigate.
 
 The rest of this file (Steps 1–4) is the normal **device-preview** path used when `DIRECT_SHIP=0`.
 
@@ -239,38 +242,79 @@ iterations of `sleep 1`), so it is portable to stock macOS with no external depe
 >   / `idb ui tap`; one screenshot + short recording.
 > - **FORBIDDEN, always**: editing code; tapping confirm / submit / pay / place-order / delete or any
 >   state-mutating / destructive control; granting permission dialogs; typing into fields; **logging
->   in** (login is NOT a precondition — if a screen needs it, that's a nav-help fallback, not something
->   the agent does itself).
+>   in** (login is NOT a precondition — if a screen needs it, that's a fail-silent no-capture, not
+>   something the agent does itself).
 > Navigation is for a screenshot only — it never changes app, account, or repo state, and never gates.
 
-## Step 2.5 — navigate to the target + capture (interactive default — GGC-14)
+## Step 2.5 — navigate to the target + capture (the SOLE capture point — GGC-14)
 
-_Runs on the **interactive device path** (`DIRECT_SHIP=0` AND a device was acquired in Step 1). Skip
-when `DIRECT_SHIP=1` (`--auto`: navigate+capture runs in the post-commit `demo` stage) or on the
-no-device build-only path (c) (no screen to navigate → the orchestrator's no-device note covers it)._
+_Runs whenever Step 2 took the **device path** (an app is live on a device): the interactive device
+path (`DIRECT_SHIP=0`), AND the direct-ship navigate path (`DIRECT_SHIP=1` AND `AUTO_NAV=1`, Step 0b
+launched onto an already-running device). **Skip only on the no-device build-only path (c)** and on a
+pure direct-ship build-only gate (`AUTO_NAV=0`) — there is no live screen to navigate. There is no
+separate post-commit capture stage; preview is the single place capture ever happens._
 
-By default the agent navigates the running app to the target screen and screenshots it, so the designer
-reviews the **result** without driving. Perform the **Tier-1 → Tier-2 navigation + capture exactly as
-`/ui-tweak:demo` Step 1.5–2 describes** (deep-link first; else codebase-planned, navigation-only
-tap-through per the Drive policy above; then `xcrun simctl io` / `adb exec-out screencap` +
-`screenrecord`), appending the output paths to `.dev/ui-tweak/demo-files`.
+The agent navigates the running app to the target screen and captures it, so the designer reviews the
+**result** without driving (and so `--auto` PRs carry a real artifact). **Two tiers, tried in order,
+both best-effort.** Neither tier may EVER edit code or change app/account state — this is navigation
+for a screenshot only, strictly after the build gate (Step 2), and it can never flip the gate.
 
-- **Reached the target + captured** → leave `demo-files` populated; the orchestrator renders C1
-  (looks-good) **Variant A** (result card showing the screenshot).
-- **Could NOT reach the target** — no deep-link route AND tap-through couldn't get there, OR a **login
-  wall** (Q2: login is not assumed) → do NOT capture a misleading wrong screen; instead record why and
-  ask the designer:
-  ```bash
-  printf '%s\n' "<one-line reason — e.g. 'login needed to reach <screen>' / 'no route to <screen>'>" \
-    > "$WT/.dev/ui-tweak/nav-help-reason"
-  : > "$WT/.dev/ui-tweak/nav-help-needed"
-  ```
-  The orchestrator then renders C1 (looks-good) **Variant B** (nav-help fallback): the app is kept
-  **live** (Q1) and the designer opens the screen / logs in, then the capture is taken. **Never log in
-  or tap past a login wall yourself.**
+### Tier 1 — deep-link (preferred: deterministic, one action)
 
-Best-effort and **fail-silent on the gate**: any navigation/capture error sets `nav-help-needed` (so
-the designer is asked) but NEVER fails the build gate or the run.
+1. **Derive the target host** from `.dev/ui-tweak/ticket.json` (title/description/labels) + the change
+   summary. Known CAF `ggv://` hosts (gogox-client-flutter `DeeplinkParser`): `news`, `promotions`,
+   `payment`, `profile`, `service-delivery`, `rate-us`, `login`, `voucher`, `order-detail`,
+   `rate-driver`. A repo MAY override/extend this via `deeplink_hosts:` in `<repo>/.gogox-claude.yaml`
+   (authoritative when present). Pick the single best match.
+2. **If a host matches**, fire ONE deep-link and settle (counter-bounded, NEVER `timeout`). `$DEVICE`
+   is from Step 1; derive its platform (an iOS simulator lists a UUID udid + `platform":"ios` in
+   `$FLUTTER_BIN devices --machine`; otherwise treat as Android):
+   ```bash
+   PLATFORM_KIND=$($FLUTTER_BIN devices --machine 2>/dev/null \
+     | jq -r --arg d "$DEVICE" '.[] | select(.id==$d) | (.targetPlatform // "")' 2>/dev/null \
+     | grep -qi ios && echo ios || echo android)
+   URI="ggv://<host>"            # e.g. ggv://order-detail
+   case "$PLATFORM_KIND" in
+     ios)     xcrun simctl openurl "$DEVICE" "$URI" ;;
+     android) adb -s "$DEVICE" shell am start -a android.intent.action.VIEW -d "$URI" ;;
+   esac
+   i=0; while [ "$i" -lt 4 ]; do sleep 1; i=$((i+1)); done   # ~4s to let the route render
+   ```
+   → go to capture below.
+3. **No whitelisted host matches** → Tier 2.
+
+### Tier 2 — codebase-planned, navigation-only tap-through (no deep-link route)
+
+For screens that are not URI-addressable (e.g. a side-menu drawer), navigate by driving the UI,
+**planned from the codebase**. Capped, per the Drive policy above (navigation affordances only — never
+confirm/submit/pay/delete, never grant permissions, never type, never log in).
+
+1. **Plan the path from the codebase** (widget keys / semantics labels / route names) from the current
+   screen (usually `/home`) to the target.
+2. **Observe → tap loop** (capped at `MAX_TAPS=6`): screenshot (read-only) → decide ONE navigation tap
+   → execute (`adb -s "$DEVICE" shell input tap <x> <y>` / `idb ui tap --udid "$DEVICE" <x> <y>` — iOS
+   tap-through needs `idb`; `xcrun simctl` cannot tap) → re-screenshot; reached → capture; stuck /
+   looping / `MAX_TAPS` / `idb` absent → **could-not-reach** (→ fail-silent below).
+
+### Capture (pure output)
+
+On reaching the target, capture a screenshot + a short (~6s) recording into `.dev/ui-tweak/demo`:
+- **iOS**: `xcrun simctl io "$DEVICE" screenshot .../after.png`; recording via `xcrun simctl io
+  "$DEVICE" recordVideo --codec h264 .../after.mp4` backgrounded ~6s then SIGINT.
+- **Android**: `adb -s "$DEVICE" exec-out screencap -p > .../after.png`; `adb -s "$DEVICE" shell
+  screenrecord --time-limit 6 /sdcard/uitw.mp4` + `adb pull`.
+
+Append the output paths to `.dev/ui-tweak/demo-files`. The screenshot is the C1 review surface; both
+screenshot + recording are embedded by `pr`.
+
+### On failure to reach the target → FAIL-SILENT (no designer driving)
+
+If Tier 1 + Tier 2 cannot confidently reach the target (no route, tap-through stuck, `idb` absent, or a
+**login wall** — login is never assumed and never performed), do **NOT** capture a misleading wrong
+screen and do **NOT** ask the designer to drive: just capture nothing, leave `demo-files` empty, and
+continue. The orchestrator's C1 (looks-good) card then shows no image (honest "couldn't auto-reach the
+screen" wording) and the PR uses the Demo fallback chain. Any navigation/capture error is likewise
+swallowed here — it NEVER fails the build gate or the run.
 
 ## Step 3 — quarantine build side-effects (F3) + record success
 
@@ -284,11 +328,11 @@ printf 'Status: PASS\n' > "$WT/.dev/ui-tweak/build-pass"
 rm -f "$WT/.dev/ui-tweak/repair-count"          # reset the repair budget on a clean build
 ```
 
-STOP. **Interactive path (`DIRECT_SHIP=0`)**: the orchestrator renders C1 (looks-good) — **Variant A**
-(result card with the Step-2.5 screenshot) if the target was reached, or **Variant B** (nav-help
-fallback) if `nav-help-needed` was set. On the no-device path it renders Variant B with the honest "no
-device" reason. **Direct-ship path (`DIRECT_SHIP=1`)**: no card — the walker advances to `audit`
-(navigate+capture, if any, runs in the post-commit `demo` stage).
+STOP. **Interactive path (`DIRECT_SHIP=0`)**: the orchestrator renders C1 (looks-good) — with the
+Step-2.5 screenshot when the target was reached, or with no image + an honest "couldn't auto-reach the
+screen" note when capture was skipped/failed or there was no device (fail-silent — never a nav-help
+hand-off; the designer never drives). **Direct-ship path (`DIRECT_SHIP=1`)**: no card — the walker
+advances to `audit` (the Step-2.5 capture, if any, has already run).
 
 ## Step 4 — build-fail path → agent repair (R18 / max 3)
 
@@ -308,15 +352,16 @@ The orchestrator's loop sees `repair-context` and routes back to `/ui-tweak:appl
 ## `--auto` — failures must be LOUD (R13)
 
 Under `--auto`, preview IS reached — in **direct-ship mode** (D7, revised): the orchestrator's
-auto-decision wrote `deliver` + `direct-ship` (+ `demo-requested` + `auto-navigate`, GGC-14). It is
-the load-bearing build proof before the audit, and:
+auto-decision wrote `deliver` + `direct-ship` (+ `auto-navigate`, GGC-14). It is the load-bearing
+build proof before the audit, and:
 
 - **`auto-navigate` absent** → pure build-only compile gate (no device cascade, no `preview-shown`, no
-  card), exactly as before.
+  card, no Step 2.5), exactly as before.
 - **`auto-navigate` present** (the GGC-14 default for `--auto`) → the Step 0b restricted cascade: launch
-  onto an **already-running** device if one exists (so `demo` can navigate+capture), else build-only.
-  Either way: no `preview-shown`, no card, exit-code-keyed gate. **`--auto` never cold-boots an emulator
-  here and never reaches the interactive `preview-requested` device-preview card path.**
+  onto an **already-running** device if one exists, then **Step 2.5 navigates + captures** (best-effort
+  / fail-silent), else build-only. Either way: no `preview-shown`, no card, exit-code-keyed gate.
+  **`--auto` never cold-boots an emulator here and never reaches the interactive `preview-requested`
+  device-preview card path.**
 
 A build-fail under `--auto` goes through the SAME agent repair loop as interactive (write
 `repair-context` + bump `repair-count` → apply fixes UI-only → re-gate, max 3 — the loop needs no
@@ -335,8 +380,9 @@ finding is not a mechanical fix; see `/ui-tweak:audit`.)
 ## HITL / Stop
 
 preview is mechanical — no card here (the orchestrator owns the wayfinding cards). On success print:
-`App launched on <device> — handed to the designer to look at. Audit deferred to ship.` — or, in
-direct-ship mode: `Build gate PASS (direct-ship — no device preview). Next: audit.` The
-orchestrator then renders the post-preview C1, whose wording tells the designer **the app is running
-on their device and to go look / navigate to the screen themselves** ("It's running on <device> now —
-take a look. Does it look right?"). The agent does NOT describe what the screen shows (it never looked).
+`App launched on <device> — navigated to <screen> and captured it for review. Audit deferred to ship.`
+(or, when capture was skipped/failed: `App launched on <device> — couldn't auto-reach the target screen
+(fail-silent, no image).`) — or, in direct-ship mode: `Build gate PASS (direct-ship). Next: audit.`
+The orchestrator then renders the post-preview C1 showing the Step-2.5 screenshot (or, when none was
+captured, an honest "couldn't auto-reach the screen" note). The designer reviews the result — they do
+NOT drive the device.
