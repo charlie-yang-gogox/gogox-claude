@@ -465,6 +465,69 @@ normally.
 > worktree. The findings live in session memory only, consumed by Step 4 and
 > recorded in the Step 5 comment. See §C.
 
+### Step 3.6: Cluster proposal (presentation/decision layer — GGC-32)
+
+The skill dedups review items **by `id`** (Step 2.7), so near-duplicate items
+that represent the *same underlying decision* from different lenses are walked
+and prompted separately (CAF-233: AP-1≈AG-2, AP-3≈AG-4, AP-4≈AG-3 — 10 items,
+~6 distinct decisions). This step lets ONE decision fan out to a set of linked
+IDs. It is a **presentation/decision layer only** — it never changes the
+join-by-`id` schema (Step 2.7) or the §A comment format.
+
+It runs **after** Step 3.5 (so it can read `<findings>`) and **before** Step 4.
+It operates on the **review queue only** (`queue == "review"`); FYI items are
+NEVER clustered.
+
+**Conservative by default.** When in doubt, do NOT cluster. With no confirmed
+cluster the loop behaves exactly as today.
+
+#### Step 3.6.1: Build candidate clusters
+
+A group of ≥2 review-queue items is a **candidate cluster** iff EITHER:
+
+- **(a) Explicit cross-reference** — a member body explicitly points at another
+  member's ID, matching
+  `(?i)\b(same as|see|duplicate of|cf\.?|≈)\s*(AP|AG|AD|AU|AR|A|R)-\d+\b`.
+  (Highest confidence — author-declared.)
+- **(b) Shared premise** — members share the SAME FR / AC / impact target AND
+  have high body overlap. This is an LLM-judgment call; you MUST be able to
+  state the **one-line shared premise** for the group (e.g. "all assert the
+  route provenance boolean is the trigger source"). If you cannot articulate a
+  single shared premise in one line → it is NOT a cluster.
+
+Items with no candidate partner are **singletons** — they skip clustering and
+are walked normally in Step 4.
+
+#### Step 3.6.2: Compatibility guard (hard pre-filter, before proposing)
+
+Drop or split a candidate so it never spans **incompatible Step 3.5 findings**:
+
+- Any member with `finding == "refuted"` (pre-tagged Reject — auto-recorded in
+  Step 4 without a prompt) is **excluded from clustering entirely** — never
+  grouped.
+- A `confirmed` member and an `inconclusive`/no-finding member MAY cluster
+  (both still go to a human decision), but the confirmation prompt MUST show
+  each member's finding.
+- Two members whose findings would dictate opposite verdicts are never proposed
+  together.
+
+#### Step 3.6.3: Human confirmation (mandatory)
+
+For each surviving candidate cluster, `AskUserQuestion` BEFORE Step 4 walks it:
+
+- Show: member IDs + each `Summary` + the one-line shared premise + (if any)
+  each member's Step 3.5 finding.
+- Options: `Cluster — one decision for all` / `Keep separate` / `Other`
+  (free-text to drop or adjust a member).
+- **Default = Keep separate** on any hesitation. The reviewer can de-cluster a
+  member via `Other`.
+- A confirmed cluster becomes a single Step-4 decision unit; a rejected one
+  falls back to individual items walked normally.
+
+Build `<clusters>` = the confirmed groups (each = an ordered list of member item
+indices + the shared one-line premise), and hand it to Step 4. Items not in any
+confirmed cluster are walked as singletons.
+
 ### Step 4: HITL decision loop
 
 Iterate the **review queue only** (`<review-items>`, `queue == "review"`) in
@@ -494,7 +557,27 @@ investigation (AC-3):
   `Investigate origin` option available (step 2 below) for any item that is
   still `verify == "unconfirmed"` and empirical.
 
-For each remaining item (i.e. not auto-recorded as a refuted pre-tag):
+**Clustered decisions (Step 3.6, GGC-32).** When the next unit in the queue is a
+confirmed `<cluster>` (member items grouped in Step 3.6.3), run the steps below
+ONCE for the cluster, against its shared one-line premise, then fan the result
+out to every member:
+
+- Print the cluster header: the shared premise + each member's `id` / `Summary`
+  / finding, then run the single decision prompt (steps 1–6) once.
+- **Severity** of the cluster = `max(member severities)`; the high-severity
+  REVIEWED gate (step 3) fires if ANY member is high.
+- The chosen verdict + `directive` / `note` apply to ALL members. Run the
+  Reject-path directive grounding (step 4, GGC-33) ONCE on the shared directive;
+  the validated directive then fans out.
+- In `<decisions>`, append ONE entry **per member** —
+  `{item_index, verdict, directive?, note?, source_hash}` — each member keeps
+  its OWN `source_hash` (its own body) and its own `id`; the shared
+  `directive` / `note` text is replicated verbatim. (So the Step 5 comment still
+  renders one `### [VERDICT]` block per member ID — the §A join-by-`id` schema
+  is unchanged.)
+
+For each remaining item (i.e. not auto-recorded as a refuted pre-tag, and not
+part of a confirmed cluster handled above):
 
 1. Print the **full** body of the item (not truncated). Format:
    ```
