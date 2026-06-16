@@ -553,6 +553,45 @@ For each remaining item (i.e. not auto-recorded as a refuted pre-tag):
    - On `I'll write it now` → user enters the directive in the free-text input.
      Empty / whitespace-only / "TBD" / "later" → loop back as Defer with note.
    - Never proceed with an empty directive.
+   - **Directive grounding (port lane only — GGC-33).** Before appending the
+     directive to `<decisions>` (step 7), validate any concrete code claim it
+     makes against the origin codebase. This catches a directive that cites
+     symbols / file:line that don't exist (e.g. copied from a subagent report
+     that hallucinated). It REUSES the Step 3.5 machinery — no new MCP call, no
+     re-resolve, read-only, inline (no nested `Agent`).
+     - **Applicability gate** — run the check ONLY when BOTH hold (else append
+       the directive unchanged, exactly as today):
+       (a) `<port-lane> == True` AND a `$ORIGIN` path resolved in Step 3.5.1
+           (reuse that result; if Step 3.5 was skipped or no origin resolved,
+           do nothing); AND
+       (b) the directive text contains ≥1 **concrete code claim** — a file path
+           with a code extension (`\b[\w/.-]+\.(kt|dart|java|swift|ts|js)\b`),
+           optionally `:line`, OR a symbol-shaped token tied to code
+           (`CamelCase`, `foo()`, a `Repository` / `Interactor` / `ViewModel`-
+           suffixed name). A judgment-only directive that cites no code is NOT
+           checked — append unchanged.
+     - **Grounding check** — for each cited path / symbol, run the SAME inline
+       `Grep` / `Glob` / `Read` against `$ORIGIN` as Step 3.5.2 (read suspect
+       files end-to-end, not snippets). Classify each citation `resolved`
+       (found — capture `<path>:<line>` proof) or `unresolved` (not found).
+     - **All resolved** → print one line
+       `✓ directive citations grounded in origin (<path:symbol>, …)` and append
+       the directive unchanged.
+     - **≥1 unresolved** → `AskUserQuestion` BEFORE appending:
+       - Question: "Directive cites <N> reference(s) not found in origin:
+         `<list>`. Origin can't see target-repo symbols, so this may be fine —
+         how to proceed?"
+       - Options: `Edit directive` / `Keep as-is (target-repo / intentional)` /
+         `Switch to Defer`
+       - On `Edit directive` → free-text re-entry; re-run the grounding check on
+         the new text.
+       - On `Keep as-is …` → append unchanged AND record a one-line `note` on
+         the decision: `citations unverified in origin: <list>` (audit trail —
+         the directive may legitimately reference the TARGET repo, which §C
+         forbids reading).
+       - On `Switch to Defer` → fall back to the Defer path (step 5).
+       - Conservative default: never silently drop, never auto-edit the human's
+         directive.
 
 5. **Defer path**: ask a free-text follow-up:
    - Question: "Optional note to capture context for this deferral."
@@ -563,6 +602,9 @@ For each remaining item (i.e. not auto-recorded as a refuted pre-tag):
    - Question: "Recorded as Reject with directive '<text>'. Confirm?"
    - Options: `Confirm` / `Edit directive` / `Switch to Defer instead`
    - Never silently bucket Other.
+   - On `Confirm` → apply the same **directive grounding** check as the Reject
+     path (step 4, GGC-33) before recording (a confirmed Other directive is a
+     Reject directive).
 
 7. Append decision to `<decisions>: [{item_index, verdict, directive?, note?, source_hash}]`.
 
@@ -861,9 +903,12 @@ hashing.
 ## §C — Non-goals (do not extend)
 
 - Do NOT read or modify any file under the ticket's worktree. (The Step 3.5
-  investigate-first phase reads the **origin** codebase at
-  `originalProjectPath`, never the ticket worktree, and writes nothing — it is
-  read-only investigation whose findings live in session memory only.)
+  investigate-first phase AND the Step 4 directive-grounding check (GGC-33) both
+  read the **origin** codebase at `originalProjectPath`, never the ticket
+  worktree, and write nothing — read-only investigation whose findings live in
+  session memory only. A directive that cites a target-repo symbol cannot be
+  validated here by design — it is surfaced as "unverified in origin", never
+  rejected.)
 - Do NOT run `openspec validate` or `/spec-lint`.
 - Do NOT git-commit anything.
 - Do NOT push.
