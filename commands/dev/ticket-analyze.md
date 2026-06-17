@@ -69,6 +69,7 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 | complete | blocked | any | `need-dependency` |
 | complete | unblocked | port | `ready-to-port` |
 | complete | unblocked | feature / bug / ui-tweak | `ready-to-dev` |
+| complete | unblocked | ui-tweak (`design bug`) **whose text high-confidence predicts the fix needs logic** | `need-revision` (+ reclassify → `Bug` recommended — see the Design-bug ready-to-dev gate below) |
 
 The four analyzer-owned labels (`ready-to-port`, `ready-to-dev`,
 `need-revision`, `need-dependency`) are **mutually exclusive** — every
@@ -78,27 +79,53 @@ the dispatcher §4.1 swap pattern). `bug`- and `ui-tweak`-lane tickets get
 stays two-label); `/route` derives the bug / ui-tweak pipeline from the
 classification label downstream.
 
-**Design-bug ui-block gate** (GGC-37 — the shared design-bug skip hook): before
-writing `ready-to-dev` for a `design bug` (ui-tweak lane) ticket, check for the
-marker `<!-- dispatch-triage-ui-blocked -->` in its comments (posted by the
-dispatcher's `triageTerminalUiBlock` after a *deterministic* ui-tweak BLOCK). If
-that marker is present **and the ticket is still classified `design bug`**:
-**hold** — do NOT write `ready-to-dev` (re-dispatching to ui-tweak would just
-re-block); leave the existing `need-revision` label as-is and report
-`skipped — ui-tweak-blocked`. The hold is silent on Linear (no re-comment — the
-dispatcher's marker comment already carries the reason / suggested action /
-attempt count). Escape hatches: a human reclassifies `design bug` → `bug` (the
-marker no longer applies → analyzes normally for the dev/bug lane, which CAN
-handle logic), or adds `ready-to-dev` directly to force re-dispatch (dispatcher
-Q3). This is the SAME gate GGC-58 will extend with a text-prediction branch — do
-NOT build a second skip path.
+**Design-bug ready-to-dev gate** (GGC-37 + GGC-58 — ONE shared design-bug skip
+hook with two independent inputs): before writing `ready-to-dev` for a
+`design bug` (ui-tweak lane) ticket, evaluate two suppression signals. EITHER
+one alone suppresses `ready-to-dev` — re-dispatching a behaviour-needing fix to
+ui-tweak would just BLOCK, since only a logic-capable lane (dev/bug) can
+implement it:
+
+- **(a) reactive — ui-blocked marker present (GGC-37)**: the comments contain
+  `<!-- dispatch-triage-ui-blocked -->` (posted by the dispatcher's
+  `triageTerminalUiBlock` after a *deterministic* ui-tweak BLOCK) **and the
+  ticket is still classified `design bug`** → **HOLD**: do NOT write
+  `ready-to-dev`; leave the existing `need-revision` label as-is and report
+  `skipped — ui-tweak-blocked`. Silent on Linear (no re-comment — the
+  dispatcher's marker comment already carries the reason / suggested action /
+  attempt count). Enforced operationally in Step 8.2b.
+- **(b) predictive — text predicts the fix needs logic (GGC-58)**: the Step 3
+  logic-prediction sub-judgment found, with HIGH confidence and from the ticket
+  TEXT alone (no diff exists yet), that the described fix inherently needs
+  behaviour — gesture/tap recognizers, `initState`/`dispose` (lifecycle),
+  async, state mutation, navigation, controllers, or view-model wiring → do NOT
+  write `ready-to-dev`; write `need-revision` and post a reasoned comment
+  recommending the human reclassify `Design bug` → `Bug` (the dev/bug lane CAN
+  handle logic). Unlike (a) this is NOT silent — there is no upstream
+  dispatcher comment to lean on, so it posts its own reasoned `ticket-analysis`
+  comment through the normal Step 8 write path. **Conservative + fail-safe**:
+  only a CLEAR behaviour signal triggers this; ambiguous or clearly-visual
+  design bugs fall through to `ready-to-dev` exactly as today and let the
+  ui-tweak dual-judge panel be the authority. A false "needs logic" must never
+  strand a pure-visual ticket — a mis-held visual ticket is strictly worse than
+  the wasted build it would otherwise cost.
+
+If BOTH fire, **(a) wins** (silent hold — the marker comment already explains
+the situation; do not also post a (b) reclassify comment). Both branches are
+**label-only / HITL — never auto-flip the classification** (pull-model /
+no-bulk-assign convention; classification stays human-owned, §C). Shared escape
+hatches: a human reclassifies `design bug` → `bug` (neither signal applies →
+analyzes normally for the dev/bug lane, which CAN handle logic), or adds
+`ready-to-dev` directly to force re-dispatch (dispatcher Q3). This is ONE gate
+with two inputs — do NOT build a second skip path. The reactive (a) half is the
+safety net for whatever the predictive (b) half misses.
 
 **Re-run semantics** (how tickets flow through repeated runs):
 
 | Ticket's current analyzer label | Next run |
 |---|---|
 | none (fresh) | analyzed |
-| `need-revision` | re-analyzed — completeness re-judged from current content; may flip to `ready-to-*` / `need-dependency`. EXCEPTION: a `design bug` carrying the `<!-- dispatch-triage-ui-blocked -->` marker is HELD by the Design-bug ui-block gate — not flipped to `ready-to-dev` until reclassified to `bug`. |
+| `need-revision` | re-analyzed — completeness re-judged from current content; may flip to `ready-to-*` / `need-dependency`. EXCEPTION: a `design bug` is held back from `ready-to-dev` by the Design-bug ready-to-dev gate when EITHER it carries the `<!-- dispatch-triage-ui-blocked -->` marker (GGC-37, input a) OR its text still high-confidence predicts a logic-requiring fix (GGC-58, input b) — it stays `need-revision` until reclassified to `bug` (or, for b, until the text no longer reads as logic). |
 | `need-dependency` | re-analyzed — every blocker's live status re-fetched; all blockers Done → flips to `ready-to-*` |
 | `ready-to-port` / `ready-to-dev` | skipped (already actionable; re-analyzing races the dispatcher) |
 | `need-spec-review` / `dispatcher-*-in-flight` | skipped (already inside a pipeline) |
@@ -367,6 +394,42 @@ explanation each]}`.
   - [ ] Figma URL or before/after reference — preferred but not required
         when the textual description is unambiguous (e.g. "make the
         order-page CTA button 5dp taller").
+
+  **Logic-prediction sub-judgment (ui-tweak lane only — GGC-58; feeds the
+  Design-bug ready-to-dev gate, input b).** A `design bug` is meant to be a
+  *visual* defect the ui-tweak pipeline can fix without touching behaviour.
+  After the visual checklist above, make ONE additional judgment from the
+  ticket TEXT (description + any technical notes — there is no diff at analyze
+  time, so this is necessarily a heuristic): **does the described fix
+  inherently require logic / behaviour changes?** Flag `needs-logic` ONLY with
+  HIGH confidence — i.e. the text clearly calls for behaviour such as:
+  - gesture / tap recognizers (e.g. `TapGestureRecognizer`, making part of a
+    label tappable), or wiring an `onTap` / handler / callback that does not
+    yet exist;
+  - widget lifecycle — `initState` / `dispose`, controller creation+teardown;
+  - async / await, futures, stream subscriptions, timers;
+  - state mutation — `setState`, view-model / bloc / provider / notifier state;
+  - navigation — pushing / popping routes, deep links;
+  - controllers / view-models / other business-logic objects.
+
+  Pure-visual work is NOT logic and MUST fall through to the normal verdict:
+  color / spacing / padding / sizing / typography, swapping to a design-system
+  icon or asset, re-ordering or restructuring existing widgets, alignment /
+  constraints (`LayoutBuilder` / `ConstrainedBox`). Worked calibration: CAF-540
+  (LayoutBuilder/ConstrainedBox empty-state) and CAF-611 (design-system icon
+  swap) are visual → NOT flagged (they now pass ui-tweak post-GGC-57); CAF-555
+  (tappable T&C link needing `TapGestureRecognizer` + `initState`/`dispose`)
+  IS flagged.
+
+  **Fail-safe rule** (the bias that makes this safe): when the signal is
+  ambiguous, mixed, or clearly visual, judge `visual` (the default). Only an
+  unambiguous behaviour signal sets `needs-logic`. A false `needs-logic`
+  strands a ticket ui-tweak could have shipped — strictly worse than the
+  wasted build — so bias hard toward `visual`. Record
+  `{logic_prediction: needs-logic|visual, evidence: "<quoted phrase>"}` for the
+  gate to consume at Step 6 / Step 8. This is a *prediction*, not the final
+  authority — every ticket that proceeds is still judged by the ui-tweak
+  dual-judge panel downstream.
 - **all lanes**:
   - [ ] Resolvable lane. Linear: `design bug` present → `ui-tweak`
         (precedence — always resolvable, even with canonical co-labels);
@@ -469,11 +532,24 @@ Build a directed graph over `<queue>` using **blocking edges only**
 Combine Step 3 + Step 5 per ticket through the decision matrix (top of
 file) → `{verdict, target_label, reasons, blockers, order_position}`.
 
-The **Design-bug ui-block gate** (contract, top of file) is enforced
-operationally in Step 8.2b (it reuses the comments already re-fetched there):
-a `design bug` whose `target_label` would be `ready-to-dev` but which carries
-the `<!-- dispatch-triage-ui-blocked -->` marker is downgraded to a `held`
-outcome — no `ready-to-dev` write.
+The **Design-bug ready-to-dev gate** (contract, top of file) has two inputs,
+both evaluated for a `design bug` (ui-tweak lane) ticket whose `target_label`
+would be `ready-to-dev`:
+
+- **(a) marker present (GGC-37)** — enforced operationally in Step 8.2b (it
+  reuses the comments already re-fetched there): carrying the
+  `<!-- dispatch-triage-ui-blocked -->` marker downgrades to a `held` outcome —
+  no `ready-to-dev` write, no comment.
+- **(b) text predicts logic (GGC-58)** — from the Step 3 logic-prediction
+  sub-judgment (`logic_prediction == needs-logic`): downgrade `target_label`
+  from `ready-to-dev` to `need-revision`, with verdict `incomplete` and a
+  reclassify reason (`fix appears to require logic / behaviour (<evidence>) —
+  reclassify Design bug → Bug so the dev/bug lane can implement it`). Unlike
+  (a) this is NOT a silent hold: it flows through the normal Step 8.3 / 8.4
+  comment + label write (there is no upstream dispatcher comment to lean on).
+
+If BOTH (a) and (b) fire, **(a) wins** — the silent hold (the marker comment
+already explains the situation; suppress the (b) reclassify comment).
 
 ### Step 7: Dry-run gate
 
@@ -505,7 +581,7 @@ Iterate `<queue>` in order. All writes are read-before-write.
      `[<k>/<N>] <ticket-id> skipped — concurrent actor (<which signal>).`,
      mark `skipped`, continue.
 
-   **2b. Design-bug ui-block gate** (GGC-37 — reuse the comments just
+   **2b. Design-bug ready-to-dev gate** (GGC-37 — reuse the comments just
    re-fetched in 8.2, no extra MCP call): if `target_label == ready-to-dev`
    AND `<lane> == ui-tweak` (still classified `design bug`) AND the comments
    contain the literal marker `<!-- dispatch-triage-ui-blocked -->`, then
@@ -516,7 +592,17 @@ Iterate `<queue>` in order. All writes are read-before-write.
    `[<k>/<N>] <ticket-id> skipped — ui-tweak-blocked (reclassify Design bug → Bug to proceed).`,
    continue. (Once reclassified to `bug`, `<lane>` is no longer ui-tweak so this
    gate does not fire and the ticket analyzes normally. This is the shared gate
-   GGC-58 extends — do not add a second skip path.)
+   GGC-58 extended with the (b) predictive branch above — do not add a second
+   skip path.)
+
+   This 8.2b enforcement is the **reactive (a)** branch ONLY. The **predictive
+   (b)** branch (GGC-58 — text high-confidence predicts a logic-requiring fix)
+   is NOT handled here: it was already folded into `target_label` at Step 6
+   (`need-revision` + reclassify-to-`Bug` reason) and posts its reasoned
+   comment + writes `need-revision` through the normal Step 8.3 / 8.4 path
+   below. Only the marker branch needs this pre-write comment re-fetch. If both
+   fire, (a) wins here — having held the ticket, skip the Step 8.3 / 8.4 writes
+   so no (b) reclassify comment is posted.
 
 3. **Post comment** via the `_ticket-lib.md` `save_comment` branch using
    the §A schema. Append-only — a fresh comment each run; the newest
@@ -675,6 +761,9 @@ Schema rules:
 | Missing/multiple classification labels | 3 | Revision reason, not a prompt |
 | Missing classification, strong lane signal in text | 3 | Reason carries a suggested lane + evidence (comment text only, never a label write) |
 | Missing classification, weak/ambiguous signal (esp. port vs feature) | 3 | No suggestion — plain base sentence only |
+| `design bug` text HIGH-confidence predicts a logic-needing fix | 3 / 6 | Design-bug gate (b): `need-revision` + reclassify→`Bug` comment; never `ready-to-dev` |
+| `design bug` ambiguous / clearly-visual fix | 3 | No logic flag — `ready-to-dev` as today; ui-tweak dual-judge panel is the authority |
+| `design bug` with BOTH ui-blocked marker and logic-text signal | 8.2b | Reactive marker branch (a) wins — silent hold, no reclassify comment |
 | Bare ticket-id mention, no ordering language | 4.1 | `related` edge — recorded, never blocking |
 | Inferred edge, `--non-interactive` | 4.2 | Report-only, never blocking |
 | Blocking edge to a Done/canceled ticket | 4.3 | Satisfied — not blocking |
