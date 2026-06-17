@@ -27,7 +27,9 @@ only ever types `/ui-tweak`; everything else is internal.
   (`CAF-1234` / a ticket URL — the richest source; often already names the screen, target value, and
   Figma frame), or implicitly carries a trailing `[figma-url]` to ground the exact target.
 - The pipeline, stages, markers, judges, and every wayfinding card are implemented in
-  `commands/design/ui-tweak/{ff,start,apply,preview,audit,demo}.md`.
+  `commands/design/ui-tweak/{ff,start,apply,preview,audit}.md`. (There is no `demo.md` — demo capture
+  is folded into `preview` Step 2.5, the sole capture point; post-hoc demo recording lives in the
+  separate operator skill `/ggx-demo`.)
 
 ## What to do when invoked
 
@@ -51,9 +53,10 @@ only ever types `/ui-tweak`; everything else is internal.
      phone* (→ Phase 1 `preview`: build onto a device), *It already looks right — ship it* (R20 — the
      designer already saw it on their own device; skip the device preview, run a build-only compile
      gate, then go straight to Phase 2), or *more changes*;
-   - after preview → **card C1 (looks-good)** — *Ship it* (→ Phase 2 `audit` → commit → draft PR),
-     *Ship it — and record a short demo* (same, plus a zero-input capture of the screen they just
-     approved is embedded in the PR — recorded after they leave, no waiting), or *more changes*;
+   - after preview → **card C1 (looks-good)** — *Ship it* (→ Phase 2 `audit` → commit → draft PR) or
+     *more changes*. (GGC-14: `preview` already navigated to the screen and captured it FOR the
+     designer, so the screenshot/recording is embedded in the PR automatically — there is no separate
+     "record a demo" option to pick.);
    - the designer picks an option, or just describes another change in words (a correction via the
      `AskUserQuestion` **Other** field) — the orchestrator re-navigates automatically.
 
@@ -86,21 +89,21 @@ build and the panel catch anything that isn't, before it ships."
 for free. **Phase 1**: pick "I'm done — show me" and the change is **built + launched onto a real
 device** (`flutter run` covers Android emulators + iOS simulators; cascade uses an already-running /
 connected device first — incl. a physical phone — else boots one, else honestly falls back to
-build-only; a simulator is pre-warmed in the background when the run starts, so this is usually fast)
-so **you** can look
-at it. The skill only gets the app running, then **hands you the device — it never screenshots, taps,
-navigates, or grants permissions; you look and drive it yourself**. The one exception is the opt-in
-*"Ship it — and record a short demo"*: AFTER you approve the look, it passively captures what is
-already on the screen (still zero taps / zero navigation) so the PR can show it — best-effort, and
-never delays the PR. **Phase 2**: once it looks right, pick "Ship it" — the full logic audit runs, then it
+build-only; a simulator is pre-warmed in the background when the run starts, so this is usually fast).
+Then (GGC-14) the skill **navigates to the affected screen and captures it FOR you** — a screenshot +
+short recording — so you review the **result** instead of driving the device. Navigation is bounded to
+**navigation only** (a deep-link, or nav-only taps): it **never** taps confirm/submit/pay/delete, grants
+permissions, types, or logs in — if a screen needs login it just captures nothing (no wrong-screen shot,
+and you are never asked to drive). The captured screenshot is what the "looks good?" card shows you.
+**Phase 2**: once it looks right, pick "Ship it" — the full logic audit runs, then it
 **commits and opens a draft PR** with a designer-verifiable summary + a link on the work item; the
-PR's Demo section embeds the ticket's design visuals and — if you handed one over at the
-"looks good?" card — your own screenshot/recording (the skill itself still never captures any). It
+PR's Demo section embeds the ticket's design visuals plus the screenshot/recording `preview` captured
+(or one you dragged onto the "looks good?" card). It
 **never** auto-merges or flips draft→ready. When the draft PR opens it moves the work item to
 **In Review** and removes the `ready-to-dev` label (keeping the rest, e.g. `design bug`) — the same
 handoff step the dev flow does — so the ticket leaves the queue and lands in the engineer-review
 column; `assignee` is never touched (Linear-only). The ticket writes are: the PR-link comment, that
-status/label transition, and attaching your supplied capture, if any.
+status/label transition, and attaching the captured (or your dragged-in) demo, if any.
 
 **Unattended lane (`--auto` — dispatcher/orchestrator use, not for designers).** Linear tickets
 labeled `design bug` are routed here by `/route` / `/ggx-work` / `/ggx-dispatcher` as
