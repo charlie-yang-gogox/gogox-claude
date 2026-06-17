@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, never logs in. If it can't reach the screen (no route / login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak."
+description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, never logs in. If it can't reach the screen (no route / login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (GGC-59, Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs ONLY the Step 2.5 navigate+capture slice on an already-running logged-in device (path (a) only, no cold-boot), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -32,12 +32,24 @@ If `UI_TWEAK_FF` is not set, print **C-MISDIRECT** (see `/ui-tweak:apply` Step 0
 
 ```bash
 WT=$(git rev-parse --show-toplevel)
-[ -f "$WT/.dev/ui-tweak/base_ref" ] || { echo "FAIL: no base_ref — run /ui-tweak:apply first." >&2; exit 1; }
-BASE=$(cat "$WT/.dev/ui-tweak/base_ref")
-# FREEZE the audited file set BEFORE building (F3): the build/run will mutate the tree (regenerated
-# registrants, codegen); those side-effects must never widen what Phase-2 audit later judges.
-git diff "$BASE" --name-only > "$WT/.dev/ui-tweak/audit-files"
+# GGC-59: detect --capture-only FIRST (before the base_ref gate). A post-hoc demo run via /ggx-demo
+# operates on an already-shipped PR's worktree (often a fresh `git worktree add` checkout) which has
+# NO `.dev/ui-tweak/base_ref` and needs no audit-files freeze — there is no Phase-2 audit to protect.
+# Gating these on capture-only is what lets Step 0c run at all; without it the precondition below would
+# hard-fail every /ggx-demo invocation.
+CAPTURE_ONLY=0; printf '%s' "$ARGUMENTS" | grep -q -- '--capture-only' && CAPTURE_ONLY=1
+if [ "$CAPTURE_ONLY" != "1" ]; then
+  [ -f "$WT/.dev/ui-tweak/base_ref" ] || { echo "FAIL: no base_ref — run /ui-tweak:apply first." >&2; exit 1; }
+  BASE=$(cat "$WT/.dev/ui-tweak/base_ref")
+  # FREEZE the audited file set BEFORE building (F3): the build/run will mutate the tree (regenerated
+  # registrants, codegen); those side-effects must never widen what Phase-2 audit later judges.
+  git diff "$BASE" --name-only > "$WT/.dev/ui-tweak/audit-files"
+fi
 ```
+
+The `$FLUTTER_BIN` resolution and flavor fallback below STILL run under `--capture-only` (capture needs
+`$FLUTTER_BIN` for `flutter devices` / `flutter run`) — only the `base_ref` precondition and the
+audit-files freeze are gated off.
 
 Resolve `ui_preview_cmd` / `ui_build_cmd`: prefer a repo override in `<repo>/.gogox-claude.yaml`,
 else the platform default.
@@ -112,12 +124,16 @@ if [ "$FLAVOR_DETECTED" = "missing" ]; then
 fi
 ```
 
-## Step 0b — direct-ship mode (R20) + navigate mode (GGC-14)
+## Step 0b — direct-ship mode (R20) + navigate mode (GGC-14) + capture-only (GGC-59)
 
 ```bash
 DIRECT_SHIP=0; [ -f "$WT/.dev/ui-tweak/direct-ship" ] && DIRECT_SHIP=1
 AUTO_NAV=0;    [ -f "$WT/.dev/ui-tweak/auto-navigate" ] && AUTO_NAV=1   # GGC-14: demo will navigate+capture
+# CAPTURE_ONLY was already parsed at the top of Step 0 (it gates the base_ref precondition there).
 ```
+
+When `CAPTURE_ONLY=1` the entire normal flow below is **replaced by Step 0c** — this is the post-hoc
+demo slice invoked by `/ggx-demo` (the operator skill), never the walker. It captures and nothing else.
 
 When `DIRECT_SHIP=1` the designer picked **"It already looks right — ship it"** on card C1 (show-me),
 or `--auto` auto-took the direct-ship branch. They have already looked at it (or there is no human to
@@ -150,6 +166,49 @@ device that is **already running** (the designer's pre-warmed, already-logged-in
   logged-in app to navigate.
 
 The rest of this file (Steps 1–4) is the normal **device-preview** path used when `DIRECT_SHIP=0`.
+
+## Step 0c — `--capture-only` sub-mode (GGC-59) — the post-hoc demo slice
+
+_Runs ONLY when `CAPTURE_ONLY=1` (invoked as `/ui-tweak:preview --capture-only`, exclusively by
+`/ggx-demo`). It RUNS the capture body (Step 2.5) and bypasses ALL walker bookkeeping. Steps 1–4 below
+are NOT run in this mode — this section is the whole flow._
+
+This sub-mode exists so the **single source of truth for "how to reach a screen and record it"** stays
+in Step 2.5, while the surrounding gate/marker logic is switched off — a post-hoc demo runs against an
+already-shipped, already-reviewed PR, so there is no build gate to protect and no walker to feed.
+
+- **Device acquisition — Step 1 path (a) ONLY.** Use an **already-running, already-logged-in** device
+  (`$FLUTTER_BIN devices --machine` lists a booted emulator/simulator or a connected handset). **Never
+  cold-boot (skip path (b))** — a freshly-booted device is not logged in and a login wall would defeat
+  the demo. **No device → FAIL-LOUD** (see disposition below): do not fall through to a build-only path
+  (there is nothing to compile-gate here).
+- **Build + launch onto the device.** Run `ui_preview_cmd` (`flutter run` = build + install + launch;
+  the leading token is the resolved `$FLUTTER_BIN` from Step 0) so the PR's exact diff is live on the
+  device. (A fresh `/ggx-demo` checkout has no prior build, so this compiles from source; if the app is
+  already foreground from a prior install on the same device, reuse it.) This is the same launch as
+  Step 2's device path, minus the build-gate semantics — a launch/compile failure here is a capture
+  failure (fail-LOUD), not a `repair-context`.
+- **Capture — run Step 2.5 verbatim** (Tier-1 deep-link → Tier-2 nav-only tap-through → screenshot +
+  short recording → append to `.dev/ui-tweak/demo-files`). The 3 device fixes baked into Step 2.5
+  (package-targeted deep-link, `screenrecord --size` ladder, scaled taps) apply here too.
+- **WRITE NOTHING the walker reads.** Do **NOT** write `build-pass`, `preview-shown`, the `audit-files`
+  freeze, `repair-context`, or `repair-count`. Do **NOT** run Step 0's `audit-files` freeze or Step 3's
+  quarantine (this slice is read-only on the source tree apart from the launch). The ONLY output is
+  `.dev/ui-tweak/demo-files`. This is the fix for ai-expert red-flags #1/#2: a post-hoc run must leave
+  the reused worktree exactly as it found it, so a later bare `/ui-tweak` resume in `../<ID>` is never
+  mis-routed to `audit`/`commit` by a leftover marker.
+
+> ### Disposition — FAIL-LOUD, the inverse of the forward pipeline (GGC-59 / R13)
+> In the forward pipeline Step 2.5 is **fail-silent** (the capture is an incidental side-effect of a
+> preview). Under `--capture-only` the capture **IS the deliverable**, so every failure is **LOUD**:
+> non-zero exit + ONE deterministic stderr line, e.g.
+> `GGX-DEMO CAPTURE-FAIL: <no logged-in device | could not reach <screen> | login wall | screenrecord ladder exhausted> (ticket <id>).`
+> No logged-in device, no whitelisted route AND tap-through stuck, a login wall, or a `screenrecord`
+> size-ladder that never produced a playable file → exit non-zero. Reusing Step 2.5's *body* is correct;
+> reusing its fail-silent *disposition* would silently reproduce the very pain `/ggx-demo` exists to fix.
+> `/ggx-demo` surfaces this exit; `/_ui-demo-batch` catches it fail-soft and counts it.
+
+STOP after the capture (success or loud failure). The walker is never involved in this sub-mode.
 
 ## Step 1 — device cascade (a → b → c, R18) — skipped when `DIRECT_SHIP=1`
 
@@ -276,7 +335,19 @@ for a screenshot only, strictly after the build gate (Step 2), and it can never 
    URI="ggv://<host>"            # e.g. ggv://order-detail
    case "$PLATFORM_KIND" in
      ios)     xcrun simctl openurl "$DEVICE" "$URI" ;;
-     android) adb -s "$DEVICE" shell am start -a android.intent.action.VIEW -d "$URI" ;;
+     android)
+       # GGC-59: a bare `am start -d ggv://…` with NO package triggers the Android app-chooser when
+       # more than one gogovan app (e.g. staging + prod) is installed — the deep-link then stalls on a
+       # disambiguation dialog and the route never renders. Target the launched app's package explicitly
+       # via `-p <PKG>` (Intent.setPackage). Derive PKG from the app we just launched (the resumed
+       # activity's package — deterministic + flavor-correct), falling back to the lone installed
+       # gogovan/gogox package, then to the resolved applicationId (android/app/build.gradle[.kts]
+       # `applicationId` + the active flavor's `applicationIdSuffix`, e.g. hk.gogovan.GoGoVanClient2.staging):
+       PKG=$(adb -s "$DEVICE" shell dumpsys activity activities 2>/dev/null \
+         | grep -m1 -oE '[a-zA-Z][a-zA-Z0-9_.]+/[a-zA-Z0-9_.]+' | cut -d/ -f1)
+       [ -z "$PKG" ] && PKG=$(adb -s "$DEVICE" shell pm list packages 2>/dev/null \
+         | sed 's/^package://' | grep -iE 'gogovan|gogox' | head -1)
+       adb -s "$DEVICE" shell am start -a android.intent.action.VIEW -d "$URI" ${PKG:+-p "$PKG"} ;;
    esac
    i=0; while [ "$i" -lt 4 ]; do sleep 1; i=$((i+1)); done   # ~4s to let the route render
    ```
@@ -292,22 +363,42 @@ confirm/submit/pay/delete, never grant permissions, never type, never log in).
 1. **Plan the path from the codebase** (widget keys / semantics labels / route names) from the current
    screen (usually `/home`) to the target.
 2. **Observe → tap loop** (capped at `MAX_TAPS=6`): screenshot (read-only) → decide ONE navigation tap
-   → execute (`adb -s "$DEVICE" shell input tap <x> <y>` / `idb ui tap --udid "$DEVICE" <x> <y>` — iOS
-   tap-through needs `idb`; `xcrun simctl` cannot tap) → re-screenshot; reached → capture; stuck /
-   looping / `MAX_TAPS` / `idb` absent → **could-not-reach** (→ fail-silent below).
+   → execute it. **GGC-59: tap coordinates must be in DEVICE-DISPLAY space, not screenshot-pixel space.**
+   `screencap` returns the full native framebuffer (e.g. 1280×2856) while `input tap` / `idb ui tap`
+   expect display coordinates (`wm size`, e.g. 720×1600) — passing raw screenshot pixels lands the tap
+   in the wrong place. Read `wm size` once (`adb -s "$DEVICE" shell wm size` → `wm_w`×`wm_h`) and the
+   PNG header dims (`shot_w`×`shot_h`), then scale before issuing the tap:
+   `x = sx * wm_w / shot_w`, `y = sy * wm_h / shot_h`. Execute the scaled tap
+   (`adb -s "$DEVICE" shell input tap <x> <y>` / `idb ui tap --udid "$DEVICE" <x> <y>` — iOS tap-through
+   needs `idb`; `xcrun simctl` cannot tap) → re-screenshot; reached → capture; stuck /
+   looping / `MAX_TAPS` / `idb` absent → **could-not-reach** (→ fail-silent below, or fail-LOUD under
+   `--capture-only`, Step 0c).
 
 ### Capture (pure output)
 
 On reaching the target, capture a screenshot + a short (~6s) recording into `.dev/ui-tweak/demo`:
 - **iOS**: `xcrun simctl io "$DEVICE" screenshot .../after.png`; recording via `xcrun simctl io
   "$DEVICE" recordVideo --codec h264 .../after.mp4` backgrounded ~6s then SIGINT.
-- **Android**: `adb -s "$DEVICE" exec-out screencap -p > .../after.png`; `adb -s "$DEVICE" shell
-  screenrecord --time-limit 6 /sdcard/uitw.mp4` + `adb pull`.
+- **Android**: `adb -s "$DEVICE" exec-out screencap -p > .../after.png`; then record with an explicit
+  `--size`. **GGC-59: `screenrecord` with NO size flag throws codec error -22 on large native
+  resolutions** (e.g. 1280×2856 on a tall device) — the recording silently produces a 0-byte/unplayable
+  file. Try a size ladder, stopping at the first rung that yields a non-empty, playable file:
+  `--size 720x1280` → `--size 540x1140` → no `--size` (device-native, last resort):
+  `adb -s "$DEVICE" shell screenrecord --size 720x1280 --time-limit 6 /sdcard/uitw.mp4` then
+  `adb -s "$DEVICE" pull /sdcard/uitw.mp4 .../after.mp4`. If EVERY rung fails to produce a playable
+  file, that is a capture failure — **fail-silent** in the forward pipeline, **fail-LOUD** under
+  `--capture-only` (Step 0c: `screenrecord ladder exhausted`).
 
 Append the output paths to `.dev/ui-tweak/demo-files`. The screenshot is the C1 review surface; both
 screenshot + recording are embedded by `pr`.
 
 ### On failure to reach the target → FAIL-SILENT (no designer driving)
+
+> **`--capture-only` carve-out (GGC-59).** Everything in this subsection describes the FORWARD
+> pipeline's fail-silent disposition. Under `--capture-only` (Step 0c) the disposition is INVERTED to
+> **fail-LOUD**: an unreached target / login wall / `screenrecord` ladder exhausted is a non-zero exit
+> with a deterministic stderr line, NOT a silent no-capture. The body below (what counts as "couldn't
+> reach") is shared; only the disposition differs.
 
 If Tier 1 + Tier 2 cannot confidently reach the target (no route, tap-through stuck, `idb` absent, or a
 **login wall** — login is never assumed and never performed), do **NOT** capture a misleading wrong

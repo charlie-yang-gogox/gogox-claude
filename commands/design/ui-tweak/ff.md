@@ -503,12 +503,11 @@ target-reached capture or a designer-supplied file. The `pr` stage surfaces and 
 
 1. **Captured demo** (preferred — shows the *actual* result): if `.dev/ui-tweak/demo-files` exists
    (written by `preview`'s Step-2.5 navigate+capture, and/or designer-supplied via C1 Other),
-   upload each listed file to the ticket via the Linear 3-call flow — `prepare_attachment_upload` → PUT
-   the raw bytes to the signed URL with its headers verbatim → `create_attachment_from_upload` — and
-   embed each returned `assetUrl` in `## Demo` as `![demo](<assetUrl>)`. (This upload is the one extra
-   ticket write the deliver path is allowed — see Constraints.) No relevance gate is needed: `preview`
-   fail-silents instead of capturing a wrong screen, so an empty `demo-files` simply falls through to
-   bullets 2–4 (ticket visuals / Figma link / "No screenshot" line).
+   upload each listed file to the ticket via the **Idempotent attach** contract below and reference each
+   returned `assetUrl` in the marker-wrapped `## Demo` block. (This upload is the one extra ticket write
+   the deliver path is allowed — see Constraints.) No relevance gate is needed: `preview` fail-silents
+   instead of capturing a wrong screen, so an empty `demo-files` simply falls through to bullets 2–4
+   (ticket visuals / Figma link / "No screenshot" line).
 2. **Ticket visuals** (shows the *target* design): read `.dev/ui-tweak/ticket.json` (cached by
    `start`) for image attachments and embed their URLs as markdown images. Add the grounded Figma
    node URL (from apply's figma grounding, when present) as a plain
@@ -517,10 +516,47 @@ target-reached capture or a designer-supplied file. The `pr` stage surfaces and 
 3. **Verify before embedding**: GitHub only renders an image URL it can fetch without auth. For each
    candidate, check it is publicly fetchable (e.g. `curl -fsI <url>` → 200); an auth-gated URL goes
    in as a plain link instead of an embedded image (an honest link beats a broken image box).
+   **A Linear `assetUrl` is a DETERMINISTIC 401 to GitHub on this private repo** (GitHub's image proxy
+   cannot authenticate to Linear's CDN) — so in the **PR body it is ALWAYS a plain link**, never an
+   `![](…)` embed; the inline render of that asset lives only on the Linear ticket (where the attachment
+   was uploaded). This is not a "maybe it 401s" `curl` gamble — for Linear-hosted demo assets the plain
+   link is the fixed outcome. Ticket-attachment image URLs and Figma node URLs follow the same `curl`
+   rule; a Figma URL is a page (never `![]()`, always a `Target design (Figma): <url>` link).
 4. **Fallback**: only when 1–3 yield nothing, keep the line "No screenshot — eyeball before→after
    against the Figma node or ticket".
 
 Never reuse `/pull-request`'s empty placeholder.
+
+### Idempotent attach (shared contract — reused by `/ggx-demo`, GGC-59)
+
+Both the `pr` stage here and the post-hoc `/ggx-demo` operator skill upload + embed demo artifacts. The
+upload is **not** filename-idempotent and a blind body append stacks `## Demo` sections, so BOTH callers
+MUST follow this contract verbatim (single source of truth — do not re-derive in `/ggx-demo`):
+
+- **Linear attachment dedupe — deterministic title.** Title each uploaded attachment
+  `ui-tweak-demo-<sha>` where `<sha>` is the short HEAD of the demoed commit (`git rev-parse --short HEAD`).
+  Before `create_attachment_from_upload`, list the ticket's existing attachments (`get_issue` →
+  `.attachments[]`) and **skip the upload if an attachment with that exact title already exists** —
+  `create_attachment_from_upload` is NOT idempotent on filename, so two runs would otherwise attach two
+  inline videos. Reuse the existing attachment's `assetUrl` when skipping.
+- **PR body — marker-delimited region, replace-between (never append).** Wrap the demo region in
+  HTML-comment delimiters:
+  ```
+  <!-- ui-tweak-demo -->
+  ## Demo
+  <links / images>
+  <!-- /ui-tweak-demo -->
+  ```
+  To write it: read the current PR body (`gh pr view <pr> --json body -q .body`); if the marker pair is
+  present, **replace only the text between the markers**; else if an UNMARKED `## Demo` section exists,
+  replace that whole section with a marked block; else append a marked block. Then `gh pr edit <pr>
+  --body <new>`. This is a surgical read-modify-write of one region — it preserves any reviewer edits
+  elsewhere in the body, unlike a blind `gh pr edit --body` overwrite, and it guarantees re-runs never
+  stack a second `## Demo`. The `pr` stage emits the markers at PR-open so post-hoc `/ggx-demo` finds
+  them; if the PR shipped before this landed (no markers), `/ggx-demo`'s replace-or-append still produces
+  exactly one marked block.
+- **PR link form.** Inside the marked block, a Linear `assetUrl` is ALWAYS a plain link (bullet 3's
+  deterministic-401 rule). The inline render is on the Linear ticket only.
 
 ## Ticket transition on PR open (`pr` stage tail)
 

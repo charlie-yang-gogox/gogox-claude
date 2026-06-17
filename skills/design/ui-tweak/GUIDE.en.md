@@ -10,8 +10,9 @@
 
 **One-line definition**: you describe a UI change in plain words (or with a Figma link / a ticket),
 and Claude edits the "look-only" parts in the codebase for you. When you want to see it, it **builds
-the app onto a device (an emulator or your connected phone) so you can look at it yourself**. Once
-you're happy, it wraps the change up as a **draft PR for an engineer to review**.
+the app onto a device (an emulator or your connected phone), navigates to the affected screen, and
+shows you a screenshot of your change**. Once you're happy, it wraps the change up as a **draft PR for
+an engineer to review**.
 
 **Can do (visual / layout / structural UI changes):**
 - Values: spacing, padding, margin, corner radius, font size/weight, color, opacity, shadow, element
@@ -29,12 +30,13 @@ you're happy, it wraps the change up as a **draft PR for an engineer to review**
 PR — all at the right moment. **It never auto-merges, never flips a draft PR to ready, never changes
 ticket status.**
 
-> ⚠️ About "seeing it": it only **builds and launches** the app on the device, then **hands the
-> device to you**. It will **not** screenshot for you, tap around for you, grant permissions, or
-> navigate to a specific screen. You look and drive to the page you want to check, yourself.
-> One opt-in exception: at ship time you can pick "**Ship it — and record a short demo**" — after
-> you've approved the look, it records what's already on the screen for the PR (still zero taps,
-> zero navigation; you never wait for it).
+> ⚠️ About "seeing it": it **builds and launches** the app on the device, then **navigates to the
+> affected screen and captures it for you** (a screenshot + short recording), so you review the
+> *result* instead of driving the device. Navigation is **navigation-only** — it taps tabs / menus /
+> list rows to reach the screen, but **never** taps confirm/submit/pay/delete, grants permissions,
+> types, or logs in. If a screen needs login (or it simply can't reach it), it captures **nothing**
+> rather than a wrong screen — and you are never asked to drive. The screenshot it captured is what
+> the "does it look right?" card shows you, and it's embedded in the PR automatically.
 
 ---
 
@@ -75,8 +77,8 @@ names the screen, the component, the target value, and may attach a Figma link.
 ```
 > The ticket is **read-only**: the skill only *reads* it — it never changes status, assigns, or
 > comments. The exceptions: after you choose to ship, it posts a **draft-PR link** on the ticket, and
-> if you handed over a screenshot/recording (or asked it to record a demo) it **attaches that file**
-> to the ticket (so the PR can show it). Neither touches status or assignee.
+> it **attaches the demo it captured** (or a screenshot/recording you handed over) to the ticket (so
+> the PR can show it). Neither touches status or assignee.
 
 **C. Figma link** (match the design)
 ```
@@ -124,21 +126,22 @@ scenes there are two phases:
    an already-running emulator/simulator is used first; otherwise it boots one; if none exists, it
    falls back to "just confirm it compiles" and tells you honestly). A simulator is quietly warmed up
    in the background from the moment your run starts, so this step usually skips the slow cold boot.
-4. The moment the app is up, **it stops and hands the device to you** — you look and tap to the page
-   you want yourself. It does not screenshot or drive the app.
-5. Then it asks: "**Does it look right? → Ship it / Ship it — and record a short demo / more
-   changes**". Pick the **record a short demo** variant and it will record what's on the screen right
-   now (the exact screen you just approved — it still never taps or navigates) and include it in the
-   PR; the recording happens **after** you're done here, so you never wait for it. And if you took a
-   screenshot or recording yourself, you can hand the file over right here (paste/drag it) — it gets
-   attached to the PR so the engineer sees the actual result.
+4. The moment the app is up, **it navigates to the affected screen and captures it for you**
+   (screenshot + short recording). Navigation is **navigation-only** — it taps tabs / menus / rows to
+   reach the screen, but never taps confirm/pay/delete, grants permissions, types, or logs in. If it
+   can't reach the screen (e.g. a login wall), it captures **nothing** rather than a wrong screen — you
+   are never asked to drive.
+5. Then it shows you the captured screenshot and asks: "**Does it look right? → Ship it / more
+   changes**". And if you took a screenshot or recording yourself, you can hand the file over right
+   here (paste/drag it) — it gets attached to the PR alongside the captured demo so the engineer sees
+   the actual result.
 
 **Phase 2: ship (runs only when you pick "Ship it")**
 6. It runs the **full logic check** (an independent AI audit confirming only the look changed, nothing
    about how the program runs), and on pass **commits and opens a draft PR**, leaving a link on the
-   ticket. The PR carries whatever visuals exist — the ticket's design images / Figma link, your own
-   screenshot if you handed one over, and the short demo if you asked for one — so the engineer sees
-   what to compare (outside that opt-in demo, the skill never captures anything itself).
+   ticket. The PR carries whatever visuals exist — the demo it captured during preview, the ticket's
+   design images / Figma link, and your own screenshot if you handed one over — so the engineer sees
+   what to compare.
 7. Done — your part is finished. The draft PR won't go live automatically; an engineer does the final
    review.
 
@@ -225,9 +228,10 @@ These are blocked; the skill stops and tells you why:
 `/ui-tweak`'s terminal is a **draft PR**, and it only gets there **when you personally pick "Ship it"**:
 
 - Iterating, or picking "show me" → nothing is shipped; the change just stays in your working tree.
-- Picking "Ship it" → logic check → commit → open a **draft PR** (its Demo section carries the
-  ticket's design images and your screenshot, if you gave one) + leave a link on the ticket, then move
-  the ticket to **In Review** and drop its `ready-to-dev` label (same handoff as the dev flow).
+- Picking "Ship it" → logic check → commit → open a **draft PR** (its Demo section carries the demo
+  captured during preview, the ticket's design images, and your screenshot if you gave one) + leave a
+  link on the ticket, then move the ticket to **In Review** and drop its `ready-to-dev` label (same
+  handoff as the dev flow).
 - **It never auto-merges and never flips draft → ready.** The status move stops at In Review; the
   human review step is kept on purpose — with no edit-time guard, "no logic changes" is only
   best-effort (pre-ship dual audit + compile), so a human must do the final check on the PR.
