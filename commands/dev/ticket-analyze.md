@@ -78,12 +78,27 @@ the dispatcher §4.1 swap pattern). `bug`- and `ui-tweak`-lane tickets get
 stays two-label); `/route` derives the bug / ui-tweak pipeline from the
 classification label downstream.
 
+**Design-bug ui-block gate** (GGC-37 — the shared design-bug skip hook): before
+writing `ready-to-dev` for a `design bug` (ui-tweak lane) ticket, check for the
+marker `<!-- dispatch-triage-ui-blocked -->` in its comments (posted by the
+dispatcher's `triageTerminalUiBlock` after a *deterministic* ui-tweak BLOCK). If
+that marker is present **and the ticket is still classified `design bug`**:
+**hold** — do NOT write `ready-to-dev` (re-dispatching to ui-tweak would just
+re-block); leave the existing `need-revision` label as-is and report
+`skipped — ui-tweak-blocked`. The hold is silent on Linear (no re-comment — the
+dispatcher's marker comment already carries the reason / suggested action /
+attempt count). Escape hatches: a human reclassifies `design bug` → `bug` (the
+marker no longer applies → analyzes normally for the dev/bug lane, which CAN
+handle logic), or adds `ready-to-dev` directly to force re-dispatch (dispatcher
+Q3). This is the SAME gate GGC-58 will extend with a text-prediction branch — do
+NOT build a second skip path.
+
 **Re-run semantics** (how tickets flow through repeated runs):
 
 | Ticket's current analyzer label | Next run |
 |---|---|
 | none (fresh) | analyzed |
-| `need-revision` | re-analyzed — completeness re-judged from current content; may flip to `ready-to-*` / `need-dependency` |
+| `need-revision` | re-analyzed — completeness re-judged from current content; may flip to `ready-to-*` / `need-dependency`. EXCEPTION: a `design bug` carrying the `<!-- dispatch-triage-ui-blocked -->` marker is HELD by the Design-bug ui-block gate — not flipped to `ready-to-dev` until reclassified to `bug`. |
 | `need-dependency` | re-analyzed — every blocker's live status re-fetched; all blockers Done → flips to `ready-to-*` |
 | `ready-to-port` / `ready-to-dev` | skipped (already actionable; re-analyzing races the dispatcher) |
 | `need-spec-review` / `dispatcher-*-in-flight` | skipped (already inside a pipeline) |
@@ -454,6 +469,12 @@ Build a directed graph over `<queue>` using **blocking edges only**
 Combine Step 3 + Step 5 per ticket through the decision matrix (top of
 file) → `{verdict, target_label, reasons, blockers, order_position}`.
 
+The **Design-bug ui-block gate** (contract, top of file) is enforced
+operationally in Step 8.2b (it reuses the comments already re-fetched there):
+a `design bug` whose `target_label` would be `ready-to-dev` but which carries
+the `<!-- dispatch-triage-ui-blocked -->` marker is downgraded to a `held`
+outcome — no `ready-to-dev` write.
+
 ### Step 7: Dry-run gate
 
 If `--dry-run`: print the full Step 9 report with a `would-write` column
@@ -483,6 +504,19 @@ Iterate `<queue>` in order. All writes are read-before-write.
    - **Batch mode** → print
      `[<k>/<N>] <ticket-id> skipped — concurrent actor (<which signal>).`,
      mark `skipped`, continue.
+
+   **2b. Design-bug ui-block gate** (GGC-37 — reuse the comments just
+   re-fetched in 8.2, no extra MCP call): if `target_label == ready-to-dev`
+   AND `<lane> == ui-tweak` (still classified `design bug`) AND the comments
+   contain the literal marker `<!-- dispatch-triage-ui-blocked -->`, then
+   **HOLD** — skip the comment + label writes for this ticket (do NOT post a
+   `ticket-analysis:v1` comment, do NOT write `ready-to-dev`; the existing
+   `need-revision` is left untouched). Mark the outcome `held (ui-tweak-blocked)`
+   and print
+   `[<k>/<N>] <ticket-id> skipped — ui-tweak-blocked (reclassify Design bug → Bug to proceed).`,
+   continue. (Once reclassified to `bug`, `<lane>` is no longer ui-tweak so this
+   gate does not fire and the ticket analyzes normally. This is the shared gate
+   GGC-58 extends — do not add a second skip path.)
 
 3. **Post comment** via the `_ticket-lib.md` `save_comment` branch using
    the §A schema. Append-only — a fresh comment each run; the newest

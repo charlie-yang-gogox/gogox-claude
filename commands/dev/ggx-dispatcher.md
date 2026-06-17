@@ -924,8 +924,16 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
    - `outcome = failed` ⟺ not `done` AND
      `dispatcher-dev-in-flight ∈ labels` (e.g. apply failed, build
      repair budget exhausted, or audit BLOCKED — `/ui-tweak:ff --auto`
-     exits non-zero with the loud stderr line; the in-flight label stays
-     as the resume signal).
+     exits non-zero with the loud stderr line).
+     - **non-BLOCK failure** (apply / preview / GGC-49 contamination /
+       null finisher): the in-flight label STAYS as the resume signal —
+       it may be re-runnable.
+     - **DETERMINISTIC dual-judge BLOCK** (structural pre-pass OR judge;
+       `error` matches `UI-TWEAK BLOCKED`): the script sub-classifies it
+       `terminal-ui-block` (GGC-37). Re-running reproduces the identical
+       BLOCK, so the in-flight label is REMOVED (not kept), `need-revision`
+       added, status reset to `To-do` — see the fallback table below. This
+       is the sole failure sub-case that does NOT preserve the resume signal.
    - `port-paused` is impossible here too.
 
    **Port lane** (`fresh-port` / `recovery-port`):
@@ -959,6 +967,7 @@ For each ticket in `DISPATCH_ROSTER` (carry the `lane` tagged at §2.1):
    | port `port-paused` | `need-spec-review ∈ labels` AND `dispatcher-port-in-flight ∉ labels`                  | `save_issue` to add `need-spec-review` and remove `dispatcher-port-in-flight`. Same re-fetch-before-write to avoid racing a slow `/port:ship`.                                                                                          |
    | port `done`        | `dispatcher-port-in-flight ∉ labels`                                                  | `save_issue` to remove `dispatcher-port-in-flight`. Re-fetch labels first.                                                                                                                                                              |
    | any `failed`       | `dispatcher-*-in-flight` STAYS (resume signal for Q2/Q4 on the next sweep)            | If no failure comment exists yet on the ticket, post one via `save_comment`. Do NOT remove the in-flight label — that's the resume signal. ALSO append a local breadcrumb via `/_file-followup dispatcher-infra summary="<ticket-id> failed: <short reason>" signature="<ticket-id>:<walker_stage>"` (GGC-23 — fail-soft, local gitignored sink only; NO ticket creation). |
+   | ui-tweak `failed` — **terminal-ui-block** (GGC-37) | `dispatcher-dev-in-flight ∉ labels` AND `need-revision ∈ labels` AND status `To-do` AND a `<!-- dispatch-triage-ui-blocked -->` comment present | **The ONE `failed` sub-case that removes the in-flight label.** Triggered when `error` matches `UI-TWEAK BLOCKED` (deterministic structural / dual-judge BLOCK). The script's `triageTerminalUiBlock` removes `dispatcher-dev-in-flight`, adds `need-revision`, resets status to `To-do`, and posts/updates an idempotent `<!-- dispatch-triage-ui-blocked -->` comment (reason + templated suggestion + attempt count). Re-running would just re-block, so the resume signal MUST NOT stay. `/ticket-analyze` marker-skips a still-`Design bug` ticket carrying that marker (does not re-issue `ready-to-dev`); reclassify `Design bug` → `Bug` lifts the skip, and a human can force re-dispatch by adding `ready-to-dev` directly (Q3). |
 
 6. Carry the derived `outcome` (plus the fresh `labels` / `status.name` /
    `walker_stage` / `pr_state` signals) into the in-memory roster row
