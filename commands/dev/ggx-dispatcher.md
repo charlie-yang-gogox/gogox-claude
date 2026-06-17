@@ -31,7 +31,7 @@ Find every actionable ticket in the cwd repo's Linear team and dispatch the whol
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `3`, hard cap `20`. Out of range → abort. This bounds the roster handed to the script; the script's `pipeline()` self-caps concurrency at `min(16, cores-2)` on top.
 - `--workflow` — **Redundant no-op (the `Workflow` path is now the only path).** Accepted for back-compat and changes nothing. The fan-out always runs via §5.2; requires `~/.claude/workflows/dispatch-fanout.workflow.js` (installed by `install.sh`).
 - `--launch-only` — After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock. **Also emits a sibling `<RUN_TS>-<PID>.args.json` artifact** (§5.2 step 2a) holding the EXACT `{ trunkSha, roster }` payload passed to the `Workflow` tool — the durable record of the dispatch args the inline `--launch-only` run does NOT otherwise hold, so `/ggx-on-duty`'s RECONCILE resume (GGC-41) can re-supply identical args via `resumeFromRunId` and hit the journal cache. Discovered by the same newest-mtime glob on-duty already uses for the in-flight TSV.
-- `--demo` — After §5.2 step 5 consumes `rows`, run a serial demo-capture pass (§6.6) over the shipped `design bug` PRs via `/_ui-demo-batch`. **Skipped under `--launch-only`** — the dispatcher has already returned, so the caller (`/ggx-on-duty --demo`) owns the demo pass. Best-effort / fail-soft: never blocks or fails the run. Off by default (design-bug PRs ship without an auto-captured demo, as today). See GGC-29.
+- `--demo` — After the run, run a serial demo-capture pass (§6.6) via `/ggx-demo --batch` (GGC-66 — absorbed `/_ui-demo-batch`), which self-discovers every open `design bug` PR of mine still lacking a demo (incl. the ones just shipped) and captures them serially on one device. **Skipped under `--launch-only`** — the dispatcher has already returned, so the caller (`/ggx-on-duty --demo`) owns the demo pass. Best-effort / fail-soft: never blocks or fails the run. Off by default (design-bug PRs ship without an auto-captured demo, as today). See GGC-29 / GGC-66.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
 
 ---
@@ -1160,20 +1160,22 @@ the data).
 ### 6.6 Demo pass (`--demo` — best-effort, after the run)
 
 Runs ONLY when `--demo` was passed AND this is NOT a `--launch-only`
-invocation. After §6.5's summary, filter §5.2's `rows`
-for shipped design-bug PRs (`uiTweak === true && outcome === "done"` and a
-non-null `prUrl` — the `uiTweak` marker is set by the script's `runUiTweak`,
-GGC-29) and invoke:
+invocation. After §6.5's summary, invoke:
 
 ```
-/_ui-demo-batch '<json array of {ticketId, prUrl} for those rows>'
+/ggx-demo --batch
 ```
 
-`/_ui-demo-batch` captures each PR's demo **SERIALLY on the one simulator** (so
-the parallel fan-out's N agents never drive the device at once — the race is
-gone by construction; see that helper), then attaches each as an idempotent PR
-comment. It is **fail-soft and never blocks**: no device / capture error
-degrades to a WARN and the run still completes. Empty filtered set → no-op.
+`/ggx-demo --batch` (GGC-66 — it absorbed the former `/_ui-demo-batch`)
+**self-discovers** every open design-bug PR of mine that still lacks a demo —
+which includes the design-bug PRs this run just shipped — so no `rows` array
+need be built. It captures each **SERIALLY on the one simulator** (so the
+parallel fan-out's N agents never drive the device at once — the race is gone by
+construction), logging in via the Step 2.4 gate (GGC-65) when `demo_auth` is
+configured, then attaches each idempotently to its PR/ticket. It is **fail-soft
+and never blocks**: no device / capture error / login wall degrades to a WARN (a
+login wall short-circuits the rest) and the run still completes. No undemoed
+PRs → no-op.
 
 Under `--launch-only` the dispatcher returns before the workflow finishes, so
 there are no `rows` here — the caller that consumes the completion

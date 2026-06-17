@@ -1,8 +1,11 @@
 ---
 name: ggx-demo
 description: >
-  Post-hoc UI demo capture for an already-shipped `design bug` PR. Operator
-  skill (the single-ticket sibling of `/_ui-demo-batch`): given a Linear
+  Post-hoc UI demo capture for already-shipped `design bug` PRs. Operator skill
+  with two modes — single (`<TICKET|PR>`) and self-discovering batch (`--batch`,
+  GGC-66, which absorbed the former `/_ui-demo-batch`): `--batch` captures a demo
+  for every open PR of yours that still lacks one (no JSON input), serially on
+  one device. Single mode: given a Linear
   ticket id OR a PR (number/URL), it resolves the PR's worktree, asserts the
   local HEAD matches the PR head (fail-loud — never demo a stale/unreviewed
   build), runs `/ui-tweak:preview --capture-only` (the SOLE capture point —
@@ -22,7 +25,7 @@ description: >
 
 <!-- RULE: command content is English. -->
 
-# `/ggx-demo <TICKET|PR>`
+# `/ggx-demo <TICKET|PR>` | `/ggx-demo --batch`
 
 > Productizes the manual post-hoc demo procedure (prototyped on CAF-541 → PR #610). `--auto`-shipped
 > `design bug` PRs carry a demo only when one is captured post-ship: the parallel fan-out is device-free
@@ -43,15 +46,20 @@ description: >
 
 - `/ggx-demo <TICKET>` — e.g. `/ggx-demo CAF-541`. Resolves the ticket's open PR.
 - `/ggx-demo <PR>` — a PR number (`#610` / `610`) or full URL.
+- `/ggx-demo --batch` — **no argument**: self-discover every open PR of mine that still lacks a demo and
+  capture them serially on one device. See **Batch mode** below.
 
-Single-ticket. The batch sibling `/_ui-demo-batch` loops this skill.
+**Mode dispatch.** If the argument is `--batch`, run the **Batch mode** section (B1–B4) and STOP;
+otherwise run the single-ticket flow (Steps 0–5). Both share Step 0's env gate and the per-ticket
+Steps 1–5 (batch loops them).
 
 ## Step 0 — resolve env (flutter-only / Linear-only gate)
 
 1. Resolve the project profile the same way the ui-tweak stages do (`ui_preview_cmd`, `ui_build_cmd`,
    the fvm-aware flutter binary). **No `ui_preview_cmd` (android/ios build-only profile, or non-flutter)**
    → print `ggx-demo: no device-preview command for this platform — nothing to capture.` and **exit 0**
-   (no-op, matches `/_ui-demo-batch` Step 0). Demo capture needs `flutter run` (build+install+launch).
+   (no-op; batch mode prints the `ggx-demo --batch: …skipping demos.` variant). Demo capture needs
+   `flutter run` (build+install+launch).
 2. `gh` must be authenticated; the Linear MCP must be reachable. A hard failure of either is a LOUD
    abort (see Disposition).
 
@@ -172,13 +180,90 @@ echo "ggx-demo: captured + attached demo for $TICKET_ID (PR #$PR, sha $(git -C "
 exit 0
 ```
 
+## Batch mode (`--batch`) — GGC-66 (absorbed `/_ui-demo-batch`)
+
+`/ggx-demo --batch` captures demos for **every open PR of mine that still lacks one** — no JSON input
+(it self-discovers). It is the serial, device-bound counterpart of the single-ticket flow: "ship the
+code" is parallel + device-free (the fan-out), "record the demo" is serial here, so the one shared
+simulator is never driven by two actors at once (no lock, no TTL — true by construction). Invoked by
+`/ggx-dispatcher --demo` (after the §5.2 join) and `/ggx-on-duty --demo` (after the Leg-1 dispatch).
+
+**Fail-soft end to end** (the `/_slack-notify` contract): any per-ticket failure degrades to one WARN
+line and continues; the batch never blocks/fails its caller and never touches ship state (labels, PR
+open/closed, ticket status). Per ticket it edits only what the single-ticket flow edits — the Linear
+attachment + the PR-body `<!-- ui-tweak-demo -->` region.
+
+### B1 — discover the target PRs (no input)
+
+```bash
+# My open PRs that are ui-tweak/design-bug PRs AND have no demo yet. ui-tweak PRs carry a `## UI Tweak`
+# summary section (written by ff.md's pr stage); a demoed PR carries the `<!-- ui-tweak-demo -->` marker
+# block. Want: ui-tweak ∧ ¬demoed.
+ROWS=$(gh pr list --author "@me" --state open --json number,headRefName,url,body \
+  --jq '[.[] | select(.body | test("(?m)^## UI Tweak")) | select(.body | test("<!-- ui-tweak-demo -->") | not)]')
+COUNT=$(printf '%s' "$ROWS" | jq 'length')
+[ "$COUNT" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine without a demo."; exit 0; }
+```
+
+(A caller that already holds the freshly-shipped rows — `/ggx-dispatcher --demo`, `/ggx-on-duty --demo`
+— MAY narrow to those PRs, but the default is self-discovery so no caller has to hand-build a JSON array.)
+
+### B2 — acquire the device ONCE
+
+Resolve the profile (Step 0). No `ui_preview_cmd` → `ggx-demo --batch: no device-preview command for
+this platform — skipping demos.` exit 0. Acquire a device once, in order — stop at the first that yields
+one, and pin it as `$DEV` for the whole pass (no lock because there is only one actor):
+
+- **(a)** a running device — `$FLUTTER_BIN devices --machine` lists a booted sim / connected handset.
+- **(b)** boot the designated persistent sim — `$FLUTTER_BIN emulators --launch <id>` (or `xcrun simctl
+  boot <udid>`), then poll `$FLUTTER_BIN devices --machine` with a bounded counter loop — **never
+  `timeout`** (absent on macOS; see `preview.md`). The device need not be pre-logged-in — the Step 2.4
+  login gate logs in per-pass when `demo_auth` is configured.
+- **(c)** none available → `ggx-demo --batch: no device available — skipping all demos (fail-soft).`
+  exit 0.
+
+### B3 — serial loop (one ticket at a time on `$DEV`)
+
+Run the per-ticket procedure (Steps 1–5 above) for each discovered PR, in order. Catch each loud failure
+fail-soft and count it; on a `login wall` failure **short-circuit** the rest (one shared device = one
+shared login state, so it recurs identically):
+
+```bash
+CAPTURED=0; SKIPPED=0; REASONS=""; LOGIN_WALL=0
+for PR in $(printf '%s' "$ROWS" | jq -r '.[].number'); do
+  # Run Steps 1–5 for "$PR" (PR-number form). It is fail-LOUD; capture stderr to classify the reason.
+  ERRLINE=$( run_steps_1_to_5 "$PR" 2>&1 1>/dev/null ) && RC=0 || RC=$?
+  if [ "$RC" = 0 ]; then
+    CAPTURED=$((CAPTURED+1))
+  else
+    SKIPPED=$((SKIPPED+1)); REASONS="$REASONS #$PR"
+    echo "ggx-demo --batch: WARN — PR #$PR demo failed (see its GGX-DEMO FAIL line); continuing." >&2
+    if printf '%s' "$ERRLINE" | grep -qi 'login wall'; then
+      LOGIN_WALL=1
+      echo "ggx-demo --batch: login wall — short-circuiting remaining demos (shared device, same login state); configure demo_auth + a staging account on the Notion page." >&2
+      break
+    fi
+  fi
+done
+```
+
+### B4 — summary (always exit 0)
+
+```
+ggx-demo --batch: <CAPTURED> captured, <SKIPPED> skipped (<REASONS>), device=<DEV|none>.
+```
+
+Append ` — SHORT-CIRCUITED at login wall (configure demo_auth + a staging account on the Notion page)`
+when `LOGIN_WALL=1`. Per-ticket idempotency (deterministic Linear title + PR-body marker-region replace)
+makes re-running safe — a re-run after fixing login picks up exactly the still-undemoed PRs. STOP.
+
 ## Disposition — fail-LOUD (R13), the inverse of `/ui-tweak`'s designer-facing fail-silent
 
 Every failure path above emits ONE deterministic `GGX-DEMO FAIL: …` line to stderr and exits non-zero:
 unresolvable PR, `gh`/Linear unreachable, head mismatch, no device, auto-login failed (login wall), unreachable target screen,
 or `screenrecord` ladder exhausted. The throwaway worktree (if any) is removed on every exit
-path. `/_ui-demo-batch` invokes `/ggx-demo` per ticket and **catches this loud failure fail-soft** —
-counting it as a per-ticket skip and continuing the batch (the batch as a whole never fails its caller).
+path. **Batch mode (B3) catches this loud failure fail-soft** — counting it as a per-ticket skip and
+continuing (or short-circuiting on a `login wall`); the batch as a whole never fails its caller.
 
 The flutter-only / Linear-only no-op (Step 0) is the ONE exit-0 non-success case — there is simply
 nothing to capture on a build-only platform.
@@ -189,5 +274,7 @@ nothing to capture on a build-only platform.
 - Edits NO source, writes NO walker markers, never enters `/ui-tweak:ff`.
 - Reuses `preview --capture-only` (capture) + the `ff.md` Idempotent-attach contract (upload/embed) —
   it does NOT reimplement either. The only logic owned here is PR/worktree resolution, the head guard,
-  and the fail-loud disposition.
+  the fail-loud disposition, and (batch) device-once + self-discovery + the serial loop.
+- Batch mode (`--batch`) absorbed the former `/_ui-demo-batch` (GGC-66) — there is now ONE post-hoc demo
+  skill. Self-discovers open PRs lacking a demo; no JSON input.
 - Regression case (GGC-59): `/ggx-demo CAF-541` reproduces the manual PR #610 demo.
