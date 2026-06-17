@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, and never logs in EXCEPT the sanctioned GGC-65 Step 2.4 staging-QA login gate (opt-in via the repo's demo_auth selector, so login-gated screens can be captured). If it can't reach the screen (no route / unpassable login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (GGC-59, Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs ONLY the Step 2.5 navigate+capture slice on an already-running logged-in device (path (a) only, no cold-boot), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too."
+description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, and never logs in EXCEPT the sanctioned GGC-65 Step 2.4 staging-QA login gate (opt-in via the repo's demo_auth selector, so login-gated screens can be captured). If it can't reach the screen (no route / unpassable login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (GGC-59, Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs the Step 2.4 login gate + Step 2.5 navigate+capture slice on an already-running device (path (a) only, no cold-boot; Step 2.4 logs in with a staging QA account when the repo's demo_auth selector is set, GGC-65), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -153,19 +153,19 @@ look), so by default this stage is a **build-only compile gate** — NOT a devic
 **Exception — `DIRECT_SHIP=1` AND `AUTO_NAV=1` (GGC-14): launch onto an already-running device so
 preview itself can navigate + capture (Step 2.5).** A pure build-only gate leaves no running app to
 deep-link into, so when navigation is requested we must actually install + launch — but only onto a
-device that is **already running** (the designer's pre-warmed, already-logged-in device). Concretely:
+device that is **already running** (typically the designer's pre-warmed, already-logged-in device — though Step 2.4 can log in if it is not). Concretely:
 
 - Run a **restricted cascade — path (a) ONLY** (Step 1 (a): an already-running emulator/simulator or
   physical handset). **Do NOT cold-boot (skip path (b))**: booting an emulator unattended is heavy and
-  the booted device would not be logged in, so it adds nothing. If (a) yields a device → go to Step 2's
+  adds latency (and Step 2.4 handles login when needed, so a freshly-booted device buys nothing). If (a) yields a device → go to Step 2's
   **device path** (`ui_preview_cmd`) to build+install+launch and leave the app up; the build gate still
   keys on exit code exactly as the normal path, then **Step 2.5 navigates + captures** before the
   walker advances.
 - If (a) yields **no running device** → fall back to the **build-only path** (`ui_build_cmd`) exactly as
   above. Step 2.5 is skipped (no live app) and FAIL-SILENT (the PR uses the Demo fallback chain).
 - **Still do NOT write `preview-shown`** (direct-ship has no "looks good?" card) and the walker still
-  advances to `audit` after the capture. The launch here exists solely to give Step 2.5 a live,
-  logged-in app to navigate.
+  advances to `audit` after the capture. The launch here exists solely to give Step 2.4/2.5 a live
+  app to navigate (Step 2.4 logs it in if needed).
 
 The rest of this file (Steps 1–4) is the normal **device-preview** path used when `DIRECT_SHIP=0`.
 
@@ -207,8 +207,8 @@ already-shipped, already-reviewed PR, so there is no build gate to protect and n
 > In the forward pipeline Step 2.5 is **fail-silent** (the capture is an incidental side-effect of a
 > preview). Under `--capture-only` the capture **IS the deliverable**, so every failure is **LOUD**:
 > non-zero exit + ONE deterministic stderr line, e.g.
-> `GGX-DEMO CAPTURE-FAIL: <no logged-in device | could not reach <screen> | login wall | screenrecord ladder exhausted> (ticket <id>).`
-> No logged-in device, no whitelisted route AND tap-through stuck, a login wall, or a `screenrecord`
+> `GGX-DEMO CAPTURE-FAIL: <no device | could not reach <screen> | login wall | screenrecord ladder exhausted> (ticket <id>).`
+> No device, no whitelisted route AND tap-through stuck, an unpassable login wall (auto-login failed or not configured), or a `screenrecord`
 > size-ladder that never produced a playable file → exit non-zero. Reusing Step 2.5's *body* is correct;
 > reusing its fail-silent *disposition* would silently reproduce the very pain `/ggx-demo` exists to fix.
 > `/ggx-demo` surfaces this exit; `/_ui-demo-batch` catches it fail-soft and counts it.
@@ -476,8 +476,9 @@ screenshot + recording are embedded by `pr`.
 > with a deterministic stderr line, NOT a silent no-capture. The body below (what counts as "couldn't
 > reach") is shared; only the disposition differs.
 
-If Tier 1 + Tier 2 cannot confidently reach the target (no route, tap-through stuck, `idb` absent, or a
-**login wall** — login is never assumed and never performed), do **NOT** capture a misleading wrong
+If Tier 1 + Tier 2 cannot confidently reach the target (no route, tap-through stuck, `idb` absent, or an
+**unpassable login wall** — login is performed only by the sanctioned Step 2.4 gate when `demo_auth` is
+configured, else not at all), do **NOT** capture a misleading wrong
 screen and do **NOT** ask the designer to drive: just capture nothing, leave `demo-files` empty, and
 continue. The orchestrator's C1 (looks-good) card then shows no image (honest "couldn't auto-reach the
 screen" wording) and the PR uses the Demo fallback chain. Any navigation/capture error is likewise

@@ -1,6 +1,6 @@
 ---
 name: _ui-demo-batch
-description: "Internal helper invoked by /ggx-dispatcher (--demo, after the §5.2 workflow join) and /ggx-on-duty (--demo, after the Leg-1 dispatch completion). Runs the ui-tweak demo capture for a batch of shipped `design bug` PRs as a SINGLE SERIAL pass — only one actor ever touches the simulator, so the device race that an inline per-ticket demo would create in the parallel fan-out is gone by construction (no lock, no TTL). Acquires the device ONCE up front (a running logged-in device, else boots the designated persistent sim) so the per-ticket leg always finds one, then loops `/ggx-demo <ticket>` per ticket — `/ggx-demo` (GGC-59) owns the worktree-liveness/head-guard, capture (preview --capture-only), and idempotent attach (deterministic Linear title + PR-body `<!-- ui-tweak-demo -->` marker-region). This helper owns only the device-once acquisition, the serial loop, and per-ticket pass/fail counting: it CATCHES `/ggx-demo`'s loud (non-zero) failures fail-soft. Fail-soft per ticket and overall: NEVER blocks or fails the caller. Linear-only / flutter-only v1; design-bug demos only. Not user-invoked. (Inline-renderable PR images are GGC-30, separate.)"
+description: "Internal helper invoked by /ggx-dispatcher (--demo, after the §5.2 workflow join) and /ggx-on-duty (--demo, after the Leg-1 dispatch completion). Runs the ui-tweak demo capture for a batch of shipped `design bug` PRs as a SINGLE SERIAL pass — only one actor ever touches the simulator, so the device race that an inline per-ticket demo would create in the parallel fan-out is gone by construction (no lock, no TTL). Acquires the device ONCE up front (a running device, else boots the designated persistent sim — it need not be pre-logged-in; preview's Step 2.4 gate logs in via a staging account when demo_auth is set, GGC-65) so the per-ticket leg always finds one, then loops `/ggx-demo <ticket>` per ticket — `/ggx-demo` (GGC-59) owns the worktree-liveness/head-guard, capture (preview --capture-only), and idempotent attach (deterministic Linear title + PR-body `<!-- ui-tweak-demo -->` marker-region). This helper owns only the device-once acquisition, the serial loop, and per-ticket pass/fail counting: it CATCHES `/ggx-demo`'s loud (non-zero) failures fail-soft. Fail-soft per ticket and overall: NEVER blocks or fails the caller. Linear-only / flutter-only v1; design-bug demos only. Not user-invoked. (Inline-renderable PR images are GGC-30, separate.)"
 Prerequisite: >
   - A flutter repo with a resolvable ui-tweak preview command (`ui_preview_cmd`);
     on non-flutter / build-only profiles this helper is a no-op.
@@ -55,7 +55,7 @@ Empty input → print `ui-demo-batch: no design-bug PRs to capture.` and exit 0.
 
 2. **Acquire the simulator (once, up front), in this order — stop at the first
    that yields a device:**
-   - **(a) a running logged-in device** — `$FLUTTER_BIN devices --machine`
+   - **(a) a running device** — `$FLUTTER_BIN devices --machine`
      already lists a booted simulator / connected handset → use it. This is the
      common case (the owner keeps one running).
    - **(b) boot the designated persistent sim (the auto-boot fallback).** No
@@ -76,8 +76,8 @@ Empty input → print `ui-demo-batch: no design-bug PRs to capture.` and exit 0.
 The per-ticket mechanics (worktree-liveness + head-guard, install/launch, the Tier-1/Tier-2
 navigate+capture, and the idempotent attach) are **owned by `/ggx-demo`** (GGC-59) — the single-ticket
 sibling of this batch. This helper does NOT re-implement them; it loops `/ggx-demo` and counts. Step 0
-already put a logged-in device up, so each `/ggx-demo`'s path-(a) acquisition finds it (it deliberately
-never cold-boots).
+already put a device up, so each `/ggx-demo`'s path-(a) acquisition finds it (it deliberately
+never cold-boots); preview's Step 2.4 gate logs in per-pass when `demo_auth` is configured.
 
 For each row, in order:
 

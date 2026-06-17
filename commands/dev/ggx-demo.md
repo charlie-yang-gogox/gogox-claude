@@ -6,12 +6,13 @@ description: >
   ticket id OR a PR (number/URL), it resolves the PR's worktree, asserts the
   local HEAD matches the PR head (fail-loud — never demo a stale/unreviewed
   build), runs `/ui-tweak:preview --capture-only` (the SOLE capture point —
-  navigate to the target screen on an already-running logged-in device and
+  navigate to the target screen on an already-running device, logging in via a
+  staging QA account when the repo's `demo_auth` selector is set (GGC-65), and
   record a screenshot + short clip), then idempotently attaches the result to
   the Linear ticket and patches the PR body's `<!-- ui-tweak-demo -->` `## Demo`
   region (replace-between-markers, never append). REUSES the ui-tweak
   capture/upload machinery (does NOT reimplement it). Fails LOUD end-to-end
-  (R13): no logged-in device / no route / login wall / head mismatch /
+  (R13): no device / auto-login failed (login wall) / no route / head mismatch /
   screenrecord-ladder exhausted → non-zero exit + deterministic stderr. Edits
   NOTHING in the codebase and writes NO walker markers (it never enters
   `/ui-tweak:ff` / `infer_ui_stage`), so it cannot mis-route a later
@@ -24,8 +25,9 @@ description: >
 # `/ggx-demo <TICKET|PR>`
 
 > Productizes the manual post-hoc demo procedure (prototyped on CAF-541 → PR #610). `--auto`-shipped
-> `design bug` PRs almost never carry a demo (no already-running logged-in device in the headless batch
-> context; login-gated screens fail-silent), so the demo must be recorded **after** the PR is open.
+> `design bug` PRs carry a demo only when one is captured post-ship: the parallel fan-out is device-free
+> (build-only), so the demo must be recorded **after** the PR is open — on a device, logging in via the
+> Step 2.4 gate (GGC-65) when the repo's `demo_auth` selector is set.
 >
 > **Why a standalone skill, not a `--demo` flag on `/ui-tweak`** (decision, GGC-59): `/ui-tweak` is
 > designer-facing (plain-language cards, fail-silent, rides the forward flow). A post-hoc demo is the
@@ -173,8 +175,8 @@ exit 0
 ## Disposition — fail-LOUD (R13), the inverse of `/ui-tweak`'s designer-facing fail-silent
 
 Every failure path above emits ONE deterministic `GGX-DEMO FAIL: …` line to stderr and exits non-zero:
-unresolvable PR, `gh`/Linear unreachable, head mismatch, no logged-in device, unreachable target screen,
-login wall, or `screenrecord` ladder exhausted. The throwaway worktree (if any) is removed on every exit
+unresolvable PR, `gh`/Linear unreachable, head mismatch, no device, auto-login failed (login wall), unreachable target screen,
+or `screenrecord` ladder exhausted. The throwaway worktree (if any) is removed on every exit
 path. `/_ui-demo-batch` invokes `/ggx-demo` per ticket and **catches this loud failure fail-soft** —
 counting it as a per-ticket skip and continuing the batch (the batch as a whole never fails its caller).
 
