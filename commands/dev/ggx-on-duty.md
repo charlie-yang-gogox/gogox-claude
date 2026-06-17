@@ -27,7 +27,7 @@ Prerequisite: >
 - `--team:<KEY>` — passed through to /ticket-analyze and /ggx-dispatcher (required when the repo's `branch_prefix` is `auto`).
 - `--no-dispatch` — disable Leg 1 entirely (watch-only mode).
 - `--no-analyze` — Leg 1 runs the dispatcher without the preceding analyze step.
-- `--demo` — after a Leg-1 dispatch completes, spawn a background serial demo-capture pass (`/_ui-demo-batch`) over the design-bug PRs it just shipped, so `design bug` PRs from the local on-duty loop carry a demo recording (GGC-29). Off by default. Requires a flutter repo + a logged-in simulator the local headless child can reach (it boots the persistent sim if none is running). dev/port/bug lanes unaffected.
+- `--demo` — after a Leg-1 dispatch completes, spawn a background serial demo-capture pass (`/ggx-demo --batch`, GGC-66 — absorbed `/_ui-demo-batch`; self-discovers every open design-bug PR of mine still lacking a demo), so `design bug` PRs from the local on-duty loop carry a demo recording (GGC-29). Off by default. Requires a flutter repo + a simulator the local headless child can reach (it boots the persistent sim if none is running; the device need not be pre-logged-in — the Step 2.4 gate logs in via a staging account when `demo_auth` is set, GGC-65). dev/port/bug lanes unaffected.
 - `--until:HH:MM` — optional auto-stop. Default: none (run until the user interrupts or closes the session).
 
 ## Non-negotiable guardrails
@@ -38,23 +38,26 @@ Prerequisite: >
 - **A leg failure never ends the loop.** Each leg runs in its own try/continue boundary; an error becomes one WARN line in the cycle summary. The loop ends only on user interrupt or `--until`.
 - **Keep the session lean** (the loop lives 8+ hours in one context): each cycle contributes a one-line summary; full dispatcher / pr-resolver output stays in the spawned agents' own contexts and report files — cite paths, never paste tables back into the on-duty session.
 
-## Demo capture prerequisite (login-gated screens — GGC-50)
+## Demo capture prerequisite (login-gated screens — GGC-65)
 
 ui-tweak (`design bug`) tickets run under `--auto` with GGC-14 navigate+capture ON, so a wake cycle may
 dispatch a `demo` pass. Capturing a **login-gated** screen (booking flow, order tracking, payment, …)
-only works when the demo device already holds a **logged-in debug `dev` build** the worktree build can
-run on. This is a **one-time human setup**, never something the loop can do (OTP login is not
-headless-drivable):
+needs the app logged in. Since **GGC-65** this is handled automatically — no one-time human OTP login:
 
-- Keep a logged-in debug `com.gogox.clientapp.dev` build on the target device (one-time manual OTP login).
-- Pin the preview/demo flavor to `dev` so worktree builds don't collide on signature with the CI-signed
-  staging app: add `flavor: dev` to the app repo's `<repo>/.gogox-claude.yaml` (GGC-7 override).
+- Add a **`demo_auth` selector** to the app repo's `<repo>/.gogox-claude.yaml` (`app` + `region` +
+  `account_label` + `login_probe_host`). The preview Step 2.4 gate then fetches a **staging** QA
+  automation account from the Notion "Testing accounts" page at runtime and logs in on a fresh device
+  (creds never stored in the repo). The demo build is the staging flavor (`--flavor stag`), so the
+  staging accounts fit — no `flavor: dev` pin needed.
+- **Gating spike (GGC-65)**: this assumes the staging build accepts **password-only** login with no OTP.
+  If an account requires OTP/2FA, auto-login is blocked and capture fail-silents (login wall) — verify
+  one automation account password-logs-in cleanly before relying on it.
 
-When this is not set up, navigate+capture simply **fail-silents** on a login-gated screen (it never logs
-in; see `commands/design/ui-tweak/preview.md` Step 2.5 — capture is the sole job of `preview`, and the
-batch path reuses that same procedure via `/_ui-demo-batch`). A missing demo never blocks a PR — the
-draft PR still opens via the normal Demo fallback chain. So this is an optional capture-quality
-prerequisite, not a loop requirement.
+When `demo_auth` is **not** configured (or login fails), navigate+capture **fail-silents** on a
+login-gated screen (see `commands/design/ui-tweak/preview.md` Step 2.4/2.5 — capture is the sole job of
+`preview`, and the batch path reuses that same procedure via `/ggx-demo --batch`). A missing demo never
+blocks a PR — the draft PR still opens via the normal Demo fallback chain. So this is an optional
+capture-quality prerequisite, not a loop requirement.
 
 ## On invocation (once)
 
@@ -143,22 +146,23 @@ shipped design-bug PR. Mirrors GGC-29's "serial pass" design: on-duty owns the
 workflow completion (D22 `--launch-only`), so on-duty — not the dispatcher —
 triggers the demo capture.
 
-- **Trigger** (in the Leg-1 dispatch close-out, when `--demo`): from the consumed
-  `{rows}`, take rows where `uiTweak === true && outcome === "done"` with a
-  non-null `prUrl`. None → nothing to do.
+- **Trigger** (in the Leg-1 dispatch close-out, when `--demo`): fire when the
+  dispatch shipped ≥1 design-bug PR. No `{rows}` filtering is needed — the demo
+  skill self-discovers (below); an empty queue is its own no-op.
 - **Single-flight**: skip if `demo.running` (a prior batch's demo pass is still
   capturing — only one actor may drive the simulator at a time; this guard is
   what makes the serial-by-construction guarantee hold across wake cycles).
 - **Spawn** ONE background headless CLI session (`claude -p --permission-mode
   bypassPermissions`, same mechanism as the legs — keeps the wake cycle ~1-2 min;
   a blocking inline pass would stall it) running
-  `/_ui-demo-batch '<json [{ticketId, prUrl}, …]>'`, cwd = this main worktree.
-  Set `demo.running=true`, store its `task_id`. The local headless child shares
-  this laptop, so it reaches the simulator (a cloud run could not — documented
-  no-op there).
+  `/ggx-demo --batch` (GGC-66 — absorbed `/_ui-demo-batch`; self-discovers every
+  open design-bug PR of mine still lacking a demo, no JSON input), cwd = this main
+  worktree. Set `demo.running=true`, store its `task_id`. The local headless child
+  shares this laptop, so it reaches the simulator (a cloud run could not —
+  documented no-op there).
 - **On its completion notification**: set `demo.running=false` and fold its
   one-line summary (`<C> captured, <S> skipped`) into the next cycle's summary.
-- **Fail-soft**: `/_ui-demo-batch` always exits 0; a demo failure never blocks
+- **Fail-soft**: `/ggx-demo --batch` always exits 0; a demo failure never blocks
   ship, never fails a wake cycle, and never touches ticket/PR state beyond an
   idempotent PR comment. A leg failure still never ends the loop (guardrail).
 

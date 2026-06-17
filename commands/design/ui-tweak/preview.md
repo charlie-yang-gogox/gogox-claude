@@ -211,7 +211,7 @@ already-shipped, already-reviewed PR, so there is no build gate to protect and n
 > No device, no whitelisted route AND tap-through stuck, an unpassable login wall (auto-login failed or not configured), or a `screenrecord`
 > size-ladder that never produced a playable file → exit non-zero. Reusing Step 2.5's *body* is correct;
 > reusing its fail-silent *disposition* would silently reproduce the very pain `/ggx-demo` exists to fix.
-> `/ggx-demo` surfaces this exit; `/_ui-demo-batch` catches it fail-soft and counts it.
+> `/ggx-demo` surfaces this exit; `/ggx-demo --batch` catches it fail-soft and counts it.
 
 STOP after the capture (success or loud failure). The walker is never involved in this sub-mode.
 
@@ -378,7 +378,7 @@ OTP/2FA wall), do NOT capture a misleading screen:
   fail-silent box) — no capture, no drive prompt, never gates the build.
 - **`--capture-only` (Step 0c)**: fail-LOUD — non-zero exit + the deterministic line with the cause:
   `GGX-DEMO CAPTURE-FAIL: login wall — auto-login failed (<notion-fetch-failed|creds-rejected|login-ui-not-found|otp-required>) for <app>/<region> (ticket <id>). Check the staging account on the Notion page.`
-  The `login wall` token lets `/_ui-demo-batch` short-circuit the rest of a batch (one shared device =
+  The `login wall` token lets `/ggx-demo --batch` short-circuit the rest of a batch (one shared device =
   one shared login state).
 
 ## Step 2.5 — navigate to the target + capture (the SOLE capture point — GGC-14)
