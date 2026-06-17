@@ -659,11 +659,16 @@ async function verifyEvidence(res, item) {
 // Deterministic rules (Q2/Q3 resolved):
 //   - workerDied === true            → transient-infra (agent died / terminal
 //                                       API error after retries), high confidence.
-//   - uiTweakFailed && structural/    → platform-bug? NO — an expected loud-fail
-//     judge BLOCK on a ui-tweak row     (audit BLOCKED / structural pre-pass) is
-//                                       NOT transient and must not retry; we
-//                                       classify it `unknown` (today's comment),
-//                                       since the BLOCK is the designed outcome.
+//   - uiTweakFailed && /UI-TWEAK      → terminal-ui-block (GGC-37): a DETERMINISTIC
+//     BLOCK/.test(error)                dual-judge BLOCK (structural pre-pass OR
+//                                       judge). Re-running reproduces the identical
+//                                       BLOCK, so leaving the in-flight resume signal
+//                                       causes infinite recovery spin — route to a
+//                                       terminal cleanup, not today's comment-only path.
+//   - uiTweakFailed (any other shape) → unknown: apply/preview fail, GGC-49
+//                                       contamination ("UI-TWEAK INVALID"), or a null
+//                                       finisher are NOT a BLOCK — they may be
+//                                       re-runnable, so keep in-flight (today's comment).
 //   - evidenceDemoted === true       → unknown (a demoted success is not
 //                                       obviously any single class).
 // Anything else with an error string → ask the sonnet agent; low confidence or
@@ -673,11 +678,23 @@ async function classifyFailure(res) {
   if (res.workerDied === true) {
     return { class: "transient-infra", confidence: "high", reason: "worker agent died / terminal API error after retries" };
   }
-  // ui-tweak loud-fail (audit BLOCKED / structural pre-pass / finisher null) is
-  // an EXPECTED failure, never transient — do not retry it here (GGC-44 owns
-  // ui-tweak repair). Treat as unknown ⇒ today's fallback comment.
+  // ui-tweak DETERMINISTIC dual-judge BLOCK (structural pre-pass OR judge) — GGC-37.
+  // Re-running reproduces the identical BLOCK (the script path has no repair loop;
+  // GGC-44, if built, inserts a repair attempt BEFORE this point so only
+  // repair-exhausted blocks reach here), so leaving the dispatcher-dev-in-flight
+  // resume signal causes an infinite recovery spin under the on-duty loop
+  // (CAF-514 / CAF-561). Route to triageTerminalUiBlock: remove in-flight, set
+  // need-revision, reset To-Do. Gate on the error STRING (both BLOCK returns start
+  // with "UI-TWEAK BLOCKED"), NOT all uiTweakFailed — see the non-BLOCK branch below.
+  if (res.uiTweakFailed === true && /UI-TWEAK BLOCKED/.test(res.error || "")) {
+    return { class: "terminal-ui-block", confidence: "high", reason: "deterministic ui-tweak BLOCK (structural pre-pass / dual-judge) — re-run reproduces it; clean up to stop infinite recovery spin" };
+  }
+  // Other ui-tweak loud-fails — apply/preview fail, GGC-49 contamination
+  // ("UI-TWEAK INVALID"), a null finisher — are NOT a deterministic BLOCK; they may
+  // be re-runnable, so keep today's unknown ⇒ fallback comment with the in-flight
+  // label preserved. (ui-tweak transient retry/repair is GGC-44 scope.)
   if (res.uiTweakFailed === true) {
-    return { class: "unknown", confidence: "high", reason: "ui-tweak loud-fail (audit/structural BLOCK) — expected, not transient; retry is GGC-44 scope" };
+    return { class: "unknown", confidence: "high", reason: "ui-tweak loud-fail (non-BLOCK: apply / contamination / finisher null) — keep in-flight, may be re-runnable" };
   }
   // A demoted success (GGC-21) is ambiguous by default.
   if (res.evidenceDemoted === true) {
@@ -763,8 +780,13 @@ function budgetAllowsRetry() {
 // script must NOT post again (that was the double-post bug). The unknown branch
 // posts ONLY when the worker DIED / a ui-tweak run was script-orchestrated /
 // a success was evidence-demoted — and EACH triage class uses its OWN DISTINCT
-// marker so the writers can never collide. Neither path removes the in-flight
-// label (the durable §6.2 resume signal); the script never touches labels.
+// marker so the writers can never collide. With ONE deliberate exception
+// (terminal-ui-block, GGC-37 — see triageTerminalUiBlock), no triage path removes
+// the in-flight label (the durable §6.2 resume signal) or touches status: a
+// DETERMINISTIC ui-tweak BLOCK is the sole case where leaving the resume signal
+// causes an infinite recovery spin, so that one class removes dispatcher-dev-in-flight,
+// adds need-revision, and resets status to To-Do. Every other class preserves the
+// "script does not touch labels/status" invariant.
 //
 // `item` (roster row) and `trunkSha` are threaded in so a transient-infra row
 // can be retried with a fresh runWork(item, trunkSha) + verifyEvidence(res,item).
@@ -782,6 +804,8 @@ async function triageAndFallback(res, item, trunkSha) {
       return triageTicketContent(res, verdict);
     case "platform-bug":
       return triagePlatformBug(res, verdict);
+    case "terminal-ui-block":
+      return triageTerminalUiBlock(res, item);
     default: // "unknown"
       return triageUnknownFallback(res);
   }
@@ -899,6 +923,95 @@ async function triagePlatformBug(res, verdict) {
     ].join("\n"),
     {
       label: `triage-platform:${res.ticketId}`,
+      phase: "fallback",
+      agentType: "general-purpose",
+      model: "sonnet",
+    },
+  );
+  return res;
+}
+
+// terminal-ui-block (GGC-37) → the ONE triage class that deliberately amends the
+// "script never touches labels/status" invariant. A ui-tweak dual-judge BLOCK is
+// DETERMINISTIC: re-running reproduces it, so the dispatcher-dev-in-flight resume
+// signal would cause an infinite recovery spin (CAF-514 / CAF-561). Clean up to a
+// single visible human-attention state — remove in-flight, add need-revision, reset
+// status To-Do — and post an idempotent failure comment (distinct marker
+// <!-- dispatch-triage-ui-blocked -->) carrying the reason, a templated suggested
+// action, and an attempt count. /ticket-analyze marker-skips a still-`Design bug`
+// ticket carrying this marker (ticket-analyze.md Step 1.5) so the To-Do reset does
+// NOT re-trigger a slow re-dispatch loop; reclassify Design bug → Bug lifts the skip,
+// and a human can always force re-dispatch by adding ready-to-dev directly (Q3).
+// The suggested action is templated from the error string (structural vs judge) — it
+// does NOT read the diff (that is GGC-44 / GGC-58 scope). need-revision is reused (not
+// a new tag) and is excluded from Q1–Q4 discovery, so adding it stops the spin.
+async function triageTerminalUiBlock(res, item) {
+  log(`[triage] ${res.ticketId} terminal-ui-block -> cleanup (remove in-flight, add need-revision, reset To-Do) + dispatch-triage-ui-blocked comment`);
+  const isStructural = /structural pre-pass/.test(res.error || "");
+  const worktree = (item && item.worktreePath) || `../${res.ticketId}`;
+  await agent(
+    [
+      `Ticket ${res.ticketId} was auto-dispatched to the ui-tweak lane and was`,
+      `BLOCKED by the dual-judge panel: "${(res.error || "UI-TWEAK BLOCKED").slice(0, 240)}".`,
+      `This is a DETERMINISTIC terminal failure (re-running reproduces it), so the`,
+      `dispatcher is cleaning it up to stop an infinite recovery spin.`,
+      ``,
+      `Use the connected Linear MCP (find it with ToolSearch): prefer`,
+      `mcp__claude_ai_Linear__*, fall back to mcp__linear-server__* if the claude.ai`,
+      `connector is not authenticated. Do ALL THREE of the following, each idempotent:`,
+      ``,
+      `1. LABELS (this is the whole point — the in-flight label MUST come off, or the`,
+      `   ticket re-spins next sweep): read the issue's CURRENT labels via get_issue,`,
+      `   then call save_issue with the FULL desired label set = (current labels)`,
+      `   MINUS "dispatcher-dev-in-flight" PLUS "need-revision". save_issue's labels`,
+      `   param replaces the whole set, so send every label you want to keep. Then`,
+      `   re-read and VERIFY dispatcher-dev-in-flight is gone and need-revision is present.`,
+      `2. STATUS: set the issue's status to the team's unstarted "To-do" state (the one`,
+      `   fresh tickets sit in before work starts). If "To-do" is not an exact match,`,
+      `   resolve it via list_issue_statuses → the status with type "unstarted" named`,
+      `   To-do / Todo.`,
+      `3. COMMENT (idempotent on the marker): list_comments on the issue. If a comment`,
+      `   containing the literal marker "<!-- dispatch-triage-ui-blocked -->" ALREADY`,
+      `   exists, this is a REPEAT block (a human re-armed it and it failed again) —`,
+      `   UPDATE that same comment, incrementing its "attempt N" number by 1. Otherwise`,
+      `   CREATE a new comment with attempt number 1. Replace every "N" below with the`,
+      `   actual attempt number; keep the marker line EXACTLY as written:`,
+      ``,
+      `<!-- dispatch-triage-ui-blocked -->`,
+      `🚫 ui-tweak auto-handling BLOCKED (attempt N)`,
+      ``,
+      `(1) Reason: ${(res.error || "UI-TWEAK BLOCKED").slice(0, 240)}`,
+      ``,
+      `(2) Suggested action:`,
+      ...(isStructural
+        ? [
+            `    The change needs real code logic (the diff added behavior signals —`,
+            `    import / call / control-flow / lifecycle / gesture), so the ui-tweak`,
+            `    dual-judge panel can never pass it. Recommend reclassify \`Design bug\``,
+            `    → \`Bug\` and route to the dev lane (which CAN handle logic). Do NOT`,
+            `    re-add ready-to-dev while it is still a Design bug — it will just re-block.`,
+          ]
+        : [
+            `    A judge found the change alters behavior, not just visuals. If you`,
+            `    believe it is purely visual, re-run /ui-tweak:apply in ${worktree} to`,
+            `    reproduce the change locally and review it; otherwise reclassify`,
+            `    \`Design bug\` → \`Bug\` and route to the dev lane.`,
+          ]),
+      ``,
+      `(3) Context:`,
+      `    - failed stage: ${res.stage || "ui:audit"}`,
+      `    - worktree: ${worktree} (the change was REVERTED — nothing is committed;`,
+      `      the judge reason above is the authoritative signal)`,
+      `    - dispatcher auto-actions: removed dispatcher-dev-in-flight, added`,
+      `      need-revision, reset status to To-do`,
+      `    - attempt N: first time = review / maybe reclassify; repeat = stop sending`,
+      `      to ui-tweak, reclassify to Bug`,
+      ``,
+      `Do NOT change any label other than the two named in step 1. Do NOT remove the`,
+      `marker line — /ticket-analyze detects it to skip auto re-dispatch.`,
+    ].join("\n"),
+    {
+      label: `triage-ui-blocked:${res.ticketId}`,
       phase: "fallback",
       agentType: "general-purpose",
       model: "sonnet",
