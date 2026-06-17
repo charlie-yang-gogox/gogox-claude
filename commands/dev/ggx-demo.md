@@ -125,17 +125,19 @@ is an orchestrated call, not a stray designer invocation) and invoke:
 UI_TWEAK_FF=1  /ui-tweak:preview --capture-only
 ```
 
-`preview --capture-only` (Step 0c) acquires an **already-running, logged-in** device (path (a) only,
-**no cold-boot**), launches the existing build, runs Step 2.5 navigate + capture (Tier-1 `ggv://`
-deep-link → Tier-2 nav-only tap-through → screenshot + short recording → `.dev/ui-tweak/demo-files`),
-and writes **no** walker markers. The 3 device fixes (package-targeted deep-link, `screenrecord --size`
+`preview --capture-only` (Step 0c) acquires an **already-running** device (path (a) only, **no
+cold-boot**), launches the existing build, runs the **Step 2.4 login gate** (GGC-65: logs in with a
+staging QA account when the repo declares a `demo_auth` selector and the app is not already logged in —
+otherwise a no-op), then Step 2.5 navigate + capture (Tier-1 `ggv://` deep-link → Tier-2 nav-only
+tap-through → screenshot + short recording → `.dev/ui-tweak/demo-files`), and writes **no** walker
+markers. The 3 device fixes (package-targeted deep-link, `screenrecord --size`
 ladder, scaled taps) are baked into Step 2.5. **In `--capture-only` mode the capture fails LOUD** — a
 non-zero exit propagates here. Treat any non-zero exit, OR an empty `.dev/ui-tweak/demo-files`, as a
 capture failure and abort LOUD (Step 5 still removes the throwaway worktree):
 
 ```bash
 if [ ! -s "$WT/.dev/ui-tweak/demo-files" ]; then
-  echo "GGX-DEMO FAIL: no demo captured for $TICKET_ID (no logged-in device / unreachable screen / login wall / screenrecord ladder exhausted)." >&2
+  echo "GGX-DEMO FAIL: no demo captured for $TICKET_ID (no device / auto-login failed (login wall) / unreachable screen / screenrecord ladder exhausted)." >&2
   [ -n "$THROWAWAY" ] && git worktree remove --force "$THROWAWAY" 2>/dev/null
   exit 1
 fi

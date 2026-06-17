@@ -4,9 +4,11 @@ description: "Internal helper invoked by /ggx-dispatcher (--demo, after the §5.
 Prerequisite: >
   - A flutter repo with a resolvable ui-tweak preview command (`ui_preview_cmd`);
     on non-flutter / build-only profiles this helper is a no-op.
-  - The owner's persistent, already-logged-in simulator/emulator available to
-    boot (login state must persist across reboots — otherwise the capture lands
-    on a login screen; that is acceptable fail-soft, not an error).
+  - A running (or bootable persistent) simulator/emulator. It need NOT be
+    pre-logged-in: the preview Step 2.4 login gate (GGC-65) logs in with a
+    staging QA account when the repo declares a `demo_auth` selector. Without
+    that selector, a logged-out device lands on a login wall → fail-soft skip
+    (and the batch short-circuits the remaining tickets — shared login state).
   - gh authenticated; Linear MCP authenticated (for the optional Linear mirror).
 ---
 
@@ -57,16 +59,14 @@ Empty input → print `ui-demo-batch: no design-bug PRs to capture.` and exit 0.
      already lists a booted simulator / connected handset → use it. This is the
      common case (the owner keeps one running).
    - **(b) boot the designated persistent sim (the auto-boot fallback).** No
-     running device → boot the owner's persistent simulator (the same named
-     device they logged into once; its login + app data persist across reboots,
-     so a boot restores a logged-in session). Use `$FLUTTER_BIN emulators
-     --launch <id>` (or `xcrun simctl boot <udid>`), then poll
+     running device → boot the owner's persistent simulator. Use `$FLUTTER_BIN
+     emulators --launch <id>` (or `xcrun simctl boot <udid>`), then poll
      `$FLUTTER_BIN devices --machine` with a bounded counter loop — **never
-     `timeout`** (absent on macOS; see `preview.md`).
+     `timeout`** (absent on macOS; see `preview.md`). Login state need not
+     persist across reboots — the preview Step 2.4 gate logs in per-pass when a
+     `demo_auth` selector is configured.
    - **(c) no device and none bootable** → print `ui-demo-batch: no device
-     available — skipping all demos (fail-soft).` and exit 0. Do NOT cold-boot a
-     throwaway/erased simulator: it would not be logged in, so it adds nothing
-     (the documented `preview.md` Step 0b rationale).
+     available — skipping all demos (fail-soft).` and exit 0.
 
    Pin the chosen device id `$DEV` for the whole pass — every ticket installs
    onto the SAME device. There is no lock because there is only one actor.
@@ -82,15 +82,25 @@ never cold-boots).
 For each row, in order:
 
 ```bash
-CAPTURED=0; SKIPPED=0; REASONS=""
+CAPTURED=0; SKIPPED=0; REASONS=""; LOGIN_WALL=0
 for row in <rows>; do
   TICKET=<row.ticketId>
-  # /ggx-demo is fail-LOUD (non-zero on any failure). Catch it fail-soft here and count.
-  if /ggx-demo "$TICKET"; then
+  # /ggx-demo is fail-LOUD (non-zero on any failure). Capture its stderr so we can classify the reason;
+  # catch the failure fail-soft here and count.
+  ERRLINE=$(/ggx-demo "$TICKET" 2>&1 1>/dev/null) && RC=0 || RC=$?
+  if [ "$RC" = 0 ]; then
     CAPTURED=$((CAPTURED+1))
   else
     SKIPPED=$((SKIPPED+1)); REASONS="$REASONS $TICKET"
     echo "ui-demo-batch: WARN — /ggx-demo $TICKET failed (see its GGX-DEMO FAIL line); continuing." >&2
+    # GGC-65 short-circuit: the whole batch shares ONE device with ONE login state. A `login wall`
+    # failure (auto-login failed, or no `demo_auth` selector configured) will recur identically for
+    # every remaining ticket — stop grinding the serial loop, surface it once, and bail.
+    if printf '%s' "$ERRLINE" | grep -qi 'login wall'; then
+      LOGIN_WALL=1
+      echo "ui-demo-batch: login wall — short-circuiting the remaining demos (shared device, same login state); configure demo_auth + a staging account on the Notion page." >&2
+      break
+    fi
   fi
 done
 ```
@@ -110,6 +120,10 @@ Print one grep-able line and exit 0 (always — this helper never fails):
 ```
 ui-demo-batch: <CAPTURED> captured, <SKIPPED> skipped (<REASONS>), device=<DEV|none>.
 ```
+
+When `LOGIN_WALL=1` the loop short-circuited (auto-login could not pass the login wall — see GGC-65);
+append ` — SHORT-CIRCUITED at login wall (configure demo_auth + a staging account on the Notion page)`
+to the line so the cause is visible at a glance.
 
 **Idempotency / sweep note.** `/ggx-demo` is idempotent (deterministic Linear attachment title +
 PR-body marker-region replace), so re-running over an already-demoed PR is safe. When a caller wants to
