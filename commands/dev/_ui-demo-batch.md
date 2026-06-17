@@ -1,12 +1,14 @@
 ---
 name: _ui-demo-batch
-description: "Internal helper invoked by /ggx-dispatcher (--demo, after the §5.2 workflow join) and /ggx-on-duty (--demo, after the Leg-1 dispatch completion). Runs the ui-tweak demo capture for a batch of shipped `design bug` PRs as a SINGLE SERIAL pass — only one actor ever touches the simulator, so the device race that an inline per-ticket demo would create in the parallel fan-out is gone by construction (no lock, no TTL). Acquires the device ONCE up front (a running logged-in device, else boots the designated persistent sim) so the per-ticket leg always finds one, then loops `/ggx-demo <ticket>` per ticket — `/ggx-demo` (GGC-59) owns the worktree-liveness/head-guard, capture (preview --capture-only), and idempotent attach (deterministic Linear title + PR-body `<!-- ui-tweak-demo -->` marker-region). This helper owns only the device-once acquisition, the serial loop, and per-ticket pass/fail counting: it CATCHES `/ggx-demo`'s loud (non-zero) failures fail-soft. Fail-soft per ticket and overall: NEVER blocks or fails the caller. Linear-only / flutter-only v1; design-bug demos only. Not user-invoked. (Inline-renderable PR images are GGC-30, separate.)"
+description: "Internal helper invoked by /ggx-dispatcher (--demo, after the §5.2 workflow join) and /ggx-on-duty (--demo, after the Leg-1 dispatch completion). Runs the ui-tweak demo capture for a batch of shipped `design bug` PRs as a SINGLE SERIAL pass — only one actor ever touches the simulator, so the device race that an inline per-ticket demo would create in the parallel fan-out is gone by construction (no lock, no TTL). Acquires the device ONCE up front (a running device, else boots the designated persistent sim — it need not be pre-logged-in; preview's Step 2.4 gate logs in via a staging account when demo_auth is set, GGC-65) so the per-ticket leg always finds one, then loops `/ggx-demo <ticket>` per ticket — `/ggx-demo` (GGC-59) owns the worktree-liveness/head-guard, capture (preview --capture-only), and idempotent attach (deterministic Linear title + PR-body `<!-- ui-tweak-demo -->` marker-region). This helper owns only the device-once acquisition, the serial loop, and per-ticket pass/fail counting: it CATCHES `/ggx-demo`'s loud (non-zero) failures fail-soft. Fail-soft per ticket and overall: NEVER blocks or fails the caller. Linear-only / flutter-only v1; design-bug demos only. Not user-invoked. (Inline-renderable PR images are GGC-30, separate.)"
 Prerequisite: >
   - A flutter repo with a resolvable ui-tweak preview command (`ui_preview_cmd`);
     on non-flutter / build-only profiles this helper is a no-op.
-  - The owner's persistent, already-logged-in simulator/emulator available to
-    boot (login state must persist across reboots — otherwise the capture lands
-    on a login screen; that is acceptable fail-soft, not an error).
+  - A running (or bootable persistent) simulator/emulator. It need NOT be
+    pre-logged-in: the preview Step 2.4 login gate (GGC-65) logs in with a
+    staging QA account when the repo declares a `demo_auth` selector. Without
+    that selector, a logged-out device lands on a login wall → fail-soft skip
+    (and the batch short-circuits the remaining tickets — shared login state).
   - gh authenticated; Linear MCP authenticated (for the optional Linear mirror).
 ---
 
@@ -53,20 +55,18 @@ Empty input → print `ui-demo-batch: no design-bug PRs to capture.` and exit 0.
 
 2. **Acquire the simulator (once, up front), in this order — stop at the first
    that yields a device:**
-   - **(a) a running logged-in device** — `$FLUTTER_BIN devices --machine`
+   - **(a) a running device** — `$FLUTTER_BIN devices --machine`
      already lists a booted simulator / connected handset → use it. This is the
      common case (the owner keeps one running).
    - **(b) boot the designated persistent sim (the auto-boot fallback).** No
-     running device → boot the owner's persistent simulator (the same named
-     device they logged into once; its login + app data persist across reboots,
-     so a boot restores a logged-in session). Use `$FLUTTER_BIN emulators
-     --launch <id>` (or `xcrun simctl boot <udid>`), then poll
+     running device → boot the owner's persistent simulator. Use `$FLUTTER_BIN
+     emulators --launch <id>` (or `xcrun simctl boot <udid>`), then poll
      `$FLUTTER_BIN devices --machine` with a bounded counter loop — **never
-     `timeout`** (absent on macOS; see `preview.md`).
+     `timeout`** (absent on macOS; see `preview.md`). Login state need not
+     persist across reboots — the preview Step 2.4 gate logs in per-pass when a
+     `demo_auth` selector is configured.
    - **(c) no device and none bootable** → print `ui-demo-batch: no device
-     available — skipping all demos (fail-soft).` and exit 0. Do NOT cold-boot a
-     throwaway/erased simulator: it would not be logged in, so it adds nothing
-     (the documented `preview.md` Step 0b rationale).
+     available — skipping all demos (fail-soft).` and exit 0.
 
    Pin the chosen device id `$DEV` for the whole pass — every ticket installs
    onto the SAME device. There is no lock because there is only one actor.
@@ -76,21 +76,31 @@ Empty input → print `ui-demo-batch: no design-bug PRs to capture.` and exit 0.
 The per-ticket mechanics (worktree-liveness + head-guard, install/launch, the Tier-1/Tier-2
 navigate+capture, and the idempotent attach) are **owned by `/ggx-demo`** (GGC-59) — the single-ticket
 sibling of this batch. This helper does NOT re-implement them; it loops `/ggx-demo` and counts. Step 0
-already put a logged-in device up, so each `/ggx-demo`'s path-(a) acquisition finds it (it deliberately
-never cold-boots).
+already put a device up, so each `/ggx-demo`'s path-(a) acquisition finds it (it deliberately
+never cold-boots); preview's Step 2.4 gate logs in per-pass when `demo_auth` is configured.
 
 For each row, in order:
 
 ```bash
-CAPTURED=0; SKIPPED=0; REASONS=""
+CAPTURED=0; SKIPPED=0; REASONS=""; LOGIN_WALL=0
 for row in <rows>; do
   TICKET=<row.ticketId>
-  # /ggx-demo is fail-LOUD (non-zero on any failure). Catch it fail-soft here and count.
-  if /ggx-demo "$TICKET"; then
+  # /ggx-demo is fail-LOUD (non-zero on any failure). Capture its stderr so we can classify the reason;
+  # catch the failure fail-soft here and count.
+  ERRLINE=$(/ggx-demo "$TICKET" 2>&1 1>/dev/null) && RC=0 || RC=$?
+  if [ "$RC" = 0 ]; then
     CAPTURED=$((CAPTURED+1))
   else
     SKIPPED=$((SKIPPED+1)); REASONS="$REASONS $TICKET"
     echo "ui-demo-batch: WARN — /ggx-demo $TICKET failed (see its GGX-DEMO FAIL line); continuing." >&2
+    # GGC-65 short-circuit: the whole batch shares ONE device with ONE login state. A `login wall`
+    # failure (auto-login failed, or no `demo_auth` selector configured) will recur identically for
+    # every remaining ticket — stop grinding the serial loop, surface it once, and bail.
+    if printf '%s' "$ERRLINE" | grep -qi 'login wall'; then
+      LOGIN_WALL=1
+      echo "ui-demo-batch: login wall — short-circuiting the remaining demos (shared device, same login state); configure demo_auth + a staging account on the Notion page." >&2
+      break
+    fi
   fi
 done
 ```
@@ -110,6 +120,10 @@ Print one grep-able line and exit 0 (always — this helper never fails):
 ```
 ui-demo-batch: <CAPTURED> captured, <SKIPPED> skipped (<REASONS>), device=<DEV|none>.
 ```
+
+When `LOGIN_WALL=1` the loop short-circuited (auto-login could not pass the login wall — see GGC-65);
+append ` — SHORT-CIRCUITED at login wall (configure demo_auth + a staging account on the Notion page)`
+to the line so the cause is visible at a glance.
 
 **Idempotency / sweep note.** `/ggx-demo` is idempotent (deterministic Linear attachment title +
 PR-body marker-region replace), so re-running over an already-demoed PR is safe. When a caller wants to
