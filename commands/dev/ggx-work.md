@@ -184,7 +184,7 @@ whole chain consistent for the manual / debugging workflow.
 
 ### Step 3: Decision loop
 
-Initialize `<iter> = 0`. Maximum `<iter-cap> = 5` (sanity check — see Step 5).
+Initialize `<iter> = 0` and `<pipeline-ran> = False`. Maximum `<iter-cap> = 5` (sanity check — see Step 5).
 
 Loop:
 
@@ -262,7 +262,17 @@ substring appearing later in prose would mis-classify the outcome (M2). Then:
 
 #### Step 4.1: Terminal
 
-Ticket is done. Print:
+Ticket is done.
+
+**Finalize: session metrics (GGC-71).** Run this BEFORE printing the done block, but ONLY when `<pipeline-ran> == True` (a Step 4.4 pipeline actually executed this invocation). If `/route` returned `(none)` on the very first iteration (the ticket was already done and nothing ran this run), **SKIP finalize** — re-running an already-done ticket must not add a duplicate CSV row or Linear comment.
+
+When finalizing:
+
+1. Invoke `/session-metrics --ticket-id <ticket-id>` inline. The skill blind-estimates story points (or reuses the stored value from CSV history) and posts/updates the per-session "AI Session Report" comment on the ticket.
+2. **Fail-soft.** If the skill errors for any reason — script non-zero exit (including the P2 wrong-session guard), Linear unreachable, missing API key — log a single line `WARN: session-metrics finalize failed: <reason>` and CONTINUE. Finalize MUST NOT change `/ggx-work`'s `done` exit code or outcome.
+3. Keep stdout minimal in `<auto-mode>` (the dispatcher parses the outcome line below; do not interleave noisy metrics output).
+
+Then print:
 
 ```
 Ticket <ticket-id>: done.
@@ -400,6 +410,8 @@ lane-agnostic.)
 Execute `<spawn-cmd>` inline (LLM continues the current session, walking
 the slash command's pseudocode just like `/dev:ff` and `/port:ff` do for
 their own stages).
+
+Set `<pipeline-ran> = True` (a Step 4.4 pipeline executed this invocation — read by Step 4.1's finalize, GGC-71).
 
 Print before spawn:
 ```
