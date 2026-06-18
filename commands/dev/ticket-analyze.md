@@ -13,7 +13,11 @@ description: >
   `ready-to-port` / `ready-to-dev`; incomplete → `need-revision` +
   reasoned comment; complete but blocked → `need-dependency` + blocker
   comment. Writes state ONLY — never invokes downstream pipelines;
-  `/ggx-dispatcher` / `/ggx-work` pick up from the labels. Jira runs in
+  `/ggx-dispatcher` / `/ggx-work` pick up from the labels. A human-owned
+  `analyze-hold` label parks a ticket — the analyzer skips it entirely
+  (never re-analyzes, re-labels, or re-comments) until a human removes the
+  label, so a manually-parked `need-revision` is no longer silently
+  re-qualified every sweep (GGC-60). Jira runs in
   degraded mode (comment + `fields.labels` string labels, no workflow
   labels). Supports both trackers via `_ticket-lib.md`. The optional
   `--triage` flag adds a human-confirmed Phase 0 intake pass that classifies
@@ -124,6 +128,7 @@ safety net for whatever the predictive (b) half misses.
 
 | Ticket's current analyzer label | Next run |
 |---|---|
+| `analyze-hold` (human-owned park sentinel, GGC-60) | **skipped entirely — never re-analyzed, re-labeled, or re-commented**, regardless of every other label (this row has TOP precedence; it overrides the `need-revision` re-evaluate rule below, which is exactly the manually-parked case). The analyzer NEVER adds or removes `analyze-hold` — a human adds it to park, removes it to resume. It survives any label write because it is non-analyzer-owned. |
 | none (fresh) | analyzed |
 | `need-revision` | re-analyzed — completeness re-judged from current content; may flip to `ready-to-*` / `need-dependency`. EXCEPTION: a `design bug` is held back from `ready-to-dev` by the Design-bug ready-to-dev gate when EITHER it carries the `<!-- dispatch-triage-ui-blocked -->` marker (GGC-37, input a) OR its text still high-confidence predicts a logic-requiring fix (GGC-58, input b) — it stays `need-revision` until reclassified to `bug` (or, for b, until the text no longer reads as logic). |
 | `need-dependency` | re-analyzed — every blocker's live status re-fetched; all blockers Done → flips to `ready-to-*` |
@@ -203,9 +208,14 @@ timestamp is shared across all tickets in the run.
 
 5. **Re-analysis post-filter** — apply to the fetched set, printing one
    skip line per excluded ticket:
+   - **Skip (highest precedence)**: tickets carrying `analyze-hold`
+     (`skipped — human-parked (analyze-hold); remove the label to resume`)
+     — checked FIRST, so a `need-revision` ticket a human parked with
+     `analyze-hold` is never re-qualified (GGC-60).
    - **Keep**: tickets with none of the analyzer labels (fresh), and
      tickets carrying `need-revision` or `need-dependency` (re-evaluate —
-     content may have been enriched / blockers may have closed).
+     content may have been enriched / blockers may have closed) **and NOT
+     also carrying `analyze-hold`**.
    - **Skip**: tickets carrying `ready-to-port` / `ready-to-dev`
      (`skipped — already actionable`), `need-spec-review` or
      `dispatcher-*-in-flight` (`skipped — in pipeline`).
@@ -359,7 +369,9 @@ names from its field-mapping table:
     Only `blocks`/`blocked-by` kinds can ever block; `related`/`duplicate`
     are recorded in the comment but never affect the verdict.
 
-Print one line per ticket:
+**Universal `analyze-hold` guard (GGC-60)** — the single enforcement point that covers BOTH modes: immediately after `<labels>` is captured, if it contains `analyze-hold`, the ticket is HUMAN-PARKED. Drop it from `<queue>` now — do NOT proceed to Step 3+, write no label, post no comment, record no verdict. Print `[<k>/<N>] skipped <ticket-id> — human-parked (analyze-hold); remove the label to resume`. In **single mode** this is a clean STOP (exit zero); in **batch mode** it just removes the one ticket and the sweep continues. (Batch discovery already filters these out at Step 1.5.5; this guard is the safety net for single mode and for any ticket pulled in by a path that skipped that filter.) The analyzer never writes `analyze-hold` itself — it is human-owned.
+
+Print one line per ticket (non-held):
 `[<k>/<N>] Fetched <ticket-id> "<title>" — lane: <lane>, relations: <n>`
 
 ### Step 3: Per-ticket completeness analysis
