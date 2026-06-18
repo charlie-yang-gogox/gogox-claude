@@ -29,7 +29,7 @@ Prerequisite: >
     pipelines' own `:start` stages.
 ---
 
-# `/ggx-work <ticket-id> [--auto] [--no-ticket-init]`
+# `/ggx-work <ticket-id> [--auto] [--no-ticket-init] [--metric]`
 
 > `/ggx-work` is a **single-ticket orchestrator**. It loops:
 >
@@ -63,6 +63,12 @@ Prerequisite: >
   Use when running the orchestrator locally for inspection / debugging
   without flipping the ticket on Linear. Combinable with `--auto`. Does NOT
   affect `/ggx-dispatcher` (the dispatcher always inits regardless).
+- `/ggx-work <ticket-id> --metric` — **opt-in session metrics**. Only when
+  this flag is present does the `done` terminal (Step 4.1) finalize by running
+  `/session-metrics` (blind-estimate story points + post the "AI Session Report"
+  to the ticket). Without it, `/ggx-work` finishes silently and posts no metrics
+  comment. Combinable with `--auto` / `--no-ticket-init`. Does NOT propagate to
+  spawned FF wrappers (it is a finalize-only concern of `/ggx-work` itself).
 
 Notes:
 
@@ -88,7 +94,11 @@ Notes:
    Step 2.5 short-circuits and `--no-ticket-init` is propagated verbatim into
    every spawned `/port:ff` / `/dev:ff` / `/bug:ff` / `/ui-tweak:ff`
    invocation in Step 3.
-4. Missing `<ticket-id>`:
+4. Detect `--metric` flag → `<run-metrics> = True/False` (default **False**).
+   When True, the `done` terminal (Step 4.1) finalizes with `/session-metrics`;
+   when False (the default) finalize is skipped entirely. Does NOT propagate to
+   spawned FF wrappers.
+5. Missing `<ticket-id>`:
    - `<auto-mode> == True` → STOP with `/ggx-work requires <ticket-id> in --auto mode.`
    - `<auto-mode> == False` → `AskUserQuestion`:
      > "What Linear ticket should `/ggx-work` orchestrate?" — abort if empty.
@@ -264,7 +274,7 @@ substring appearing later in prose would mis-classify the outcome (M2). Then:
 
 Ticket is done.
 
-**Finalize: session metrics (GGC-71).** Run this BEFORE printing the done block, but ONLY when `<pipeline-ran> == True` (a Step 4.4 pipeline actually executed this invocation). If `/route` returned `(none)` on the very first iteration (the ticket was already done and nothing ran this run), **SKIP finalize** — re-running an already-done ticket must not add a duplicate CSV row or Linear comment.
+**Finalize: session metrics (GGC-71).** Gated on `<run-metrics> == True` (the `--metric` flag). When `<run-metrics> == False` (the default), **SKIP finalize entirely** — `/ggx-work` finishes silently with no CSV row and no Linear metrics comment. When `--metric` is present, run this BEFORE printing the done block, but ONLY when `<pipeline-ran> == True` (a Step 4.4 pipeline actually executed this invocation). If `/route` returned `(none)` on the very first iteration (the ticket was already done and nothing ran this run), **SKIP finalize** even with `--metric` — re-running an already-done ticket must not add a duplicate CSV row or Linear comment.
 
 When finalizing:
 
