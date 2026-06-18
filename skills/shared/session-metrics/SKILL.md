@@ -4,6 +4,7 @@ description: Collect and report metrics for the current Claude Code session — 
 allowed-tools:
   - Bash
   - Read
+  - mcp__claude_ai_Linear__get_issue
 ---
 
 # Session Metrics
@@ -36,26 +37,28 @@ Check the JSON output:
 - If `time_analysis` exists but `story_points_from_history` is `false` → user already passed `--story-points`. Set `SP_ARG` accordingly. Skip Step 2.
 - If `time_analysis` does not exist → no story points yet. Go to Step 2.
 
-### Step 2: Ask for story point estimate (only if not already stored)
+### Step 2: Estimate story points (LLM blind-estimate — only if not already stored)
 
-Ask the user:
+Reached only when Step 1 found no stored story points. **Estimate them yourself — do NOT ask the user.**
 
-> If this ticket were done purely by hand (no AI), how many **story points** would you estimate?
->
-> | SP | Estimated Time |
-> |---:|----------------|
-> | 1 | 1–2 hours |
-> | 2 | Half a day |
-> | 3 | 1 day |
-> | 5 | 2 days |
-> | 8 | 3 days |
-> | 13 | 5 days |
+**Blind-estimate rule (important):** base the estimate ONLY on the ticket's scope — its title, description, and acceptance criteria. Do **NOT** read the git diff, the changed files, or this session's work. The diff reflects how the AI solved it; anchoring the estimate on it makes the speed multiplier a self-graded number.
 
-Store their answer as `SP_VALUE` (must be one of: 1, 2, 3, 5, 8, 13). If they give an invalid number, re-ask once. If they skip or say "no", set `SP_ARG` to empty string and proceed without it.
+1. Fetch the ticket text with `mcp__claude_ai_Linear__get_issue` using the `ticket_id` from Step 1's JSON. If it can't be fetched, set `SP_ARG=""` and proceed to Step 3 without an estimate.
+2. Judge: **how many hours would a normal-competence engineer take to implement this ticket entirely by hand, with no AI?** Calibration anchors:
 
-If they gave a valid answer, set `SP_ARG` to `--story-points SP_VALUE`.
+   | ≈ hours | scope |
+   |--------:|-------|
+   | 1.5 | trivial — copy/config/flag tweak, obvious one-line fix |
+   | 4   | small localized change, simple logic |
+   | 8   | self-contained feature or non-trivial bug, needs tests |
+   | 16  | feature spanning components, new UI + logic |
+   | 24  | larger / cross-module, several integration points |
+   | 40  | architectural change, broad refactor |
 
-Then re-run Step 1 with `SP_ARG` appended to get updated JSON with `time_analysis`.
+3. Emit your estimate as a **single JSON line and nothing else**, e.g.:
+   `{"manual_hours": 8, "rationale": "self-contained skill+script change across 3 files"}`
+   Estimate **human manual effort**, never AI time. Any positive hour value is fine — the script snaps it to the nearest story-point bucket.
+4. Set `SP_ARG="--manual-hours <manual_hours>"` (the raw number from your JSON). Proceed to Step 3 — do NOT re-run Step 1.
 
 ### Step 3: Analyze and generate AI summary
 

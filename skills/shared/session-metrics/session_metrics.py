@@ -56,6 +56,13 @@ def story_point_seconds(sp: int | None) -> float | None:
         return STORY_POINT_HOURS[sp] * 3600
     return None
 
+
+def hours_to_story_point(hours: float | None) -> int | None:
+    """Snap an LLM-estimated pure-manual hour figure to the nearest story-point bucket."""
+    if hours is None:
+        return None
+    return min(STORY_POINT_HOURS, key=lambda sp: abs(STORY_POINT_HOURS[sp] - hours))
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -93,6 +100,7 @@ CSV_FIELDS = [
     "agent_total_tokens",
     "agent_total_cost",
     "story_points",
+    "manual_hours",
     "estimated_manual_sec",
     "time_saved_multiplier",
     "claude_code_version",
@@ -210,7 +218,7 @@ def find_current_session(cwd: str):
 # Ticket / branch detection
 # ===================================================================
 
-TICKET_RE = re.compile(r"(CAF-\d+)", re.IGNORECASE)
+TICKET_RE = re.compile(r"([A-Z]{2,}-\d+)", re.IGNORECASE)
 
 # Matches the Agent tool_use `description` field that /ggx-dispatcher emits
 # when spawning a per-ticket subagent. Format defined in commands/dev/ggx-dispatcher.md §5.3:
@@ -221,7 +229,9 @@ DISPATCHER_DESC_RE = re.compile(
 )
 
 
-def detect_ticket_id(cwd: str, git_branch: str | None = None) -> str:
+def detect_ticket_id(cwd: str, git_branch: str | None = None, explicit: str | None = None) -> str:
+    if explicit:
+        return explicit.upper()
     if git_branch:
         m = TICKET_RE.search(git_branch)
         if m:
@@ -845,12 +855,12 @@ def format_report(
         sess_label = f" ({total_sessions} sessions)" if total_sessions > 1 else ""
         lines.append("| Metric | Duration |")
         lines.append("|--------|---------|")
-        lines.append(f"| Story Points | **{story_points}** (est. {format_duration(manual_sec)}) |")
+        lines.append(f"| Story Points (AI-estimated) | **{story_points}** (≈ {format_duration(manual_sec)} manual) |")
         lines.append(f"| AI Active Time{sess_label} | {format_duration(cum_ai)} |")
         lines.append(f"| Wall Clock{sess_label} | {format_duration(cum_wall)} |")
         if cum_ai > 0:
             multiplier = manual_sec / cum_ai
-            lines.append(f"| **Speed** | **~{multiplier:.1f}x faster** |")
+            lines.append(f"| **Speed** | **~{multiplier:.1f}x** vs AI-estimated manual |")
 
     # ---- AI Summary (from external file) ----
     if summary_file:
@@ -884,6 +894,7 @@ def write_csv(
     session_id: str,
     git_branch: str | None,
     story_points: int | None = None,
+    manual_hours: float | None = None,
 ):
     METRICS_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = CSV_PATH.with_suffix(".lock")
@@ -955,6 +966,7 @@ def write_csv(
                         "agent_total_tokens": agent_tokens,
                         "agent_total_cost": round(agent_cost, 4),
                         "story_points": story_points if story_points is not None else "",
+                        "manual_hours": manual_hours if manual_hours is not None else "",
                         "estimated_manual_sec": round(sp_sec) if (sp_sec := story_point_seconds(story_points)) is not None else "",
                         "time_saved_multiplier": round(sp_sec / durations["active_sec"], 1) if sp_sec is not None and durations["active_sec"] > 0 else "",
                         "claude_code_version": metrics.get(
@@ -1200,6 +1212,15 @@ def main():
         help="Story point estimate for manual time comparison (1,2,3,5,8,13)",
     )
     parser.add_argument(
+        "--ticket-id",
+        help="Explicit ticket id (e.g. GGC-71); overrides cwd/branch auto-detection",
+    )
+    parser.add_argument(
+        "--manual-hours",
+        type=float,
+        help="LLM-estimated pure-manual hours; snapped to the nearest story-point bucket. Ignored if --story-points is given.",
+    )
+    parser.add_argument(
         "--hook",
         action="store_true",
         help="Hook mode: read context from stdin, CSV only, no Linear",
@@ -1266,13 +1287,37 @@ def main():
 
     durations = compute_durations(metrics)
     git_branch = metrics["git_branch"] or get_git_branch(cwd)
-    ticket_id = detect_ticket_id(cwd, git_branch)
+    ticket_id = detect_ticket_id(cwd, git_branch, args.ticket_id)
+    # P2 (GGC-71): when the caller passed an explicit --ticket-id, refuse to post
+    # metrics for a session that clearly is not this ticket's — better a detectable
+    # failure than silently measuring the wrong (e.g. parent/sibling) session.
+    if args.ticket_id:
+        if "subagents" in jsonl_path.parts:
+            print(
+                f"Error: resolved session {jsonl_path} is a subagent transcript; "
+                f"refusing to post wrong-session metrics for {args.ticket_id.upper()}. "
+                f"Pass --session-id explicitly.",
+                file=sys.stderr,
+            )
+            sys.exit(3)
+        session_ticket = detect_ticket_id(cwd, git_branch)  # no explicit override
+        if session_ticket != "UNKNOWN" and session_ticket != args.ticket_id.upper():
+            print(
+                f"Error: --ticket-id {args.ticket_id.upper()} disagrees with the "
+                f"session-resolved ticket {session_ticket}; refusing to post "
+                f"wrong-session metrics. Pass --session-id to disambiguate.",
+                file=sys.stderr,
+            )
+            sys.exit(3)
     session_number = get_session_number(ticket_id, session_id)
 
     # ---- Cumulative + story point reuse ----
     cumulative = get_ticket_cumulative(ticket_id, session_id, cwd)
     if args.story_points is None and cumulative and cumulative.get("stored_story_points"):
         args.story_points = cumulative["stored_story_points"]
+    # GGC-71: if still no SP (explicit/stored), snap the LLM's manual-hours estimate.
+    if args.story_points is None and args.manual_hours is not None:
+        args.story_points = hours_to_story_point(args.manual_hours)
 
     # ---- Current session cost ----
     current_total_cost = 0.0
@@ -1292,7 +1337,7 @@ def main():
 
     # ---- CSV (raw session metrics, pre-enrichment) ----
     if not args.no_csv:
-        write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points)
+        write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points, args.manual_hours)
         print(f"\nCSV updated at {CSV_PATH}", file=sys.stderr)
 
     # ---- Enrich agents with /ggx-dispatcher contribution ----
