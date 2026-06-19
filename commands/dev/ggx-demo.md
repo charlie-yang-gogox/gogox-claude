@@ -1,11 +1,13 @@
 ---
 name: ggx-demo
 description: >
-  Post-hoc UI demo capture for already-shipped `design bug` PRs. Operator skill
-  with two modes — single (`<TICKET|PR>`) and self-discovering batch (`--batch`,
-  GGC-66, which absorbed the former `/_ui-demo-batch`): `--batch` captures a demo
-  for every open PR of yours that still lacks one (no JSON input), serially on
-  one device. Single mode: given a Linear
+  Post-hoc UI demo capture for already-shipped PRs with a recordable UI change.
+  Operator skill with two modes — single (`<TICKET|PR>`) and self-discovering
+  batch (`--batch`, GGC-66, which absorbed the former `/_ui-demo-batch`):
+  `--batch` captures a demo for every open PR of yours that still lacks one
+  (no JSON input, no class/title gate — a diff-first LLM recordability judge
+  decides which PRs open a device; GGC-69), serially on one device. Single mode:
+  given a Linear
   ticket id OR a PR (number/URL), it resolves the PR's worktree, asserts the
   local HEAD matches the PR head (fail-loud — never demo a stale/unreviewed
   build), runs `/ui-tweak:preview --capture-only` (the SOLE capture point —
@@ -193,24 +195,62 @@ line and continues; the batch never blocks/fails its caller and never touches sh
 open/closed, ticket status). Per ticket it edits only what the single-ticket flow edits — the Linear
 attachment + the PR-body `<!-- ui-tweak-demo -->` region.
 
-### B1 — discover the target PRs (no input)
+### B1 — discover candidate PRs (no input)
 
 ```bash
-# My open PRs that are ui-tweak/design-bug PRs AND have no demo yet. ui-tweak PRs carry a `## UI Tweak`
-# summary section (written by ff.md's pr stage); a demoed PR carries the `<!-- ui-tweak-demo -->` marker
-# block. Want: ui-tweak ∧ ¬demoed.
-ROWS=$(gh pr list --author "@me" --state open --json number,headRefName,url,body \
-  --jq '[.[] | select(.body | test("(?m)^## UI Tweak")) | select(.body | test("<!-- ui-tweak-demo -->") | not)]')
-COUNT=$(printf '%s' "$ROWS" | jq 'length')
+# Every open PR of MINE that still lacks a demo. author=@me is a HARD limit (GGC-69 — never touch
+# others' PRs); the SOLE discovery condition is the absence of the `<!-- ui-tweak-demo -->` marker
+# block a demoed PR carries. NO class/title gate: the old `^## UI Tweak` body filter was DROPPED
+# (GGC-69) because the dispatch finisher emits that title unreliably (GGC-67), which silently yielded
+# 0 candidates even when `--demo` was set (CAF-564 #628 / CAF-556 #629 both missed, 2026-06-17).
+# These are CANDIDATES — recordability is decided per-PR in B1.5 (diff-first), before any device opens.
+CANDIDATES=$(gh pr list --author "@me" --state open --json number,headRefName,url,body \
+  --jq '[.[] | select(.body | test("<!-- ui-tweak-demo -->") | not)]')
+COUNT=$(printf '%s' "$CANDIDATES" | jq 'length')
 [ "$COUNT" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine without a demo."; exit 0; }
 ```
 
 (A caller that already holds the freshly-shipped rows — `/ggx-dispatcher --demo`, `/ggx-on-duty --demo`
-— MAY narrow to those PRs, but the default is self-discovery so no caller has to hand-build a JSON array.)
+— MAY narrow to these PRs, but the default is self-discovery so no caller has to hand-build a JSON array.)
+
+### B1.5 — recordability judge (diff-first, LLM, before any device) — GGC-69
+
+Dropping the title gate (B1) means `CANDIDATES` now includes non-UI PRs (pure logic / backend / config /
+test / analytics). Opening a device + `flutter run` for each of 16–18 PRs would blow the device budget,
+so judge recordability from the **diff first** (cheap) and only let recordable PRs reach B2/B3.
+
+For each PR in `CANDIDATES`, fetch the diff (size-capped so a huge PR doesn't blow context); its
+title/body are already in `CANDIDATES`:
+
+```bash
+# Cheap signal — read the diff, not the device. Cap to keep context bounded; the judgment only needs
+# the SHAPE of the change, not every line.
+DIFF=$(gh pr diff "$PR" 2>/dev/null | head -c 60000)
+```
+
+Then **you (the LLM executing this skill) classify** each PR as RECORDABLE or SKIP, from the diff +
+title + body:
+
+- **RECORDABLE** — the diff plausibly produces a **user-visible UI change** (widget / layout / style /
+  copy / asset / screen changes in app UI code) AND the affected screen looks **navigable** (a known
+  route, a `ggv://` deep-link, or a screen reachable by tap-through). Add the PR to `RECORDABLE`.
+- **SKIP (record the reason, no device)** — when the diff shows none of the above:
+  1. No user-visible UI surface — pure logic / backend / state / config / build / test / analytics /
+     dependency-only diff.
+  2. UI change present but the screen is not navigable (no deep-link and no plausible tap-through).
+  Append the PR number + a one-phrase reason to a `DIFF_SKIPPED` list; do NOT open a device for it.
+
+Build `RECORDABLE` (the subset that advances to B2/B3) and `DIFF_SKIPPED` (PR# + reason, surfaced in B4).
+This judgment is intentionally LLM-driven — no regex reliably separates "visible UI change" from "a
+refactor that happens to touch a widget file". **Bias toward SKIP when an ambiguous diff is purely
+structural**: a wasted build is only fail-soft cost, but the rubric exists to avoid it.
+
+If `RECORDABLE` is empty → print the B4 summary form (all candidates diff-skipped) and **exit 0 without
+acquiring a device** (the whole point of judging before B2).
 
 ### B2 — acquire the device ONCE
 
-Resolve the profile (Step 0). No `ui_preview_cmd` → `ggx-demo --batch: no device-preview command for
+Reached only when B1.5 produced a non-empty `RECORDABLE`. Resolve the profile (Step 0). No `ui_preview_cmd` → `ggx-demo --batch: no device-preview command for
 this platform — skipping demos.` exit 0. Acquire a device once, in order — stop at the first that yields
 one, and pin it as `$DEV` for the whole pass (no lock because there is only one actor):
 
@@ -224,13 +264,13 @@ one, and pin it as `$DEV` for the whole pass (no lock because there is only one 
 
 ### B3 — serial loop (one ticket at a time on `$DEV`)
 
-Run the per-ticket procedure (Steps 1–5 above) for each discovered PR, in order. Catch each loud failure
-fail-soft and count it; on a `login wall` failure **short-circuit** the rest (one shared device = one
-shared login state, so it recurs identically):
+Run the per-ticket procedure (Steps 1–5 above) for each `RECORDABLE` PR (B1.5), in order. Catch each loud
+failure fail-soft and count it; on a `login wall` failure **short-circuit** the rest (one shared device =
+one shared login state, so it recurs identically):
 
 ```bash
 CAPTURED=0; SKIPPED=0; REASONS=""; LOGIN_WALL=0
-for PR in $(printf '%s' "$ROWS" | jq -r '.[].number'); do
+for PR in $(printf '%s' "$RECORDABLE" | jq -r '.[].number'); do
   # Run Steps 1–5 for "$PR" (PR-number form). It is fail-LOUD; capture stderr to classify the reason.
   ERRLINE=$( run_steps_1_to_5 "$PR" 2>&1 1>/dev/null ) && RC=0 || RC=$?
   if [ "$RC" = 0 ]; then
@@ -250,11 +290,12 @@ done
 ### B4 — summary (always exit 0)
 
 ```
-ggx-demo --batch: <CAPTURED> captured, <SKIPPED> skipped (<REASONS>), device=<DEV|none>.
+ggx-demo --batch: <CAPTURED> captured, <SKIPPED> capture-skipped (<REASONS>), <DIFF_SKIPPED_COUNT> diff-skipped non-recordable (<DIFF_SKIPPED PR#+reasons>), device=<DEV|none>.
 ```
 
-Append ` — SHORT-CIRCUITED at login wall (configure demo_auth + a staging account on the Notion page)`
-when `LOGIN_WALL=1`. Per-ticket idempotency (deterministic Linear title + PR-body marker-region replace)
+`DIFF_SKIPPED_COUNT` / its reasons come from B1.5 (PRs judged non-recordable from the diff, never opened a
+device); `SKIPPED` / `REASONS` are the B3 per-ticket capture failures. Append ` — SHORT-CIRCUITED at login
+wall (configure demo_auth + a staging account on the Notion page)` when `LOGIN_WALL=1`. Per-ticket idempotency (deterministic Linear title + PR-body marker-region replace)
 makes re-running safe — a re-run after fixing login picks up exactly the still-undemoed PRs. STOP.
 
 ## Disposition — fail-LOUD (R13), the inverse of `/ui-tweak`'s designer-facing fail-silent
@@ -270,11 +311,13 @@ nothing to capture on a build-only platform.
 
 ## Constraints
 
-- Linear-only, flutter-only v1; `design bug` demos. (Inline-renderable PR images are GGC-30, separate.)
+- Linear-only, flutter-only v1. Batch mode demos any open PR of mine with a recordable UI change
+  (GGC-69 — not bound to `design bug` / ui-tweak; a diff-first judge filters non-UI PRs before any
+  device opens); single mode demos an explicit ticket/PR. (Inline-renderable PR images are GGC-30, separate.)
 - Edits NO source, writes NO walker markers, never enters `/ui-tweak:ff`.
 - Reuses `preview --capture-only` (capture) + the `ff.md` Idempotent-attach contract (upload/embed) —
   it does NOT reimplement either. The only logic owned here is PR/worktree resolution, the head guard,
   the fail-loud disposition, and (batch) device-once + self-discovery + the serial loop.
 - Batch mode (`--batch`) absorbed the former `/_ui-demo-batch` (GGC-66) — there is now ONE post-hoc demo
-  skill. Self-discovers open PRs lacking a demo; no JSON input.
+  skill. Self-discovers open PRs lacking a demo, filtered by a diff-first recordability judge (GGC-69); no JSON input.
 - Regression case (GGC-59): `/ggx-demo CAF-541` reproduces the manual PR #610 demo.
