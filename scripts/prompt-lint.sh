@@ -138,6 +138,34 @@ while IFS= read -r f; do
   esac
 done < "$TMPLIST"
 
+# --- cross-file invariant: ui-tweak structural pre-pass BEHAVIOR_RE (GGC-63) -
+# The deterministic pre-pass regex lives in TWO places that MUST stay identical:
+#   - commands/design/ui-tweak/audit.md      (bash; the /ui-tweak:audit skill path)
+#   - workflows/dispatch-fanout.workflow.js  (JS;   the dispatcher/on-duty fan-out)
+# They are byte-equal by design, but only this check enforces it — the "Keep in
+# SYNC" code comments are advisory. A drift only ever causes a false BLOCK (the
+# dual-judge panel still runs, so nothing bad ships), but that silently forces
+# pure-visual tickets out of the ui-tweak lane (CAF-540 stayed BLOCKED after the
+# skill copy was loosened but the workflow copy was not). Runs every invocation
+# (not gated on the changed-file list) — it is a whole-repo invariant.
+check_behavior_re_sync() {
+  audit="commands/design/ui-tweak/audit.md"
+  wf="workflows/dispatch-fanout.workflow.js"
+  [ -f "$audit" ] && [ -f "$wf" ] || return 0   # partial checkout — not this check's job
+  a=$(sed -n "s/^[[:space:]]*BEHAVIOR_RE='\(.*\)'[[:space:]]*$/\1/p" "$audit" | grep -m1 'initState')
+  w=$(sed -n "s|^[[:space:]]*/\(.*\)/;[[:space:]]*$|\1|p" "$wf" | grep -m1 'initState')
+  if [ -z "$a" ] || [ -z "$w" ]; then
+    err "BEHAVIOR_RE sync check could not locate the pattern in both files — an anchor moved; update scripts/prompt-lint.sh (GGC-63)."
+  elif [ "$a" = "$w" ]; then
+    ok "behavior-re   audit.md == dispatch-fanout.workflow.js (ui-tweak pre-pass in sync)"
+  else
+    err "ui-tweak structural pre-pass BEHAVIOR_RE DIVERGED (GGC-63): audit.md != dispatch-fanout.workflow.js — make them byte-equal."
+    printf '         audit.md : %s\n' "$a" >&2
+    printf '         workflow : %s\n' "$w" >&2
+  fi
+}
+check_behavior_re_sync
+
 echo
 echo "prompt-lint: $ERRORS error(s), $WARNS warning(s)  [shellcheck: $([ "$HAVE_SHELLCHECK" = 1 ] && echo present || echo absent)]"
 [ "$ERRORS" -gt 0 ] && exit 1

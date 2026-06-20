@@ -403,7 +403,9 @@ async function runUiTweak(item, trunkSha) {
     // is why CAF-540 (pure layout: LayoutBuilder/ConstrainedBox/IntrinsicHeight) and
     // an import-only diff reach the panel instead of being reverted here, while
     // genuine behavior (CAF-555's TapGestureRecognizer + initState/dispose) still
-    // short-circuits to BLOCK. Keep in SYNC with audit.md BEHAVIOR_RE.
+    // short-circuits to BLOCK. Kept byte-equal with audit.md BEHAVIOR_RE — the
+    // GGC-63 sync check in scripts/prompt-lint.sh ENFORCES that equality (a drift
+    // fails the lint), so this is no longer an advisory-only SYNC note.
     const BEHAVIOR_RE =
       /(initState|dispose|didChangeDependencies|didUpdateWidget|deactivate|setState|notifyListeners|addListener|removeListener)\(|GestureRecognizer|await |async[ ({]|\.then\(|ref\.(read|watch|listen)\(|Navigator\.|GoRouter|context\.(go|push|pop)|\.pushNamed\(|\.pushReplacement|StreamSubscription|StreamController/;
     const structuralHit = added.some((l) => BEHAVIOR_RE.test(l));
