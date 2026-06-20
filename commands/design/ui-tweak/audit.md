@@ -115,6 +115,9 @@ ADDED=$(printf '%s\n' "$DIFF_TEXT" | grep -E '^\+' | grep -vE '^\+\+\+')
 # inert UI and are left for the dual-judge panel. Add a token here ONLY if it is
 # essentially never pure UI (a miss just defers to the panel; a false hit reverts a
 # legit UI change).
+# This pattern is kept BYTE-EQUAL with the inline copy in
+# workflows/dispatch-fanout.workflow.js (the dispatcher/on-duty fan-out path); the
+# GGC-63 sync check in scripts/prompt-lint.sh fails if the two ever diverge.
 BEHAVIOR_RE='(initState|dispose|didChangeDependencies|didUpdateWidget|deactivate|setState|notifyListeners|addListener|removeListener)\(|GestureRecognizer|await |async[ ({]|\.then\(|ref\.(read|watch|listen)\(|Navigator\.|GoRouter|context\.(go|push|pop)|\.pushNamed\(|\.pushReplacement|StreamSubscription|StreamController'
 
 STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE "$BEHAVIOR_RE")
