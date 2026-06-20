@@ -476,14 +476,38 @@ async function runUiTweak(item, trunkSha) {
     };
   }
 
-  // Stage 3: finisher — both judges CLEAR ⇒ commit → pr → review (--auto).
+  // Stage 3: finisher — both judges CLEAR ⇒ commit → pr → review, FAITHFUL to
+  // the /ui-tweak:ff `pr`-stage contract (GGC-67). That stage carries the
+  // designer-facing contract: a DRAFT PR whose title is prefixed `[ui-tweak]`
+  // and whose body is the pre-built `## UI Tweak — designer-verifiable summary`
+  // (commands/design/ui-tweak/ff.md L292 + "Deliver PR body" L494). A free-text
+  // "open a draft PR" instruction let the finisher drift to a /dev:ship-style PR
+  // (CAF-556 #629: `fix(...)` title, `### Change` body; CAF-564 #628: prefix but
+  // generic body). The prompt now PINS the contract, FORBIDS an improvised
+  // `gh pr create` / `/dev:ship`, and has the agent SELF-VERIFY + auto-correct via
+  // gh, returning booleans the script asserts on below (deterministic fail-loud).
   log(`[ui] ${item.ticketId} CLEAR -> commit + PR`);
   const ship = await agent(
     [
       `In ${item.worktreePath} for ${item.ticketId}: the dual-judge panel is`,
-      `CLEAR. Run the remaining /ui-tweak:ff stages with --auto semantics:`,
-      `audit (write .dev/ui-verify-pass.md Status: CLEAR) → commit → pr → review.`,
-      `Open a draft PR. Return { prUrl: string|null, stage: string, error: string|null }.`,
+      `CLEAR. Run the remaining /ui-tweak:ff stages with --auto semantics,`,
+      `FAITHFULLY — do NOT improvise a /dev:ship-style PR or a bare`,
+      "`gh pr create`. Steps, in order:",
+      `1. /ui-tweak:audit — write .dev/ui-verify-pass.md Status: CLEAR.`,
+      `2. /commit — commit only the audited files.`,
+      `3. The \`pr\` stage EXACTLY as commands/design/ui-tweak/ff.md defines it`,
+      `   (L292 + "Deliver PR body" L494): open a DRAFT PR via \`/pull-request --draft\``,
+      `   whose TITLE is prefixed \`[ui-tweak] ${item.ticketId}: <summary>\` and whose`,
+      `   BODY is the pre-built \`## UI Tweak — designer-verifiable summary\` body`,
+      `   (Source / Grounding-provenance / Audit verdict / Coverage table + the`,
+      `   marker-wrapped \`## Demo\` region). Then transition the ticket: status →`,
+      `   In Review, remove \`ready-to-dev\` (keep \`design bug\`).`,
+      `4. SELF-VERIFY the contract deterministically with`,
+      "   `gh pr view <pr> --json title,body`:",
+      `   - title NOT starting with \`[ui-tweak]\` → \`gh pr edit <pr> --title "[ui-tweak] ${item.ticketId}: <summary>"\`.`,
+      `   - body NOT containing \`## UI Tweak\` → rebuild the contract body and \`gh pr edit <pr> --body <body>\`.`,
+      `   Re-fetch after any edit so the returned booleans reflect the FINAL on-PR state.`,
+      `Return { prUrl, stage, titleHasPrefix, bodyHasMarker, finalTitle, error }.`,
     ].join("\n"),
     {
       label: `ui-ship:${item.ticketId}`,
@@ -492,11 +516,15 @@ async function runUiTweak(item, trunkSha) {
       model: "opus",
       schema: {
         type: "object",
-        required: ["stage"],
+        required: ["stage", "titleHasPrefix", "bodyHasMarker"],
         additionalProperties: false,
         properties: {
           prUrl: { type: ["string", "null"] },
           stage: { type: "string" },
+          // GGC-67: FINAL on-PR contract state (after any agent auto-correct).
+          titleHasPrefix: { type: "boolean" },
+          bodyHasMarker: { type: "boolean" },
+          finalTitle: { type: ["string", "null"] },
           error: { type: ["string", "null"] },
         },
       },
@@ -510,6 +538,32 @@ async function runUiTweak(item, trunkSha) {
       stage: "ui:ship",
       error: "ui-tweak finisher agent returned null (skip / terminal API error)",
       uiTweak: true, // design-bug row marker (GGC-29) — lets callers filter for the demo pass
+      uiTweakFailed: true,
+    };
+  }
+  // GGC-67: deterministic PR-contract gate. The finisher self-corrects, but the
+  // script is the source of truth — a PR that STILL lacks the `[ui-tweak]` title
+  // prefix or the `## UI Tweak` body marker is a contract violation. Fail loud so
+  // triageAndFallback posts Linear, rather than shipping a malformed designer PR
+  // that breaks `/ggx-demo --batch` discovery and the reviewer's expectations.
+  if (!ship.error && (!ship.titleHasPrefix || !ship.bodyHasMarker)) {
+    const missing = [
+      ship.titleHasPrefix ? null : "title missing `[ui-tweak]` prefix",
+      ship.bodyHasMarker ? null : "body missing `## UI Tweak — designer-verifiable summary`",
+    ]
+      .filter(Boolean)
+      .join("; ");
+    log(`[ui] ${item.ticketId} finisher PR-contract violation: ${missing}`);
+    return {
+      ticketId: item.ticketId,
+      uiTweak: true,
+      outcome: "failed",
+      prUrl: ship.prUrl ?? null,
+      stage: "ui:pr-contract",
+      error:
+        `UI-TWEAK PR CONTRACT (GGC-67): ${missing} ` +
+        `(finalTitle=${ship.finalTitle ?? "?"}). The pr stage must follow ` +
+        `commands/design/ui-tweak/ff.md (title \`[ui-tweak]\` + \`## UI Tweak\` body).`,
       uiTweakFailed: true,
     };
   }
