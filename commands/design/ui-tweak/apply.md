@@ -106,6 +106,19 @@ by the ticket text.
   **continue** (Figma is optional — a fetch failure never blocks the run). The
   grounding provenance (figma-confirmed / SKIPPED / ⚠ DEGRADED-estimated) is stamped on card C1 and
   in the PR body (R2) so an engineer knows whether values were Figma-confirmed.
+- **Ticket reference image is the spec (GGC-62)** — for `design bug` tickets the attached screenshot is
+  almost always more precise than the one-line text: it encodes zoned/partial scope a sentence loses
+  (CAF-609 said "page should be grey" but the image showed only the vehicle-list zone grey, the
+  Date/Hourly rows staying white — a whole-page reading was wrong, and the designer rejected v1). So
+  whenever the ticket carries an image — an attachment in `.dev/ui-tweak/ticket.json` (`.attachments[]`)
+  or an inline `![](https://uploads.linear.app/...)` in the description — BEFORE finalizing scope:
+  1. `curl -fsSL` the signed asset URL to `.dev/ui-tweak/ref-<n>.png`;
+  2. **Read it as an image** (the Read tool renders it); when the designer pasted a before/after pair,
+     compare the panels;
+  3. build / refine the checklist from what the PICTURE shows — which regions change and which do NOT —
+     not just the sentence.
+  This COMPLEMENTS Figma rather than replacing it: if both exist, Figma pins exact values and the
+  screenshot pins scope. Stamp `ref-image: <file>` on the receipt header for provenance.
 
 ## Step 4 — locate + map (+ shared-token blast radius, R12)
 

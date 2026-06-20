@@ -468,6 +468,37 @@ On reaching the target, capture a screenshot + a short (~6s) recording into `.de
 Append the output paths to `.dev/ui-tweak/demo-files`. The screenshot is the C1 review surface; both
 screenshot + recording are embedded by `pr`.
 
+### Pixel-verify subtle colour/shade changes (stale-build guard — GGC-62)
+
+A subtle colour/shade edit (a few-% delta, e.g. `#FFFFFF` → `#F7F8F8`) is invisible to the eye, so a
+**stale build** — the first `flutter run` occasionally renders the OLD UI even though the edit is on
+disk + committed — sails through the device preview, the "looks good?" gate, AND the dual-judge audit
+(CAF-609). Do NOT trust such a build by eye; verify the actual pixel.
+
+**Trigger (cheap):** only when the target checklist names a colour —
+`grep -qiE '#[0-9A-Fa-f]{6}|target=.*(colou?r|bg|background|shade|fill)' "$WT/.dev/ui-tweak/figma-context.md"`.
+Otherwise SKIP (most tweaks are not subtle-colour and need no pixel check).
+
+**Check:**
+1. Sample the rendered pixel from the just-captured `after.png` at a point INSIDE the changed region —
+   the agent picks the coordinate from the screenshot + the target screen (a flat area of the edited
+   background, away from text/icons). First available sampler:
+   - `python3 -c "from PIL import Image;print('#%02X%02X%02X'%Image.open('after.png').convert('RGB').getpixel((X,Y)))"`
+   - else ImageMagick: `magick after.png -format '%[hex:p{X,Y}]' info:` (or `convert …`).
+   - Neither installed → skip with a one-line note (best-effort, like the `screenrecord` ladder).
+2. Compare to the target hex with a small tolerance (per-channel |Δ| ≤ 4, ~1.5%). Within tolerance →
+   PASS, continue.
+3. **Stale (the sample equals the OLD value, or is outside tolerance of the target):** the build is
+   stale — kill the running app and re-launch a FRESH `ui_preview_cmd` (`flutter run` = reinstall +
+   relaunch), settle (counter-bounded poll, **never `timeout`**), re-capture, and re-sample ONCE.
+   - Now within tolerance → PASS (use the fresh capture).
+   - Still stale after the re-launch → do NOT record a misleading preview: **fail-silent** in the
+     forward pipeline (no capture; C1 shows the honest no-image note) / **fail-LOUD** under
+     `--capture-only` (Step 0c: `GGX-DEMO CAPTURE-FAIL: pixel mismatch — built UI shows <sampled> not target <hex> (ticket <id>)`).
+
+This NEVER relaxes the build gate (Step 2 — exit code only); it guards only what gets shown/shipped as
+the preview, exactly when the eye cannot.
+
 ### On failure to reach the target → FAIL-SILENT (no designer driving)
 
 > **`--capture-only` carve-out (GGC-59).** Everything in this subsection describes the FORWARD
