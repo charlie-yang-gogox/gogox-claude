@@ -161,6 +161,25 @@ async function runWork(item, trunkSha) {
             ``,
           ]
         : []),
+      // GGC-68 — port ship-summary contract. The fan-out worker is a
+      // general-purpose agent driving /ggx-work; left unpinned it free-texted its
+      // own summary (CAF-744: invented `<!-- port:ship:v1 -->` / `## Port
+      // complete`, zero ri:v1 records), so downstream /spec-review parsed 0 items
+      // and the human-review gate was silently defeated. Pin the real renderer.
+      ...(item.lane === "port"
+        ? [
+            `PORT SHIP CONTRACT (GGC-68): when /port:ff reaches its ship stage, let`,
+            `the REAL /port:ship step-11 renderer post the Linear summary — do NOT`,
+            `hand-write or free-text your own summary comment. The posted comment MUST`,
+            "carry the marker `<!-- port:ship-summary -->`, the heading `## Port",
+            "summary: <change-name>`, and `### Needs review` / `### Verified (FYI)`",
+            "sections holding VERBATIM `<!-- ri:v1 id=... -->` records (that is what",
+            `/spec-review joins on). NEVER invent a marker like \`<!-- port:ship:v1`,
+            "-->` or a heading like `## Port complete`: a comment that bypasses the",
+            `renderer makes /spec-review parse 0 items and skips the review gate.`,
+            ``,
+          ]
+        : []),
       `The run ends by printing a deterministic machine line:`,
       `  [ggx-work-result] outcome=<done|port-paused|failed> ticket=<id>`,
       `Read that line VERBATIM and set outcome to its value — do NOT infer the`,
@@ -595,8 +614,9 @@ async function runUiTweak(item, trunkSha) {
 //   │ dev      │ done         │ an OPEN draft PR for the ticket                │
 //   │ bug      │ done         │ an OPEN draft PR for the ticket                │
 //   │ port     │ done         │ an OPEN draft PR for the ticket                │
-//   │ port     │ port-paused  │ the `need-spec-review` label on the issue      │
-//   │          │              │   (HITL spec-review gate handoff; no PR yet)   │
+//   │ port     │ port-paused  │ the `need-spec-review` label on the issue AND  │
+//   │          │              │   a contract `<!-- port:ship-summary -->` +    │
+//   │          │              │   `ri:v1` comment (GGC-68; no PR yet)          │
 //   │ ui-tweak │ done         │ an OPEN draft PR — ui-tweak's PR-open IS the    │
 //   │          │              │   terminal, so the same `done` check covers it │
 //   │          │              │   (AC2 walker-evidence edge case, no special)  │
@@ -648,19 +668,26 @@ async function verifyEvidence(res, item) {
       : [
           `Cross-check terminal evidence for ticket ${res.ticketId} (lane=${item.lane}),`,
           `which a worker reported as outcome="port-paused". You are a CHEAP`,
-          `read-only verifier — make ONE read call, then return a verdict. Do NOT`,
-          `fix anything and do NOT comment on Linear.`,
+          `read-only verifier — make the read calls below, then return a verdict. Do`,
+          `NOT fix anything and do NOT comment on Linear.`,
           ``,
-          `Expected terminal evidence for "port-paused": the ${res.ticketId} issue`,
-          `carries the \`need-spec-review\` label (port handed the work to the HITL`,
-          `spec-review gate; there is no PR yet, so do NOT look for one).`,
-          `Make ONE read call via the connected Linear MCP (find it with ToolSearch;`,
-          `prefer mcp__claude_ai_Linear__get_issue, fall back to`,
-          `mcp__linear-server__get_issue) and inspect the issue's labels.`,
+          `Expected terminal evidence for "port-paused" — BOTH must hold:`,
+          `  1. the ${res.ticketId} issue carries the \`need-spec-review\` label`,
+          `     (port handed the work to the HITL spec-review gate; there is no PR`,
+          `     yet, so do NOT look for one);`,
+          `  2. /port:ship step-11 posted its summary comment (GGC-68): a comment`,
+          `     containing the marker \`<!-- port:ship-summary -->\` AND at least one`,
+          `     \`<!-- ri:v1 \` record. A comment with an invented marker (e.g.`,
+          `     \`<!-- port:ship:v1 -->\` or a \`## Port complete\` heading) or with no`,
+          `     ri:v1 record does NOT count — /spec-review would parse 0 items.`,
+          `Use the connected Linear MCP (find it with ToolSearch; prefer`,
+          `mcp__claude_ai_Linear__get_issue for the labels and`,
+          `mcp__claude_ai_Linear__list_comments for the summary comment, falling back`,
+          `to mcp__linear-server__*).`,
           ``,
-          `verdict="confirmed" if the need-spec-review label is present; "missing"`,
-          `if the call succeeded and the label is absent; "inconclusive" if the`,
-          `call errored.`,
+          `verdict="confirmed" if BOTH hold; "missing" if the calls succeeded and`,
+          `EITHER the label is absent OR no contract-compliant ship-summary comment`,
+          `exists; "inconclusive" if a call errored. Name which of 1/2 failed in detail.`,
         ].join("\n");
 
   const check = await agent(
