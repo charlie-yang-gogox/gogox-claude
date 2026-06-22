@@ -124,9 +124,33 @@ fi
 ```
 
 > A throwaway `../<ID>-demo` worktree is removed at the end (Step 5) on every exit path (trap-delete),
-> so a post-hoc run leaves no residue. The reused `../<ID>` worktree is left exactly as found — and
-> because `preview --capture-only` writes no walker markers, a later bare `/ui-tweak` resume there is
-> never mis-routed.
+> so a post-hoc run leaves no residue. The reused `../<ID>` worktree is left exactly as found (minus the
+> Step 2.5 `ticket.json`, which Step 5 removes for a reused worktree) — and because `preview
+> --capture-only` writes no walker markers, a later bare `/ui-tweak` resume there is never mis-routed.
+
+## Step 2.5 — cache ticket context (for Step 2.4 region inference + Step 2.5 Tier-1 host)
+
+`preview --capture-only` reads `.dev/ui-tweak/ticket.json` to (a) **infer the account region** for the
+Step 2.4 login gate (GGC-65 auto-resolve — market token → `hk`/`sg`/… else `hk`) and (b) derive the
+Tier-1 `ggv://` deep-link host. A dev/port/bug worktree (the common `/ggx-demo` target) has none — the
+forward ui-tweak pipeline writes it, this post-hoc path does not — so cache a minimal one now. We already
+hold `$TICKET_ID`; fetch the ticket via the Linear MCP `get_issue` and write the fields region inference
++ host derivation actually read:
+
+```bash
+mkdir -p "$WT/.dev/ui-tweak"
+# Fetch <ticket> (Linear get_issue) → write {title, description, labels[], market/region if present}.
+# `market`/`region` is whatever the ticket exposes (a field, a label like "SG", or a phrase in the body);
+# leave it absent if the ticket says nothing and Step 2.4 will fall back to hk. Keep it SMALL — only the
+# fields the two consumers read, not the whole issue payload.
+cat > "$WT/.dev/ui-tweak/ticket.json" <<JSON
+{"id":"$TICKET_ID","title":"<title>","description":"<short description>","labels":[<labels>],"market":"<market-or-empty>"}
+JSON
+```
+
+This file is NOT a walker marker (the walker keys on `build-pass` / `preview-shown` / audit markers, not
+`ticket.json`), so it never mis-routes a later `/ui-tweak` resume; Step 5 still deletes it from a **reused**
+worktree to honor "left exactly as found" (a throwaway worktree is removed whole, so no per-file cleanup).
 
 ## Step 3 — capture (reuse `preview --capture-only`, the SOLE capture point)
 
@@ -177,10 +201,19 @@ ship state — no labels, no PR open/close/merge, no ticket status/assignee.
 ## Step 5 — cleanup + summary
 
 ```bash
-[ -n "$THROWAWAY" ] && git worktree remove --force "$THROWAWAY" 2>/dev/null
+if [ -n "$THROWAWAY" ]; then
+  git worktree remove --force "$THROWAWAY" 2>/dev/null   # throwaway removed whole — no per-file cleanup
+else
+  rm -f "$WT/.dev/ui-tweak/ticket.json"                  # reused worktree: drop the Step 2.5 cache ("left as found")
+fi
 echo "ggx-demo: captured + attached demo for $TICKET_ID (PR #$PR, sha $(git -C "$WT" rev-parse --short HEAD 2>/dev/null))."
 exit 0
 ```
+
+> Cleanup runs on the **success** path above; the fail-LOUD exits in Steps 2–3 already remove a throwaway
+> worktree. For a reused worktree those early exits may leave `ticket.json` behind — harmless (not a
+> walker marker), and the next run overwrites it — but if strict "left as found" matters on a failure
+> path too, delete it in those branches as well.
 
 ## Batch mode (`--batch`) — GGC-66 (absorbed `/_ui-demo-batch`)
 

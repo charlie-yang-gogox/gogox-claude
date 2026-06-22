@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, and never logs in EXCEPT the sanctioned GGC-65 Step 2.4 staging-QA login gate (opt-in via the repo's demo_auth selector, so login-gated screens can be captured). If it can't reach the screen (no route / unpassable login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (GGC-59, Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs the Step 2.4 login gate + Step 2.5 navigate+capture slice on an already-running device (path (a) only, no cold-boot; Step 2.4 logs in with a staging QA account when the repo's demo_auth selector is set, GGC-65), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too."
+description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, and never logs in EXCEPT the sanctioned GGC-65 Step 2.4 staging-QA login gate (always active — auto-resolves a staging account from Notion so login-gated screens can be captured; the repo's demo_auth block only OVERRIDES which account, it is not required). If it can't reach the screen (no route / unpassable login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (GGC-59, Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs the Step 2.4 login gate + Step 2.5 navigate+capture slice on an already-running device (path (a) only, no cold-boot; Step 2.4 auto-resolves + logs in with a Notion staging QA account, no demo_auth config required, GGC-65), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -181,8 +181,8 @@ already-shipped, already-reviewed PR, so there is no build gate to protect and n
 
 - **Device acquisition — Step 1 path (a) ONLY.** Use an **already-running** device (`$FLUTTER_BIN
   devices --machine` lists a booted emulator/simulator or a connected handset). The device need NOT be
-  pre-logged-in — the Step 2.4 login gate (GGC-65) logs in with a staging QA account when a `demo_auth`
-  selector is configured. **Never cold-boot (skip path (b))** — booting an emulator unattended is heavy
+  pre-logged-in — the Step 2.4 login gate (GGC-65) auto-resolves a staging QA account from Notion and
+  logs in (no `demo_auth` config required). **Never cold-boot (skip path (b))** — booting an emulator unattended is heavy
   and adds latency; reuse a running one. **No device → FAIL-LOUD** (see disposition below): do not fall
   through to a build-only path (there is nothing to compile-gate here).
 - **Build + launch onto the device.** Run `ui_preview_cmd` (`flutter run` = build + install + launch;
@@ -192,7 +192,8 @@ already-shipped, already-reviewed PR, so there is no build gate to protect and n
   Step 2's device path, minus the build-gate semantics — a launch/compile failure here is a capture
   failure (fail-LOUD), not a `repair-context`.
 - **Login gate then capture — run Step 2.4 + Step 2.5 verbatim.** First the Step 2.4 login gate (GGC-65:
-  no-op unless `demo_auth` is configured; logs in with a staging QA account when the app is logged out),
+  always active — auto-resolves a staging QA account from Notion and logs in when the app is logged out;
+  no `demo_auth` config required, the 2.4.1 probe skips an already-logged-in session),
   then Step 2.5 (Tier-1 deep-link → Tier-2 nav-only tap-through → screenshot + short recording → append
   to `.dev/ui-tweak/demo-files`). The 3 device fixes baked into Step 2.5 (package-targeted deep-link,
   `screenrecord --size` ladder, scaled taps) apply here too.
@@ -308,42 +309,66 @@ iterations of `sleep 1`), so it is portable to stock macOS with no external depe
 >   state-mutating / destructive control; granting permission dialogs; typing into fields **except the
 >   sanctioned login gate below**.
 > - **Logging in — forbidden by default, with ONE sanctioned exception (GGC-65): the Step 2.4 login
->   gate.** When the repo profile declares a `demo_auth` selector AND the app is not already logged in,
->   Step 2.4 may type a **dedicated staging QA _automation_ account**'s credentials into the login
->   screen and submit — nothing else. This establishes a throwaway QA session so login-gated target
->   screens can be captured; it never uses a real user or a production account, and is the only
->   sanctioned text entry / submit. With **no** `demo_auth` selector, login stays forbidden and a login
->   wall is a fail-silent no-capture (the pre-GGC-65 behavior).
+>   gate.** When the app is **not already logged in**, Step 2.4 may type a **dedicated staging QA
+>   _automation_ account**'s credentials (auto-resolved from Notion — no `demo_auth` config required;
+>   `demo_auth` only OVERRIDES which account) into the login screen and submit — nothing else. This
+>   establishes a throwaway QA session so login-gated target screens can be captured; it never uses a
+>   real user or a production account, and is the only sanctioned text entry / submit. The 2.4.1 probe
+>   ensures an already-logged-in session (e.g. the designer's own) is never touched.
 > Apart from that one gate, navigation is for a screenshot only — it never changes app, account, or repo
 > state, and never gates.
 
-## Step 2.4 — login gate (GGC-65) — log in iff needed, so login-gated screens can be captured
+## Step 2.4 — login gate (GGC-65; auto-resolve) — fetch a staging account from Notion + log in iff needed
 
-_Runs after the build gate (Step 2 device path) and BEFORE Step 2.5, in every context that reaches a
-live app (interactive device path, direct-ship navigate, `--capture-only`). It is a **no-op unless the
-repo profile declares a `demo_auth` selector** — repos that don't opt in keep the pre-GGC-65 behavior (a
-login wall → fail-silent / fail-LOUD, no login attempt)._
+_Runs after the build gate (Step 2 device path) and BEFORE Step 2.5, in **every** context that reaches a
+live app (interactive device path, direct-ship navigate, `--capture-only`). It is **always active** — it
+**auto-resolves** the right staging QA account from Notion, so **no per-repo `demo_auth` config is
+required**. The repo's `demo_auth` block (if any) is now an OPTIONAL OVERRIDE, not a precondition: every
+field has a derived default (table below), so a repo that declares nothing still gets auto-login. The
+gate still types credentials **only when the app is logged out** (the 2.4.1 probe) — an already-logged-in
+session (e.g. the designer's own) is never touched, which is what makes "always active" safe in the
+interactive flow too._
 
-Most `design bug` target screens (booking flow, order tracking, profile, wallet) sit behind a login
-wall, so the pre-GGC-65 pipeline — which never logged in — captured nothing for them. This gate logs in
-with a dedicated staging QA **automation** account, **only when the app is not already logged in**, so
-Step 2.5's navigate+capture can actually reach the screen. Credentials are NEVER stored in the repo —
-they are fetched from Notion at runtime; the selector only names WHICH account.
+Most target screens (booking flow, order tracking, profile, wallet) sit behind a login wall, so a
+pipeline that never logged in captured nothing for them. This gate logs in with a dedicated staging QA
+**automation** account so Step 2.5's navigate+capture can actually reach the screen. Credentials are
+NEVER stored in the repo — they are fetched from Notion at runtime; config (explicit or derived) only
+names WHICH account.
 
-### `demo_auth` selector (repo `<repo>/.gogox-claude.yaml`)
+### Resolve the account — `demo_auth` OVERRIDES, derived DEFAULTS otherwise
+
+Resolve each field as `demo_auth.<field>` (from `<repo>/.gogox-claude.yaml`) when present, else the
+derived default. **No `demo_auth` block at all is fine** — the defaults stand on their own:
+
+| field | override (`demo_auth.<field>`) | derived default when absent |
+|---|---|---|
+| `notion_page` | `notion_page` | `443eb970733e452690cfa0a299eab6f2` (the "Testing accounts (Staging and Production)" page) |
+| `app` | `app` | from the profile `product`: `ca*` → `ca` (customer app), `da*` / `driver*` → `da` (driver app) |
+| `region` | `region` | **inferred from the ticket** (market token in title / description / labels → `hk`/`sg`/`vn`/`tw`/`kr`/`in`); **fallback `hk`** when nothing matches, the ticket spans multiple markets, or no ticket context is available |
+| `account_label` | `account_label` | `automation` (prefer the entry tagged "for automation usage"; never clobbers a manual tester) |
+| `login_probe_host` | `login_probe_host` | `profile` (a logged-in-only `ggv://` host) |
+
+**Region inference** reads `.dev/ui-tweak/ticket.json` — the cached ticket the forward pipeline always
+writes (`/ggx-demo` caches a minimal one for `--capture-only`, see `ggx-demo.md` Step 1.5). Scan its
+market / region field + title/description for a market token and map it: "Singapore"/"SG" → `sg`,
+"Hong Kong"/"HK" → `hk`, "Vietnam"/"VN" → `vn`, "Taiwan"/"TW" → `tw`, "Korea"/"KR" → `kr`, "India"/"IN`
+→ `in`. A ticket naming **multiple** markets (e.g. "HK + SG"), **no** match, or **no** ticket.json → `hk`.
+An explicit `demo_auth.region` always wins over inference.
+
+A repo MAY still declare a `demo_auth` block to pin any field — e.g. force a specific region or a
+non-default Notion page:
 
 ```yaml
-demo_auth:
-  notion_page: "443eb970733e452690cfa0a299eab6f2"  # the "Testing accounts ( Staging and Production )" page id (default if omitted)
-  app: ca                   # ca = customer app | da = driver app — which login surface
-  region: hk                # hk | sg | vn | tw | kr | in (matches the Notion account groupings)
-  account_label: automation # prefer the account tagged "for automation usage" (never clobbers a manual tester)
-  login_probe_host: profile # a logged-in-only ggv:// host used to detect login state (e.g. profile / order-detail)
+demo_auth:                  # ALL fields optional — each overrides the derived default above
+  notion_page: "443eb970733e452690cfa0a299eab6f2"
+  app: ca                   # ca = customer app | da = driver app
+  region: sg                # pin the account region (skips ticket inference)
+  account_label: automation
+  login_probe_host: order-detail
 ```
 
-Absent `demo_auth` → skip this entire step (return to Step 2.5; a login wall there stays fail-silent /
-fail-LOUD exactly as before). The demo build is the **staging flavor** (`ui_preview_cmd` carries
-`--flavor stag`), so the **Staging** accounts on the Notion page are the right ones.
+The demo build is the **staging flavor** (`ui_preview_cmd` carries `--flavor stag`), so the **Staging**
+accounts on the Notion page are the right ones.
 
 ### 2.4.1 — probe login state (cheap, deterministic)
 
@@ -357,8 +382,9 @@ settle ~3s, then screenshot (read-only). Decide:
 
 ### 2.4.2 — fetch the account + drive the login (bounded; the sanctioned creds entry)
 
-1. **Fetch the account from Notion** via the Notion MCP `fetch` on `demo_auth.notion_page`. Select by
-   `app` + `region`, preferring the entry tagged *for automation usage* (`account_label`). E.g.
+1. **Fetch the account from Notion** via the Notion MCP `fetch` on the **resolved** `notion_page`
+   (override or default). Select by the **resolved** `app` + `region`, preferring the entry tagged
+   *for automation usage* (the resolved `account_label`). E.g.
    `app: ca` → CA B2C `qa5@gogotech.hk / 12345678`; `app: da, region: hk` → Van `99999995 / Aa123456`
    or DriverCourier `56666665 / Aa123456`. **Never hardcode — always read it live.** If the Notion
    fetch fails → login failure (2.4.3).
@@ -508,8 +534,9 @@ the preview, exactly when the eye cannot.
 > reach") is shared; only the disposition differs.
 
 If Tier 1 + Tier 2 cannot confidently reach the target (no route, tap-through stuck, `idb` absent, or an
-**unpassable login wall** — login is performed only by the sanctioned Step 2.4 gate when `demo_auth` is
-configured, else not at all), do **NOT** capture a misleading wrong
+**unpassable login wall** — login is performed only by the sanctioned Step 2.4 gate, which now auto-logs
+in via a Notion-resolved staging account; a wall is unpassable only when that auto-login itself fails —
+Notion fetch failed / creds rejected / login UI not found / OTP-2FA), do **NOT** capture a misleading wrong
 screen and do **NOT** ask the designer to drive: just capture nothing, leave `demo-files` empty, and
 continue. The orchestrator's C1 (looks-good) card then shows no image (honest "couldn't auto-reach the
 screen" wording) and the PR uses the Demo fallback chain. Any navigation/capture error is likewise
