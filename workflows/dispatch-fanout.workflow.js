@@ -90,6 +90,11 @@ const EVIDENCE_SCHEMA = {
     // the success (AC2: never false-demote a genuine ship over infra flake).
     verdict: { type: "string", enum: ["confirmed", "missing", "inconclusive"] },
     detail: { type: ["string", "null"] },
+    // GGC-72: port-paused check only — split the two "missing" causes so the
+    // script can tell a RECOVERABLE malformed-comment (labelPresent && !shipSummaryOk
+    // → auto-repair) from an unrecoverable missing label. Null for the "done" PR check.
+    labelPresent: { type: ["boolean", "null"] },
+    shipSummaryOk: { type: ["boolean", "null"] },
   },
 };
 
@@ -689,11 +694,13 @@ async function verifyEvidence(res, item) {
           ``,
           `verdict="confirmed" if BOTH hold; "missing" if the calls succeeded and`,
           `EITHER the label is absent OR no contract-compliant ship-summary comment`,
-          `exists; "inconclusive" if a call errored. Name which of 1/2 failed in detail.`,
+          `exists; "inconclusive" if a call errored. ALSO return the two booleans`,
+          `\`labelPresent\` (condition 1) and \`shipSummaryOk\` (condition 2) so the`,
+          `caller can tell a recoverable malformed comment from a missing label.`,
         ].join("\n");
 
   const check = await agent(
-    [checkPrompt, ``, `Return { verdict: "confirmed"|"missing"|"inconclusive", detail: one short line }.`].join("\n"),
+    [checkPrompt, ``, `Return { verdict, detail: one short line, labelPresent, shipSummaryOk } (the two booleans are port-paused only — null for the "done" PR check).`].join("\n"),
     {
       label: `evidence:${res.ticketId}`,
       phase: "evidence",
@@ -717,18 +724,81 @@ async function verifyEvidence(res, item) {
     log(`[evidence] ${res.ticketId} ${res.outcome} confirmed (${check.detail || "terminal evidence found"})`);
     return res;
   }
-  // verdict === "missing": definitive negative ⇒ demote to failed. The row now
-  // routes through triageAndFallback's dispatch-fallback-error branch (evidenceDemoted
-  // flag below), the digest counts it under `failed`, and the in-flight label is
-  // left untouched so the next sweep can resume.
+  // verdict === "missing": definitive negative. GGC-72 — before demoting, try a
+  // BOUNDED auto-repair for the one recoverable case: a port-paused row whose ONLY
+  // failure is a malformed ship-summary comment (need-spec-review label IS present;
+  // the GGC-68 family — CAF-754). The OpenSpec change + structured `ri:v1` records
+  // still live in the worktree's `.port/*-notes.md`, so the comment can be
+  // re-rendered. A missing LABEL, or a "done"-PR miss, is NOT recoverable here.
+  const recoverableShipSummary =
+    res.outcome === "port-paused" && check.labelPresent === true && check.shipSummaryOk === false;
+  if (recoverableShipSummary && item.worktreePath) {
+    log(`[evidence] ${res.ticketId} malformed ship-summary but need-spec-review present -> attempt auto-repair (GGC-72)`);
+    const repair = await agent(
+      [
+        `Repair the /port:ship summary comment for ${res.ticketId}. The fan-out worker`,
+        `posted a malformed summary (wrong/invented marker, no \`<!-- ri:v1 -->\` records)`,
+        `so /spec-review parses 0 items — but the OpenSpec change + the structured ri:v1`,
+        `records already exist in the worktree.`,
+        ``,
+        `In ${item.worktreePath}: run the REAL \`/port:ship ${res.ticketId} --auto\` step-11`,
+        `renderer so it posts a contract-compliant Linear comment. Its detect step skips`,
+        `only when a comment already starts with \`<!-- port:ship-summary -->\`; the`,
+        `malformed one uses a different marker, so it will post fresh. If /port:ship`,
+        `cannot run, reconstruct by hand from the worktree's \`.port/*-notes.md\` ri:v1`,
+        `records: post (or edit the malformed comment to) a body whose FIRST line is`,
+        "`<!-- port:ship-summary -->`, with a `## Port summary: <change-name>` heading and",
+        "`### Needs review` / `### Verified (FYI)` sections holding the VERBATIM",
+        "`<!-- ri:v1 id=... -->` records (copy markers exactly — /spec-review joins on",
+        `id=). Ensure only ONE ship summary remains (supersede the malformed one).`,
+        ``,
+        `Then VERIFY: re-read the issue's comments and confirm one now contains BOTH`,
+        "`<!-- port:ship-summary -->` and at least one `<!-- ri:v1 `. Return",
+        `{ repaired: boolean, riCount: number, detail: one short line }.`,
+      ].join("\n"),
+      {
+        label: `port-repair:${res.ticketId}`,
+        phase: "evidence",
+        agentType: "general-purpose",
+        model: "opus",
+        schema: {
+          type: "object",
+          required: ["repaired"],
+          additionalProperties: false,
+          properties: {
+            repaired: { type: "boolean" },
+            riCount: { type: ["number", "null"] },
+            detail: { type: ["string", "null"] },
+          },
+        },
+      },
+    );
+    if (repair && repair.repaired) {
+      log(`[evidence] ${res.ticketId} ship-summary AUTO-REPAIRED (${repair.riCount ?? "?"} ri:v1 records) -> keeping port-paused`);
+      return { ...res, shipSummaryRepaired: true };
+    }
+    log(`[evidence] ${res.ticketId} auto-repair FAILED (${repair?.detail || "agent returned null"}) -> DEMOTE to failed`);
+  }
+
+  // Not recoverable (or repair failed) ⇒ demote to failed. The row routes through
+  // triageAndFallback's dispatch-fallback-error branch (evidenceDemoted flag below),
+  // the digest counts it under `failed`, and the in-flight label is left untouched so
+  // the next sweep can resume. GGC-72: the demote message is SCRIPT-authored and names
+  // the REAL contract markers — the sonnet checker's free-text detail once hallucinated
+  // `<!-- port:ship:ri:v1 -->` (CAF-754), misleading whoever read the comment.
+  const demoteReason =
+    res.outcome === "port-paused"
+      ? check.labelPresent === false
+        ? "the `need-spec-review` label is absent"
+        : "the ship-summary comment lacks the `<!-- port:ship-summary -->` marker and/or `<!-- ri:v1 -->` records (auto-repair could not recover it)"
+      : check.detail || "no terminal evidence found";
   log(`[evidence] ${res.ticketId} reported ${res.outcome} but terminal evidence MISSING -> DEMOTE to failed`);
   return {
     ...res,
     outcome: "failed",
     evidenceDemoted: true,
     digestNote: "no-terminal-evidence", // §6.4 may surface this on the row
-    error: ("[evidence-demoted] reported \"" + res.outcome + "\" but " +
-      (check.detail || "no terminal evidence found") +
+    error: ("[evidence-demoted] reported \"" + res.outcome + "\" but " + demoteReason +
       " (no-terminal-evidence; prior: " + (res.error || "none") + ")").slice(0, 300),
   };
 }
