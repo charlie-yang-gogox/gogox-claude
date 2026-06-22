@@ -1171,8 +1171,8 @@ invocation. After §6.5's summary, invoke:
 which includes the design-bug PRs this run just shipped — so no `rows` array
 need be built. It captures each **SERIALLY on the one simulator** (so the
 parallel fan-out's N agents never drive the device at once — the race is gone by
-construction), logging in via the Step 2.4 gate (GGC-65) when `demo_auth` is
-configured, then attaches each idempotently to its PR/ticket. It is **fail-soft
+construction), logging in via the Step 2.4 gate (GGC-65 — auto-resolves a staging
+account from Notion, no `demo_auth` config required), then attaches each idempotently to its PR/ticket. It is **fail-soft
 and never blocks**: no device / capture error / login wall degrades to a WARN (a
 login wall short-circuits the rest) and the run still completes. No undemoed
 PRs → no-op.

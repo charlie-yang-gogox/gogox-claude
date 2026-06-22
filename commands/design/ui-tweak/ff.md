@@ -369,8 +369,8 @@ compiles or that logic was checked:
     (always present under B3) → write **`.dev/ui-tweak/deliver`** AND **`.dev/ui-tweak/direct-ship`**
     AND (GGC-14) **`.dev/ui-tweak/auto-navigate`** → walker. With `auto-navigate` set the deliver
     branch's gate is NOT pure build-only: `preview` (Step 0b) launches onto an **already-running
-    device** if one exists (else build-only; Step 2.4 logs in via a staging account when `demo_auth` is
-    configured), then **Step 2.5 fires ONE deep-link to the target screen and captures it (screenshot +
+    device** if one exists (else build-only; Step 2.4 auto-resolves a staging account from Notion and
+    logs in, no `demo_auth` config required), then **Step 2.5 fires ONE deep-link to the target screen and captures it (screenshot +
     recording) for the PR** — best-effort / fail-silent (no device, no whitelisted route, an unpassable
     login wall, or capture error → no screenshot, run never fails). Then
     `audit` → `commit` → `pr` → `review` → C5. A build fail routes to the normal agent repair loop

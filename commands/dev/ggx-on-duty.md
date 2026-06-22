@@ -31,7 +31,7 @@ Prerequisite: >
 - `--team:<KEY>` — passed through to /ticket-analyze and /ggx-dispatcher (required when the repo's `branch_prefix` is `auto`).
 - `--no-dispatch` — disable Leg 1 entirely (both the analyze and dispatch ticks; watch-only mode).
 - `--no-analyze` — skip the analyze tick (Leg 1a) entirely; dispatch (Leg 1b) still runs on its own ~1h cadence off existing `ready-to-*` labels.
-- `--demo` — after a Leg-1 dispatch completes, spawn a background serial demo-capture pass (`/ggx-demo --batch`, GGC-66 — absorbed `/_ui-demo-batch`; self-discovers every open design-bug PR of mine still lacking a demo), so `design bug` PRs from the local on-duty loop carry a demo recording (GGC-29). Off by default. Requires a flutter repo + a simulator the local headless child can reach (it boots the persistent sim if none is running; the device need not be pre-logged-in — the Step 2.4 gate logs in via a staging account when `demo_auth` is set, GGC-65). dev/port/bug lanes unaffected.
+- `--demo` — after a Leg-1 dispatch completes, spawn a background serial demo-capture pass (`/ggx-demo --batch`, GGC-66 — absorbed `/_ui-demo-batch`; self-discovers every open design-bug PR of mine still lacking a demo), so `design bug` PRs from the local on-duty loop carry a demo recording (GGC-29). Off by default. Requires a flutter repo + a simulator the local headless child can reach (it boots the persistent sim if none is running; the device need not be pre-logged-in — the Step 2.4 gate auto-resolves a staging account from Notion and logs in, no `demo_auth` config required, GGC-65). dev/port/bug lanes unaffected.
 - `--until:HH:MM` — optional auto-stop. Default: none (run until the user interrupts or closes the session).
 
 ## Non-negotiable guardrails
@@ -48,16 +48,20 @@ ui-tweak (`design bug`) tickets run under `--auto` with GGC-14 navigate+capture 
 dispatch a `demo` pass. Capturing a **login-gated** screen (booking flow, order tracking, payment, …)
 needs the app logged in. Since **GGC-65** this is handled automatically — no one-time human OTP login:
 
-- Add a **`demo_auth` selector** to the app repo's `<repo>/.gogox-claude.yaml` (`app` + `region` +
-  `account_label` + `login_probe_host`). The preview Step 2.4 gate then fetches a **staging** QA
-  automation account from the Notion "Testing accounts" page at runtime and logs in on a fresh device
-  (creds never stored in the repo). The demo build is the staging flavor (`--flavor stag`), so the
-  staging accounts fit — no `flavor: dev` pin needed.
+- **No config required (GGC-65 auto-resolve).** The preview Step 2.4 gate is **always active**: it
+  derives `app` from the profile `product`, infers `region` from the ticket (fallback `hk`), and fetches
+  a **staging** QA automation account from the Notion "Testing accounts" page at runtime, logging in on a
+  fresh device (creds never stored in the repo). The demo build is the staging flavor (`--flavor stag`),
+  so the staging accounts fit — no `flavor: dev` pin needed.
+- **Optional `demo_auth` override** in `<repo>/.gogox-claude.yaml` (`app` / `region` / `notion_page` /
+  `account_label` / `login_probe_host`) pins any field when the derived default is wrong (e.g. force an
+  SG account for an SG-only ticket the inference misreads).
 - **Gating spike (GGC-65)**: this assumes the staging build accepts **password-only** login with no OTP.
   If an account requires OTP/2FA, auto-login is blocked and capture fail-silents (login wall) — verify
   one automation account password-logs-in cleanly before relying on it.
 
-When `demo_auth` is **not** configured (or login fails), navigate+capture **fail-silents** on a
+When auto-login **fails** (Notion fetch failed / creds rejected / login UI not found / OTP wall),
+navigate+capture **fail-silents** on a
 login-gated screen (see `commands/design/ui-tweak/preview.md` Step 2.4/2.5 — capture is the sole job of
 `preview`, and the batch path reuses that same procedure via `/ggx-demo --batch`). A missing demo never
 blocks a PR — the draft PR still opens via the normal Demo fallback chain. So this is an optional
