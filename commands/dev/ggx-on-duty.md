@@ -1,7 +1,7 @@
 ---
 name: ggx-on-duty
 description: >
-  Working-hours on-duty loop on /loop DYNAMIC mode (self-paced wakeups,
+  [DEPRECATED] Working-hours on-duty loop on /loop DYNAMIC mode (self-paced wakeups,
   no fixed interval). Two legs: (1) classify + dispatch — DECOUPLED
   cadences (GGC-70): /ticket-analyze in REAL WRITE mode runs slowly
   (~2-3h, so it never spams stuck tickets) to keep the ready-to-* queue
@@ -25,6 +25,16 @@ Prerequisite: >
 ---
 
 # /ggx-on-duty — start the working-hours watch loop
+
+> **⚠️ DEPRECATED / PAUSED (GGC-79, 2026-06-23).** The on-duty watch loop is a
+> paused initiative — no longer actively maintained. It remains fully runnable
+> (this is a soft deprecation, not a removal), but expect the section numbers,
+> contracts, and decisions referenced below to drift from the live
+> `/ggx-dispatcher` · `/ticket-analyze` · `/ggx-pr-resolver` commands over time.
+> Re-validate before relying on it. The once-planned `--metric` passthrough into
+> this loop was dropped with the pause. Note: `/ggx-dispatcher --launch-only`
+> exists solely for this loop's D22 owned-Workflow dispatch and now has no active
+> consumer — it is kept (harmless) in case on-duty is revived.
 
 **Usage**: `/ggx-on-duty [--team:<KEY>] [--no-dispatch] [--no-analyze] [--demo] [--until:HH:MM]`
 
