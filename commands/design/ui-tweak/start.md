@@ -38,8 +38,10 @@ designer never types `/ui-tweak:start`.
 
 1. Resolve profile: `<repo>/.gogox-claude.yaml` → `platform`; fallback
    `~/.claude/commands/profiles/registry/<basename>.yaml`.
-2. Fetch the ticket (`mcp__claude_ai_Linear__get_issue` or Jira per `_ticket-lib.md`), **read-only**
-   (no status/assignee change, no comment). Determine branch type (`fix` for a bug-labelled ticket,
+2. Resolve `TICKET_SYSTEM` (and `JIRA_CLOUD_ID` for Jira) via the `_ticket-lib.md` resolution flow,
+   then fetch the ticket into `$TICKET_JSON` (`mcp__claude_ai_Linear__get_issue` or
+   `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` per `_ticket-lib.md`), **read-only** (no
+   status/assignee change, no comment). Determine branch type (`fix` for a bug-labelled ticket,
    else `feat`).
 3. Create+enter the worktree: `/add-worktree <ticket-id> --type <feat|fix>` (the `../<ticket-id>`
    convention; off latest trunk). If it already exists, `/add-worktree` detects and asks (or enters it
@@ -51,6 +53,23 @@ designer never types `/ui-tweak:start`.
    mkdir -p .dev/ui-tweak
    # ticket.json — read-only snapshot for apply/deliver (skip the re-fetch)
    printf '%s\n' "$TICKET_JSON" > .dev/ui-tweak/ticket.json
+   # comments.json — the comment THREAD (GGC-84). The get_issue / getJiraIssue response in
+   # ticket.json carries the description + attachments but NOT the Linear comment thread, so a
+   # follow-up comment that refines or reverses the spec is otherwise invisible to apply's target
+   # derivation (which then earns a no-op against a stale, description-only spec — CAF-632). Cache
+   # the thread here, read-only, so /ui-tweak:apply Step 3 can union it into the requirement without
+   # a re-fetch. Fail-soft (mirrors /dev:start Step 4): a fetch failure caches an empty array + a
+   # note and NEVER blocks the split. Jira embeds comments in the issue, so derive from ticket.json.
+   if [ "$TICKET_SYSTEM" = "linear" ]; then
+     mcp__claude_ai_Linear__list_comments --issueId "$TICKET_ID" --orderBy createdAt \
+       > .dev/ui-tweak/comments.json 2>/dev/null \
+       || printf '{"comments":[],"note":"list_comments failed at /ui-tweak:start — apply may re-fetch"}\n' \
+            > .dev/ui-tweak/comments.json
+   else  # jira — comments are embedded in the issue snapshot; normalize to the same shape
+     jq -c '{comments: (.fields.comment.comments // [])}' <<<"$TICKET_JSON" \
+       > .dev/ui-tweak/comments.json 2>/dev/null \
+       || printf '{"comments":[]}\n' > .dev/ui-tweak/comments.json
+   fi
    # worktree-ready — Step-0 idempotency marker (ff.md skips re-split when present)
    printf 'ticket=%s\n' "$TICKET_ID" > .dev/ui-tweak/worktree-ready
    ```

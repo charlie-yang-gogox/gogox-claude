@@ -79,7 +79,27 @@ re-entering apply.) The rest of this file is the normal first-pass path.
   (Step 0 / R19 splits the worktree up-front and snapshots the ticket there — no re-fetch). Otherwise
   fetch via `mcp__claude_ai_Linear__get_issue` or Jira (`_ticket-lib.md`), **read-only** (never change
   status/assignee, never comment), and cache it to `.dev/ui-tweak/ticket.json` so the deliver path does
-  not re-fetch. Derive the requirement from title+description+comments.
+  not re-fetch.
+- **Read the comment thread too, not just the description (GGC-84).** The `get_issue` /
+  `getJiraIssue` snapshot in `ticket.json` carries the description + attachments but NOT the Linear
+  comment thread, so a follow-up comment that refines or reverses the spec is invisible to a
+  description-only read — and the earned-no-op grounded off it then validates against a **stale**
+  spec (CAF-632: the merged en-route fix earned a no-op against the description's en-route reference
+  image while a follow-up comment had already specified the opposite for the *completed* state). To
+  prevent that:
+  - Reuse `.dev/ui-tweak/comments.json` if `/ui-tweak:start` cached it (the normal path — no
+    re-fetch). If it is absent or its `comments` array is empty with a `note` (a fetch failure at
+    start time), re-fetch the thread yourself: `mcp__claude_ai_Linear__list_comments --issueId
+    <id> --orderBy createdAt` (Linear) or read `.fields.comment.comments[]` from `ticket.json`
+    (Jira), **read-only**, and refresh the cache. A re-fetch failure is fail-soft — proceed with
+    the description alone and stamp the grounding provenance as `⚠ comments-unavailable` so the
+    audit/no-op verdict downstream is not trusted as comment-aware.
+  - **Derive the requirement from the UNION of title + description + the full comment thread.** When
+    a later comment refines or contradicts the description, **the most-recent comment is
+    authoritative** (it is the live intent; the description is the stale baseline). This mirrors the
+    `/dev:start` Step 4 precedent that scans description AND comments. Note the spec can be
+    **state-dependent** (CAF-632: the *completed* state needs the opposite section order from the
+    *en-route* state) — keep every state's requirement, do not collapse them into one.
 - Free text: use it verbatim as the requirement.
 
 ## Step 3a — ground: inline Figma → structured target checklist (D2)
@@ -161,6 +181,20 @@ code site is found.
 listing the unmet targets; otherwise ensure that file does **not** exist. `Fetched: SKIPPED/DEGRADED`
 does **not** trip the bar (Figma is optional). This marker lets the orchestrator structurally hide
 card C1's "I'm done — show me" / "Ship it" option — the designer never has to read "NOT-FOUND".
+
+**Earned-no-op must be validated against the LATEST spec (GGC-84).** When **every** `Ti` resolves to
+`ALREADY-MATCHES` (no planned edit — an earned no-op), that verdict is only trustworthy if the target
+checklist was grounded against the **current** spec, i.e. description **+ the full comment thread**
+(Step 3), not the description alone. Before treating an all-`ALREADY-MATCHES` outcome as a real no-op:
+- Confirm the requirement that produced the checklist included the comment thread (the
+  `comments.json` cache read in Step 3, or a successful re-fetch). If the grounding provenance is
+  `⚠ comments-unavailable` (comments could not be read), **do NOT earn a no-op** — the spec may have
+  evolved past trunk in a comment the pipeline never saw. Refuse, leave the run for a human, and let
+  the sibling no-op→`failed with reason` mechanism surface it.
+- Watch for **state-dependent** specs (CAF-632): an `ALREADY-MATCHES` against one state's reference
+  (e.g. en-route) says nothing about another state a later comment introduced (e.g. completed). A
+  no-op is earned only when every state named across description + comments is satisfied — never when
+  a comment lists a state the description's reference image did not cover.
 
 **Present the plan** (coverage table — `Ti | property | target | code site | current | new | shared? |
 status`): in default mode take one plan confirmation (the designer may adjust a target in place —
