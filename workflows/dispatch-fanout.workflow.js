@@ -1246,7 +1246,7 @@ async function finalizeMetrics(res, item) {
         `Emit a single number N (hours). This is the GGC-71 blind estimate.`,
         ``,
         `STEP 2 — run the metrics scan + post. Run EXACTLY:`,
-        `python3 ~/.claude/skills/shared/session-metrics/session_metrics.py \\`,
+        `python3 ~/.claude/skills/session-metrics/session_metrics.py \\`,
         `  --scan-subagents --ticket-id ${res.ticketId} \\`,
         `  --parent-session ${parentSessionId} \\`,
         `  --run-ts ${runTs} --run-stem ${runStem} \\`,
