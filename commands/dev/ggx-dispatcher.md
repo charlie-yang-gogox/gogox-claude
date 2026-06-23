@@ -842,15 +842,21 @@ Steps:
    case, which `runFallback` posts because the script owns that flow). There
    is no separate inline-row fallback path.
 
-   **GGC-49 no-op rows.** A ui-tweak leg may return an EARNED no-op:
-   `outcome:"done", prUrl:null, stage:"ui:noop", noop:true` with a
-   `noopJustification` (validated against the ticket target on clean trunk).
-   Render it in the §6.4 table as a `done` with PR column `— (no-op)` and
-   surface the `noopJustification` so a human can sanity-check the claim — do
-   NOT silently show a blank "done". An UNEARNED no-op (empty diff with no
-   target validation) and a CONTAMINATED base both come back as
-   `outcome:"failed"` already routed through `runFallback`, so they appear in
-   the failed count with their reason — never as a silent close.
+   **No-op rows are terminal `failed` (GGC-83, reverses GGC-49).** A ui-tweak
+   leg's EARNED no-op (no diff, no PR — validated against the ticket target on
+   clean trunk) is NOT a `done`: it opens no PR, and the dispatcher outcome
+   contract is PR-opened ⇒ done / port-end ⇒ need-spec-review / PR-not-opened
+   for ANY reason ⇒ `failed` with a reason. So `runUiTweak` returns
+   `outcome:"failed", prUrl:null, stage:"ui:noop", uiTweakFailed:true` with a
+   `UI-TWEAK BLOCKED (earned no-op …)` reason. `classifyFailure` routes that
+   prefix to `terminal-ui-block` (the GGC-37 pattern): `runFallback` removes
+   `dispatcher-dev-in-flight`, adds `need-revision`, resets status to `To-do`,
+   and posts a reason comment — and the ticket is NOT re-dispatched next sweep
+   (re-picking a no-op would just no-op forever). In the §6.4 table it renders
+   as a 🔴 `failed` row (no `— (no-op)` `done` row exists anymore). An UNEARNED
+   no-op (empty diff with no target validation) and a CONTAMINATED base also
+   come back as `outcome:"failed"` via `runFallback`, so all three appear in the
+   failed count with their reason — never as a silent close.
 
 **Resume (same session only).** If the dispatcher is interrupted and
 re-invoked in the same session, relaunch with
