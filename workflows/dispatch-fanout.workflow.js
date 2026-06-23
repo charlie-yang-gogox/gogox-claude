@@ -375,15 +375,29 @@ async function runUiTweak(item, trunkSha) {
         uiTweakFailed: true,
       };
     }
-    log(`[ui] ${item.ticketId} EARNED no-op (validated against target): ${prep.noopJustification}`);
+    // GGC-83 — an earned no-op opens NO PR, and the dispatcher outcome contract
+    // has exactly three terminal shapes: PR opened ⇒ success / done; port end ⇒
+    // need-spec-review; PR-not-opened for ANY reason ⇒ `failed` with a reason.
+    // So a no-op is `failed`, NOT `done` (reverses GGC-49's no-op-as-done). It is
+    // also a TERMINAL failed sub-case: re-picking it just no-ops again (infinite
+    // loop), so it must reuse the GGC-37 `terminal-ui-block` cleanup (remove
+    // dispatcher-dev-in-flight, add need-revision, reset To-do, post a reason
+    // comment, do NOT re-pick). classifyFailure routes `terminal-ui-block` on a
+    // `UI-TWEAK BLOCKED` error prefix, so the reason is phrased to match — the
+    // existing failed rendering then carries it for free (🔴 + reason + #needs-human).
+    log(`[ui] ${item.ticketId} EARNED no-op (validated against target) -> terminal failed (GGC-83): ${prep.noopJustification}`);
     return {
       ticketId: item.ticketId,
-      outcome: "done",
+      outcome: "failed",
       prUrl: null,
       stage: "ui:noop",
-      error: null,
-      noop: true,
-      noopJustification: prep.noopJustification.slice(0, 300),
+      error:
+        "UI-TWEAK BLOCKED (earned no-op, GGC-83): the change is already on trunk / " +
+        "validated against the live target, so there is nothing to ship and no PR " +
+        "was opened. Routed for human review rather than silently closed as done. " +
+        "Justification: " +
+        prep.noopJustification.slice(0, 300),
+      uiTweakFailed: true,
     };
   }
 
@@ -640,15 +654,9 @@ async function runUiTweak(item, trunkSha) {
 async function verifyEvidence(res, item) {
   if (!res) return res;
   if (res.outcome !== "done" && res.outcome !== "port-paused") return res;
-  // GGC-49 — an EARNED no-op (validated against the ticket target in runUiTweak)
-  // legitimately has NO PR: there was nothing to ship. The "done" terminal here is
-  // the target-validation, not an open PR, so the open-PR cross-check below would
-  // false-DEMOTE it. The earned-no-op gate already did the only meaningful check
-  // (justification present + base == clean trunk), so accept it as-is.
-  if (res.noop === true) {
-    log(`[evidence] ${res.ticketId} earned no-op — PR cross-check N/A (validated against target)`);
-    return res;
-  }
+  // GGC-83 — the GGC-49 earned-no-op-as-done path was removed: an earned no-op
+  // now returns outcome:"failed" (a terminal-ui-block) in runUiTweak, so it never
+  // reaches this success cross-check. No `res.noop === true` bypass remains.
 
   const checkPrompt =
     res.outcome === "done"
