@@ -55,6 +55,7 @@ export const meta = {
     { title: "ui-judge", detail: "ui-tweak lane: apply/preview, dual-judge panel, finisher" },
     { title: "evidence", detail: "Cross-check terminal evidence for each success row (GGC-21)" },
     { title: "fallback", detail: "Triage each failure (classify, bounded-retry, comment per class)" },
+    { title: "metric", detail: "Per-done-ticket session-metrics finalize (scan sibling subagents, sum, post Linear)" },
     { title: "aggregate", detail: "Collect structured outcomes into summary" },
   ],
 };
@@ -1213,6 +1214,66 @@ async function triageUnknownFallback(res) {
   return res;
 }
 
+// ── GGC-74: per-done-ticket session-metrics finalize stage (stage-4). ──
+// Default OFF (gated on the roster-level `metric` flag). For each ticket that
+// reached `done`, spawn ONE cheap script-level (level-1) agent that:
+//   (a) blind-estimates manual hours from the ticket title/description ONLY,
+//   (b) runs session_metrics.py --scan-subagents to SUM this ticket's sibling
+//       subagents (scoped by parentSessionId + the run-ts cutoff) into one CSV
+//       row + one "AI Session Report" Linear comment keyed on (run_stem,ticket).
+// Fully fail-soft: ANY throw / null / error just logs a WARN. ALWAYS returns the
+// ORIGINAL `res` unchanged — never mutates outcome, never fails the batch.
+async function finalizeMetrics(res, item) {
+  if (!(metric === true && res && res.outcome === "done")) return res;
+  try {
+    // --run-ts is the run-start UTC string = runStem with the trailing -<pid>
+    // stripped (the §4.4 RUN_TS-$$ stem; RUN_TS is already a sortable UTC
+    // YYYYMMDDTHHMMSSZ string reused here as the scan cutoff).
+    const runTs = (runStem || "").replace(/-\d+$/, "");
+    if (!parentSessionId || !runStem || !runTs) {
+      log(`[metric] ${res.ticketId} SKIP — missing parentSessionId/runStem (metric stage needs both)`);
+      return res;
+    }
+    const worktree = (item && item.worktreePath) || `../${res.ticketId}`;
+    await agent(
+      [
+        `Finalize session-metrics for dispatcher ticket ${res.ticketId} (it reached`,
+        `outcome=done). This is a fail-soft bookkeeping step — never block.`,
+        ``,
+        `STEP 1 — blind manual-hours estimate. From the ticket ${res.ticketId}'s`,
+        `TITLE and DESCRIPTION ONLY (do NOT read the diff / git log / code), estimate`,
+        `how many pure-manual engineer-hours this ticket would have taken a human.`,
+        `Emit a single number N (hours). This is the GGC-71 blind estimate.`,
+        ``,
+        `STEP 2 — run the metrics scan + post. Run EXACTLY:`,
+        `python3 ~/.claude/skills/shared/session-metrics/session_metrics.py \\`,
+        `  --scan-subagents --ticket-id ${res.ticketId} \\`,
+        `  --parent-session ${parentSessionId} \\`,
+        `  --run-ts ${runTs} --run-stem ${runStem} \\`,
+        `  --manual-hours <N> --cwd ${worktree}`,
+        `(substitute <N> with your STEP 1 number). It scans this ticket's sibling`,
+        `subagent transcripts under the parent session, SUMS their cost/tokens/`,
+        `durations, writes ONE CSV row, and upserts ONE "AI Session Report" Linear`,
+        `comment keyed on (run_stem, ticket).`,
+        ``,
+        `STEP 3 — report whether the script wrote a CSV row + posted/updated Linear`,
+        `(read its stderr lines "CSV updated…" / "Posted to Linear…"). If the script`,
+        `exits non-zero (e.g. ZERO matching subagents), just report that — do NOT`,
+        `retry, do NOT fail. This step must never block the batch.`,
+      ].join("\n"),
+      {
+        label: `metric:${res.ticketId}`,
+        phase: "metric",
+        agentType: "general-purpose",
+        model: "haiku",
+      },
+    );
+  } catch (e) {
+    log(`[metric] ${res.ticketId} WARN — finalize stage threw, ignoring: ${(e && e.message) || e}`);
+  }
+  return res;
+}
+
 // ── Main orchestration. ──
 // pipeline() runs each row through both stages with NO batch barrier: a failed
 // ticket's fallback runs as soon as its work stage returns (the §6.2 immediacy
@@ -1222,12 +1283,26 @@ let roster = Array.isArray(args) ? args : [];
 // May arrive as a top-level field on a wrapper object `{ trunkSha, roster }`, or
 // be absent entirely (older callers passing a bare array — backward-compat).
 let trunkSha = null;
+// GGC-74: optional per-done-ticket session-metrics finalize stage (default OFF).
+// `metric` gates it; `runStem` is the (ticket,run) upsert key reused from the
+// dispatcher's §4.4 `RUN_TS-$$` stem; `parentSessionId` is the launching
+// session UUID whose subagents/ dir the finalize stage scans.
+let metric = false, runStem = null, parentSessionId = null;
 // Accept the wrapper-object shape `{ trunkSha, roster: [...] }`.
 const adoptWrapper = (obj) => {
   if (obj && typeof obj === "object" && Array.isArray(obj.roster)) {
     roster = obj.roster;
     if (typeof obj.trunkSha === "string" && obj.trunkSha.trim() !== "") {
       trunkSha = obj.trunkSha.trim();
+    }
+    // GGC-74 — finalize-stage fields (all optional; absent → metric stage is a
+    // no-op pass-through, fully backward-compatible with pre-GGC-74 rosters).
+    if (obj.metric === true) metric = true;
+    if (typeof obj.runStem === "string" && obj.runStem.trim() !== "") {
+      runStem = obj.runStem.trim();
+    }
+    if (typeof obj.parentSessionId === "string" && obj.parentSessionId.trim() !== "") {
+      parentSessionId = obj.parentSessionId.trim();
     }
     return true;
   }
@@ -1293,6 +1368,9 @@ const results = await pipeline(
   // Immediacy comes from pipeline's per-item chaining; item + trunkSha are
   // threaded so a transient row can re-invoke runWork(item, trunkSha).
   (res, item) => triageAndFallback(res, item, trunkSha),
+  // stage 4: per-done-ticket session-metrics finalize (GGC-74, default OFF).
+  // Fail-soft; passes `res` through untouched whether or not metrics ran.
+  (res, item) => finalizeMetrics(res, item),
 );
 
 // pipeline drops a throwing item to null; filter so aggregation never NPEs.
