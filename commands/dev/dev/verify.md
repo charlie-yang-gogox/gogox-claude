@@ -28,8 +28,9 @@ MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
 # Pipeline mode: bug / feature-direct (both: no openspec) vs feature
 # (openspec-driven). Resolved by pipe_mode (lib/dev-mode.sh); .dev/mode.md
-# is written by /dev:start when --bug; feature-direct is detected
-# dynamically (no openspec/ dir — GGC-17).
+# is written by /dev:start for --bug, --port-handoff, and feature-direct repos
+# (GGC-76); pipe_mode() resolves the mode dynamically (feature-direct via no
+# openspec/ dir — GGC-17).
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
 

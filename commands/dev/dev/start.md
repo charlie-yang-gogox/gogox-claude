@@ -31,7 +31,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 - Worktree at `../<ticket-id>` (auto only).
 - `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` (when `--no-figma` OR ticket has no Figma URL after parsing).
 - `.dev/spec-review-directives.md` — first line `Status: PRESENT` (latest `<!-- spec-review:v1 -->` Linear comment captured verbatim) or `Status: NONE` (no such comment). Always written. Consumed by `/dev:apply` Step 0-bug.1 and Step 4D.1 to surface `[REVISED]` directives to whichever agent authors code.
-- `.dev/mode.md` with single line `bug` (only when `--bug` is set). Absent for the default feature path — readers resolve absent via `pipe_mode` (lib/dev-mode.sh): `feature` on OpenSpec repos, `feature-direct` on repos without an `openspec/` dir (GGC-17 — dynamic, no marker written).
+- `.dev/mode.md` with single line `bug` (when `--bug`), `port-handoff` (when `--port-handoff`), or `feature-direct` (when neither flag is set AND the worktree has no `openspec/` dir — GGC-76). Absent only for the OpenSpec `feature` path. `pipe_mode` (lib/dev-mode.sh) resolves the mode: a `feature-direct`-valued marker is NOT a positive `bug`/`port-handoff` match, so it falls through to the `! -d openspec` branch and still resolves `feature-direct`. `pipe_mode` also detects feature-direct dynamically for legacy/unmarked worktrees, so the marker is required only by the direct-mode walker's `start→apply` gate (`infer_bug_stage` in `/dev:ff`), never by `pipe_mode`.
 - Linear ticket: assigned to self, status `In Progress`, `ready-to-dev` label removed, estimate=1 if null, starting comment posted (both modes; skipped only with `--no-ticket-init`). Driven by `/_ticket-init` (idempotent).
 - `/tmp/<ticket-id>.md` — ticket dump (auto only).
 
@@ -263,7 +263,7 @@ if [ "$BUG_FLAG" = "1" ]; then
 fi
 ```
 
-`.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. Default (feature) mode does NOT write this file — readers resolve absent via `pipe_mode` (lib/dev-mode.sh): `feature` when the repo has an `openspec/` dir, `feature-direct` when it doesn't (GGC-17). `feature-direct` is deliberately marker-less — dynamic detection means pre-existing worktrees pick it up on re-run with zero migration. This keeps existing dev-pipeline runs unchanged and makes bug mode opt-in.
+`.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. The OpenSpec `feature` path does NOT write this file — `pipe_mode` (lib/dev-mode.sh) resolves it as `feature` (repo has an `openspec/` dir). The `feature-direct` path (no `openspec/` dir — GGC-17) DOES write a marker as of GGC-76 (Step 4b-featuredirect below); see that step for why the marker is needed and why it is safe.
 
 ## Step 4b-port: Port-handoff marker (when --port-handoff)
 
@@ -276,6 +276,24 @@ fi
 ```
 
 `.dev/mode.md` with value `port-handoff` (GGC-56) is the canonical signal that this dev run was reached via the port→need-spec-review→ready-to-dev handoff rather than a fresh scaffold. `pipe_mode` (lib/dev-mode.sh) returns `port-handoff`; the `/dev:apply` walker rides the FEATURE OpenSpec flow (Steps 1–5, normal figma/detect/align chain) for it, but `/dev:apply`'s feature spec-review consumers HARD-FAIL when this marker is present and `.dev/spec-review-directives.md` is absent — proof that `/dev:start` (and therefore Step 4c's directive capture) was skipped. Runs in both auto and default modes. Mutually exclusive with `--bug`; `/dev:ff` never passes both.
+
+## Step 4b-featuredirect: Feature-direct marker (GGC-76)
+
+```bash
+# Runs only when NEITHER --bug NOR --port-handoff is set (those Steps already
+# wrote .dev/mode.md and returned). A worktree with no `openspec/` dir is a
+# feature-direct repo (the `prompt` platform — GGC-17). Write the marker so the
+# direct-mode walker's start→apply gate can fire (see below).
+if [ "$BUG_FLAG" != "1" ] && [ "$PORT_HANDOFF" != "1" ] && [ ! -d openspec ]; then
+  mkdir -p .dev
+  printf 'feature-direct\n' > .dev/mode.md.tmp
+  mv .dev/mode.md.tmp .dev/mode.md   # atomic
+fi
+```
+
+**Why this marker is needed (GGC-76).** `feature-direct` shares the bug-mode walker `infer_bug_stage` (in `/dev:ff`), whose `start→apply` gate is `[ -d .dev ] && [ -f .dev/mode.md ]`. Before GGC-76, `/dev:start` wrote `.dev/mode.md` only for `--bug`/`--port-handoff`, so on a feature-direct repo the gate never fired: after `/dev:start`, `infer_dev_stage` re-derived `start`, `/dev:ff` saw `NEW == CURRENT`, and the pipeline STOPped with no progress. Writing the marker here lets the gate advance to `apply`.
+
+**Why it is safe for `pipe_mode`.** `pipe_mode` only treats `mode.md` values `bug` and `port-handoff` as positive matches; any other value (here, `feature-direct`) falls through to the `! -d openspec` branch and still resolves `feature-direct`. So the marker changes nothing for `pipe_mode` while unblocking the walker. `pipe_mode` also keeps its dynamic `! -d openspec` detection, so legacy/unmarked feature-direct worktrees (created before this fix) still resolve correctly. (Regression-guarded by `lib/dev-mode.test.sh`, run by `scripts/prompt-lint.sh`.)
 
 ## Step 4c: Capture spec-review directives (if any)
 
