@@ -24,15 +24,16 @@ Prerequisite: >
 
 Find every actionable ticket in the cwd repo's Linear team and dispatch the whole batch — all lanes — via a single `Workflow` tool call (§5.2). The script fans out one `/ggx-work <ID> --auto` agent per dev/port/bug ticket and runs `design bug` tickets as script-spawned dual-judge ui-tweak legs; each `/ggx-work` agent then calls `/route --non-interactive` to pick the right `/port:ff` / `/dev:ff` / `/bug:ff` / `/ui-tweak:ff` based on the ticket's classification label and worktree state. The dispatcher consumes the script's structured `{ counts, rows }` return, posts fallbacks, and emits a summary.
 
-**Usage**: `/ggx-dispatcher [--dry-run] [--test] [--max-parallel:<N>] [--team:<KEY>]`
+**Usage**: `/ggx-dispatcher [--dry-run] [--test] [--max-parallel:<N>] [--team:<KEY>] [--metric]`
 
 - `--dry-run` — Print the planned dispatch and STOP. No Linear writes, no agent spawn.
 - `--test` — Skip the default-branch + clean-tree pre-flight checks (still requires main worktree, gh auth, and lockfile).
 - `--max-parallel:<N>` — Concurrent dispatch cap. Default `3`, hard cap `20`. Out of range → abort. This bounds the roster handed to the script; the script's `pipeline()` self-caps concurrency at `min(16, cores-2)` on top.
 - `--workflow` — **Redundant no-op (the `Workflow` path is now the only path).** Accepted for back-compat and changes nothing. The fan-out always runs via §5.2; requires `~/.claude/workflows/dispatch-fanout.workflow.js` (installed by `install.sh`).
-- `--launch-only` — After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock. **Also emits a sibling `<RUN_TS>-<PID>.args.json` artifact** (§5.2 step 2a) holding the EXACT `{ trunkSha, roster }` payload passed to the `Workflow` tool — the durable record of the dispatch args the inline `--launch-only` run does NOT otherwise hold, so `/ggx-on-duty`'s RECONCILE resume (GGC-41) can re-supply identical args via `resumeFromRunId` and hit the journal cache. Discovered by the same newest-mtime glob on-duty already uses for the in-flight TSV.
+- `--launch-only` — After §5.2 fires the `Workflow` tool and records the `runId`, **return immediately** — skip the §5.2 step-4 heartbeat and step-5 result consumption, and release the run-lock (§6.5) on return. The CALLER owns the workflow's lifecycle (polling, result consumption, lock-free concurrency guarding). Intended for `/ggx-on-duty` (D22): the dispatch fan-out becomes a `Workflow` task owned by the on-duty session — visible in its `/workflows` — and on-duty consumes the `{counts, rows}` return on the completion notification. The durable concurrency guard for the still-running workflow is the `dispatcher-*-in-flight` labels set in §4.1 (already written before launch), NOT the run-lock. **Also emits a sibling `<RUN_TS>-<PID>.args.json` artifact** (§5.2 step 2a) holding the EXACT `{ trunkSha, roster, metric, runStem, parentSessionId }` payload passed to the `Workflow` tool — the durable record of the dispatch args the inline `--launch-only` run does NOT otherwise hold, so `/ggx-on-duty`'s RECONCILE resume (GGC-41) can re-supply identical args via `resumeFromRunId` and hit the journal cache. Discovered by the same newest-mtime glob on-duty already uses for the in-flight TSV.
 - `--demo` — After the run, run a serial demo-capture pass (§6.6) via `/ggx-demo --batch` (GGC-66 — absorbed `/_ui-demo-batch`), which self-discovers every open `design bug` PR of mine still lacking a demo (incl. the ones just shipped) and captures them serially on one device. **Skipped under `--launch-only`** — the dispatcher has already returned, so the caller (`/ggx-on-duty --demo`) owns the demo pass. Best-effort / fail-soft: never blocks or fails the run. Off by default (design-bug PRs ship without an auto-captured demo, as today). See GGC-29 / GGC-66.
 - `--team:<KEY>` — Required when the cwd repo's `branch_prefix` is `auto`. Allowed (but must equal `branch_prefix`) when `branch_prefix` is concrete.
+- `--metric` — **Default OFF.** When set, the §5.2 `Workflow` pipeline runs a fail-soft **finalize stage** (stage-4, after `triageAndFallback`) that produces session-metrics — a CSV row + an "AI Session Report" Linear comment — for **each `done` ticket**, where the numbers are the SUM of ALL that ticket's sibling subagents in this run (scanned from the parent session's `subagents/` dir, scoped by the §4.4 `RUN_TS` cutoff, upserted on `(run_stem, ticket)`). It is **NOT appended to the `/ggx-work` spawn string** — metrics are a finalize stage, not a worker flag (a Workflow-spawned worker's transcript lives under the parent's `subagents/` and is invisible to `session_metrics.py:find_current_session`, which only globs top-level `*.jsonl`). Composes with `--auto` (implied) / `--launch-only` / `--max-parallel` / `--team`. Fully fail-soft: a finalize miss logs a WARN and never changes a ticket's outcome or fails the batch.
 
 ---
 
@@ -460,6 +461,7 @@ Planned dispatch (--dry-run, no mutations):
 | CAF-198 | fresh-dev  | planned | /ggx-work CAF-198 --auto | https://linear.app/.../CAF-198      |
 
 Total: <N>. Re-run without --dry-run to execute.
+metrics: on/off   (on iff --metric — a post-`done` session-metrics finalize stage, NOT a change to the command column)
 ```
 
 The command string is identical for every lane (`/ggx-work <ID> --auto`);
@@ -533,6 +535,7 @@ Dispatching <N> tickets:
 | CAF-212 | fresh-port   | locked ✓ | /ggx-work CAF-212 --auto | https://linear.app/.../CAF-212        |
 | CAF-198 | fresh-dev    | locked ✓ | /ggx-work CAF-198 --auto | https://linear.app/.../CAF-198        |
 | CAF-370 | recovery-dev | locked ✓ | /ggx-work CAF-370 --auto | https://linear.app/.../CAF-370        |
+metrics: on/off   (on iff --metric — finalize stage; the command column is unchanged)
 ```
 
 The §4.0 dry-run path emits the same table with `status: planned` instead of `locked ✓`. Same shape, one render path.
@@ -556,8 +559,18 @@ After §4.1 has locked every surviving ticket and §4.3 has built `DISPATCH_ROST
 ```bash
 # RUN_TS is this run's identifier, reused for the §6.3/§6.4 report paths
 # (`<RUN_TS>-<PID>`). Establish it here, at the first on-disk write, so the
-# inflight file and the final report share one stem.
+# inflight file and the final report share one stem. RUN_TS is already a
+# sortable UTC string (`YYYYMMDDTHHMMSSZ`), reused verbatim by the §5.2 metric
+# finalize stage as the run-start scan cutoff (`--run-ts`).
 : "${RUN_TS:=$(date -u +%Y%m%dT%H%M%SZ)}"
+# parentSessionId — the launching (this) session UUID. The §5.2 metric stage
+# (--metric) scans THIS session's subagents/ dir, so capture it here alongside
+# RUN_TS. Under --launch-only this IS the on-duty session that fired the launch.
+parentSessionId="$CLAUDE_CODE_SESSION_ID"
+# METRIC — set to "1" iff the run was invoked with --metric, else leave empty.
+# Reused by the §5.2 step-2a args.json printf and the step-3 args object's
+# `metric` boolean to gate the finalize stage. Default OFF (empty).
+METRIC=""   # set METRIC=1 here when --metric was passed
 INFLIGHT="claude-reports/dispatcher/$RUN_TS-$$.inflight.tsv"
 : > "$INFLIGHT"
 # one line per claimed ticket: <ticket-id>\t<headRefName>\t<absolute-worktree-path>
@@ -608,6 +621,15 @@ attached `--no-figma` to the dev spawn. That detection has moved into
 designer dropping a Figma link as a follow-up comment no longer routes
 the ticket through the SKIPPED short-circuit. Dispatcher just passes
 `/ggx-work <ID> --auto`; the rest is determined downstream.
+
+**`--metric` is NOT a spawn-string change.** The spawn string stays exactly
+`/ggx-work <ID> --auto` for every lane regardless of `--metric`. Session
+metrics are produced by the §5.2 script's stage-4 finalize stage (scan this
+ticket's sibling subagents → sum → CSV row + Linear "AI Session Report"),
+**not** by appending `--metric` to the worker — a Workflow-spawned worker's
+transcript lives under the parent session's `subagents/` dir and is invisible
+to `session_metrics.py:find_current_session` (top-level glob only), so a
+worker self-finalize cannot see its own siblings.
 
 ### 5.2 Workflow fan-out (the ONLY fan-out path — R5 migration complete)
 
@@ -706,10 +728,18 @@ Steps:
    # the stem so on-duty's newest-mtime glob finds both with one pattern.
    ARGS_JSON="claude-reports/dispatcher/$RUN_TS-$$.args.json"
    ARGS_TMP="$(mktemp)"
-   # Identical shape to the Workflow `args` below: { trunkSha, roster }.
-   printf '{"trunkSha":%s,"roster":%s}\n' \
+   # Identical shape to the Workflow `args` below:
+   #   { trunkSha, roster, metric, runStem, parentSessionId }.
+   # `metric` is the §flags boolean (default false); `runStem` is the
+   # §4.4 `RUN_TS-$$` stem (reuse, do NOT mint a new one); `parentSessionId`
+   # is the §4.4-captured launching-session UUID. They MUST match step 3
+   # verbatim so a --launch-only resume via resumeFromRunId re-supplies them.
+   printf '{"trunkSha":%s,"roster":%s,"metric":%s,"runStem":%s,"parentSessionId":%s}\n' \
      "$(jq -Rn --arg t "$trunk_sha" '$t')" \
-     "$DISPATCH_ROSTER_JSON" > "$ARGS_TMP"
+     "$DISPATCH_ROSTER_JSON" \
+     "$([ -n "$METRIC" ] && echo true || echo false)" \
+     "$(jq -Rn --arg s "$RUN_TS-$$" '$s')" \
+     "$(jq -Rn --arg p "$parentSessionId" '$p')" > "$ARGS_TMP"
    mv "$ARGS_TMP" "$ARGS_JSON"   # atomic
    echo "dispatcher: wrote launch-only args artifact $ARGS_JSON" >&2
    ```
@@ -735,9 +765,17 @@ Steps:
    route anywhere else — there is no other path):
    - `scriptPath`: `$HOME/.claude/workflows/dispatch-fanout.workflow.js`
    - `args`: a JSON object `{ "trunkSha": "<$trunk_sha>", "roster":
-     DISPATCH_ROSTER_JSON }` (GGC-49 — the wrapper shape carries the
-     clean-trunk baseline alongside the roster so the script can assert each
-     leg's base against it). Note that in THIS harness the `Workflow` tool
+     DISPATCH_ROSTER_JSON, "metric": <bool>, "runStem": "<RUN_TS>-<PID>",
+     "parentSessionId": "<$CLAUDE_CODE_SESSION_ID>" }` (GGC-49 — the wrapper
+     shape carries the clean-trunk baseline alongside the roster so the script
+     can assert each leg's base against it; GGC-74 — `metric` gates the
+     finalize stage, `runStem`/`parentSessionId` scope its subagent scan).
+     **`runStem`** = the §4.4 `RUN_TS-$$` stem (reuse it, do NOT mint a new
+     one). **`parentSessionId`** = `$CLAUDE_CODE_SESSION_ID` captured at
+     args-build time (the launching session — under `--launch-only` this is
+     the on-duty session that fired the launch). **`metric`** = the §flags
+     `--metric` boolean (default `false`); when `false` the script's stage-4
+     is a no-op pass-through. Note that in THIS harness the `Workflow` tool
      delivers `args` to the script as a **JSON string** regardless (confirmed
      2026-06-08, CAF-371: even a live object/array arrived stringified). The
      script tolerates the wrapper object, a bare array (legacy, no trunkSha →

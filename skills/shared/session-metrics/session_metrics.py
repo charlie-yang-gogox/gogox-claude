@@ -104,6 +104,12 @@ CSV_FIELDS = [
     "estimated_manual_sec",
     "time_saved_multiplier",
     "claude_code_version",
+    # GGC-74: appended at END for backward compat (DictWriter backfills empty
+    # for old rows). run_stem = the dispatcher (ticket,run) upsert key;
+    # metrics_provenance = compact "stem:cost;stem:cost" of the summed
+    # subagent transcripts so a double-count is visible, not hidden in a scalar.
+    "run_stem",
+    "metrics_provenance",
 ]
 
 
@@ -227,6 +233,17 @@ DISPATCHER_DESC_RE = re.compile(
     r"^\s*Dispatch\s+([A-Z]+-\d+)\s+via\s+(port|dev):ff\b",
     re.IGNORECASE,
 )
+
+
+def anchored_ticket_re(ticket_id: str) -> re.Pattern:
+    """Anchored, case-insensitive matcher for a ticket id so `GGC-7` never
+    matches inside `GGC-74`. The negative lookbehind blocks an alnum prefix and
+    the negative lookahead blocks a trailing digit (the only ambiguous suffix
+    for the `<LETTERS>-<DIGITS>` shape)."""
+    return re.compile(
+        r"(?<![A-Za-z0-9])" + re.escape(ticket_id) + r"(?![0-9])",
+        re.IGNORECASE,
+    )
 
 
 def detect_ticket_id(cwd: str, git_branch: str | None = None, explicit: str | None = None) -> str:
@@ -471,6 +488,182 @@ def find_dispatcher_contribution(
                 )
 
     return out
+
+
+# ===================================================================
+# GGC-74: batch subagent scan + aggregate
+# ===================================================================
+
+
+def _run_ts_to_epoch(run_ts: str) -> float | None:
+    """Parse a compact RUN_TS (``YYYYMMDDTHHMMSSZ``, treated as UTC) to epoch
+    seconds. Returns None when unparseable."""
+    if not run_ts:
+        return None
+    s = run_ts.strip()
+    try:
+        dt = datetime.strptime(s, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+def _first_record(jsonl_path: Path) -> dict | None:
+    """Return the first parseable JSON record of a transcript, or None."""
+    try:
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    return json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return None
+    return None
+
+
+def scan_subagents_aggregate(
+    parent_session: str,
+    ticket_id: str,
+    run_ts: str,
+) -> dict | None:
+    """Scan ``PROJECTS_DIR/*/<parent_session>/subagents/agent-*.jsonl`` for the
+    given ticket and aggregate (SUM) cost/tokens/durations/model_usage across
+    every matching sibling subagent into a single synthetic metrics object.
+
+    Match = (anchored ticket regex hits the transcript's first-record
+    ``gitBranch`` OR ``cwd``) AND (first-record ``timestamp`` >= ``run_ts``
+    cutoff, both normalized to epoch seconds). Unparseable timestamps are
+    EXCLUDED (safer than over-counting).
+
+    Returns None when ZERO transcripts match (the detectable-failure contract);
+    otherwise a dict with the combined ``metrics`` (parse_session shape),
+    ``durations``, ``total_cost``, ``total_tokens``, ``git_branch``, ``cwd``,
+    and ``provenance`` (list of {stem, cost, tokens}).
+    """
+    if not PROJECTS_DIR.exists() or not parent_session or ticket_id == "UNKNOWN":
+        return None
+
+    cutoff = _run_ts_to_epoch(run_ts)
+    tre = anchored_ticket_re(ticket_id)
+
+    # Glob across all project dirs — the parent session UUID is unique, so this
+    # finds the right subagents/ dir regardless of which project launched it.
+    sub_files = sorted(PROJECTS_DIR.glob(f"*/{parent_session}/subagents/agent-*.jsonl"))
+
+    # Combined (synthetic) metrics object in parse_session() shape.
+    combined: dict = {
+        "timestamps": [],
+        "model_usage": defaultdict(
+            lambda: {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_write_tokens": 0,
+                "cache_read_tokens": 0,
+            }
+        ),
+        "user_msgs": 0,
+        "assistant_msgs": 0,
+        "tool_calls": 0,
+        "total_turns": 0,
+        "turn_durations_ms": [],
+        "agents": [],
+        "in_progress_agents": [],
+        "git_branch": None,
+        "claude_code_version": None,
+        "cwd": None,
+    }
+
+    provenance: list[dict] = []
+    total_cost = 0.0
+    total_tokens = 0
+    matched = 0
+
+    for sub in sub_files:
+        head = _first_record(sub)
+        if not head:
+            continue
+        branch = head.get("gitBranch") or ""
+        cwd_field = head.get("cwd") or ""
+        if not (tre.search(branch) or tre.search(cwd_field)):
+            continue
+        # Time cutoff (epoch-normalized). Unparseable transcript ts → exclude.
+        if cutoff is not None:
+            tdt = parse_ts(head.get("timestamp"))
+            if tdt is None:
+                print(
+                    f"Warning: excluding {sub.name} — unparseable first-record timestamp",
+                    file=sys.stderr,
+                )
+                continue
+            if tdt.timestamp() < cutoff:
+                continue
+
+        try:
+            sub_metrics = parse_session(sub)
+        except Exception:
+            continue
+
+        # Merge into the combined object.
+        combined["timestamps"].extend(sub_metrics["timestamps"])
+        combined["turn_durations_ms"].extend(sub_metrics["turn_durations_ms"])
+        combined["user_msgs"] += sub_metrics["user_msgs"]
+        combined["assistant_msgs"] += sub_metrics["assistant_msgs"]
+        combined["tool_calls"] += sub_metrics["tool_calls"]
+        combined["total_turns"] += sub_metrics["total_turns"]
+        combined["agents"].extend(sub_metrics["agents"])
+        combined["in_progress_agents"].extend(sub_metrics["in_progress_agents"])
+        if sub_metrics["git_branch"] and not combined["git_branch"]:
+            combined["git_branch"] = sub_metrics["git_branch"]
+        if sub_metrics["claude_code_version"] and not combined["claude_code_version"]:
+            combined["claude_code_version"] = sub_metrics["claude_code_version"]
+        if sub_metrics["cwd"] and not combined["cwd"]:
+            combined["cwd"] = sub_metrics["cwd"]
+
+        sub_cost = 0.0
+        sub_tokens = 0
+        for model_name, u in sub_metrics["model_usage"].items():
+            mu = combined["model_usage"][model_name]
+            mu["input_tokens"] += u["input_tokens"]
+            mu["output_tokens"] += u["output_tokens"]
+            mu["cache_write_tokens"] += u["cache_write_tokens"]
+            mu["cache_read_tokens"] += u["cache_read_tokens"]
+            family = get_model_family(model_name)
+            sub_tokens += sum(u.values())
+            sub_cost += calculate_cost(
+                {
+                    "input_tokens": u["input_tokens"],
+                    "output_tokens": u["output_tokens"],
+                    "cache_creation_input_tokens": u["cache_write_tokens"],
+                    "cache_read_input_tokens": u["cache_read_tokens"],
+                },
+                family,
+                model_name,
+            )
+
+        provenance.append(
+            {"stem": sub.stem, "cost": round(sub_cost, 4), "tokens": sub_tokens}
+        )
+        total_cost += sub_cost
+        total_tokens += sub_tokens
+        matched += 1
+
+    if matched == 0:
+        return None
+
+    durations = compute_durations(combined)
+    return {
+        "metrics": combined,
+        "durations": durations,
+        "total_cost": total_cost,
+        "total_tokens": total_tokens,
+        "git_branch": combined["git_branch"],
+        "cwd": combined["cwd"],
+        "provenance": provenance,
+    }
 
 
 # ===================================================================
@@ -781,6 +974,8 @@ def format_report(
     story_points: int | None = None,
     cumulative: dict | None = None,
     current_cost: float = 0.0,
+    run_stem: str | None = None,
+    provenance: list[dict] | None = None,
 ) -> str:
     lines: list[str] = []
     prior = cumulative if cumulative and cumulative.get("prior_session_count", 0) > 0 else None
@@ -862,6 +1057,14 @@ def format_report(
             multiplier = manual_sec / cum_ai
             lines.append(f"| **Speed** | **~{multiplier:.1f}x** vs AI-estimated manual |")
 
+    # ---- Provenance (GGC-74 batch scan) — list each summed subagent so an
+    # accidental double-count is visible, not hidden in a summed scalar. ----
+    if provenance:
+        lines.append("")
+        lines.append(f"### Provenance ({len(provenance)} subagent transcript(s) summed)")
+        for p in provenance:
+            lines.append(f"- {p['stem']} — {format_cost(p['cost'])}")
+
     # ---- AI Summary (from external file) ----
     if summary_file:
         try:
@@ -874,8 +1077,12 @@ def format_report(
         except Exception:
             pass
 
-    # Hidden marker for per-session upsert
-    if session_id:
+    # Hidden marker for upsert. GGC-74: batch finalize keys on (run_stem,ticket);
+    # the legacy per-session path keys on session_id.
+    if run_stem:
+        lines.append("")
+        lines.append(f"<!-- dispatch-run:{run_stem}/{ticket_id} -->")
+    elif session_id:
         lines.append("")
         lines.append(f"<!-- session:{session_id} -->")
 
@@ -895,6 +1102,8 @@ def write_csv(
     git_branch: str | None,
     story_points: int | None = None,
     manual_hours: float | None = None,
+    run_stem: str | None = None,
+    metrics_provenance: str = "",
 ):
     METRICS_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = CSV_PATH.with_suffix(".lock")
@@ -902,16 +1111,28 @@ def write_csv(
     with open(lock_path, "w") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         try:
-            # Read existing rows, filtering out current session (upsert)
+            # Read existing rows, filtering out the current row's key (upsert).
+            # GGC-74: batch finalize keys on (ticket_id, run_stem); the legacy
+            # per-session path keys on session_id.
             existing_rows: list[dict] = []
             if CSV_PATH.exists():
                 try:
                     with open(CSV_PATH, newline="") as f:
-                        existing_rows = [
-                            row
-                            for row in csv.DictReader(f)
-                            if row.get("session_id") != session_id
-                        ]
+                        if run_stem:
+                            existing_rows = [
+                                row
+                                for row in csv.DictReader(f)
+                                if not (
+                                    row.get("ticket_id") == ticket_id
+                                    and row.get("run_stem") == run_stem
+                                )
+                            ]
+                        else:
+                            existing_rows = [
+                                row
+                                for row in csv.DictReader(f)
+                                if row.get("session_id") != session_id
+                            ]
                 except Exception:
                     pass
 
@@ -972,6 +1193,8 @@ def write_csv(
                         "claude_code_version": metrics.get(
                             "claude_code_version", ""
                         ),
+                        "run_stem": run_stem or "",
+                        "metrics_provenance": metrics_provenance,
                     }
                 )
 
@@ -1080,12 +1303,13 @@ REPORT_MARKER = "## 🤖 AI Session Report"
 
 
 def _find_existing_report_comment(
-    issue_id: str, session_id: str, api_key: str
+    issue_id: str, marker_tag: str, api_key: str
 ) -> str | None:
     """Find an existing session report comment on the issue.
 
-    Matches by the report header marker AND the session_id embedded in the
-    comment body.  Returns the comment id or None.
+    Matches by the report header marker AND the unique ``marker_tag`` embedded
+    in the comment body (``<!-- session:<id> -->`` legacy, or GGC-74's
+    ``<!-- dispatch-run:<run_stem>/<ticket> -->``). Returns the comment id or None.
     """
     query = """
     query($issueId: String!) {
@@ -1099,10 +1323,9 @@ def _find_existing_report_comment(
         comments = (
             data.get("data", {}).get("issue", {}).get("comments", {}).get("nodes", [])
         )
-        session_tag = f"<!-- session:{session_id} -->"
         for c in comments:
             body = c.get("body", "")
-            if REPORT_MARKER in body and session_id and session_tag in body:
+            if REPORT_MARKER in body and marker_tag and marker_tag in body:
                 return c["id"]
     except Exception:
         pass
@@ -1110,7 +1333,11 @@ def _find_existing_report_comment(
 
 
 def post_to_linear(
-    ticket_id: str, report: str, api_key: str, session_id: str = ""
+    ticket_id: str,
+    report: str,
+    api_key: str,
+    session_id: str = "",
+    run_stem: str | None = None,
 ) -> bool:
     issue_id = find_linear_issue_id(ticket_id, api_key)
     if not issue_id:
@@ -1120,9 +1347,15 @@ def post_to_linear(
         )
         return False
 
-    # Check for existing report comment to update
+    # Check for existing report comment to update. GGC-74: batch finalize
+    # upserts by (run_stem, ticket); the legacy per-session path by session_id.
+    marker_tag = (
+        f"<!-- dispatch-run:{run_stem}/{ticket_id} -->"
+        if run_stem
+        else f"<!-- session:{session_id} -->"
+    )
     existing_comment_id = _find_existing_report_comment(
-        issue_id, session_id, api_key
+        issue_id, marker_tag, api_key
     )
 
     if existing_comment_id:
@@ -1193,6 +1426,104 @@ def read_hook_stdin() -> dict | None:
     return None
 
 
+def run_scan_subagents_mode(args) -> None:
+    """GGC-74 batch finalize: scan a parent session's sibling subagents for one
+    ticket, SUM their metrics, write ONE CSV row + post ONE Linear report.
+
+    Fail-soft contract: ZERO matches → non-zero exit with a clear stderr line so
+    the Workflow finalize stage catches it. The (ticket, run_stem) pair is the
+    CSV/Linear upsert key (not session_id)."""
+    cwd = args.cwd or os.getcwd()
+    if not args.ticket_id:
+        print("Error: --scan-subagents requires --ticket-id", file=sys.stderr)
+        sys.exit(2)
+    if not args.parent_session:
+        print("Error: --scan-subagents requires --parent-session", file=sys.stderr)
+        sys.exit(2)
+    ticket_id = args.ticket_id.upper()
+    run_stem = args.run_stem
+
+    agg = scan_subagents_aggregate(args.parent_session, ticket_id, args.run_ts or "")
+    if agg is None:
+        print(
+            f"Error: --scan-subagents found ZERO matching subagent transcripts for "
+            f"{ticket_id} under parent session {args.parent_session} "
+            f"(run-ts cutoff {args.run_ts!r}). Nothing to finalize.",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+
+    metrics = agg["metrics"]
+    durations = agg["durations"]
+    git_branch = agg["git_branch"]
+    provenance = agg["provenance"]
+    current_total_cost = agg["total_cost"]
+    # Compact, round-trippable provenance string for the CSV column.
+    prov_str = ";".join(f"{p['stem']}:{p['cost']}" for p in provenance)
+
+    # ---- Story points (GGC-71 reuse): explicit --story-points > stored CSV
+    # value > snapped --manual-hours blind estimate. ----
+    cumulative = get_ticket_cumulative(ticket_id, "", cwd)
+    if args.story_points is None and cumulative and cumulative.get("stored_story_points"):
+        args.story_points = cumulative["stored_story_points"]
+    if args.story_points is None and args.manual_hours is not None:
+        args.story_points = hours_to_story_point(args.manual_hours)
+
+    # The synthetic "session_id" for this batch row is the run_stem (the legacy
+    # session_id column is unused on this path — the upsert keys on run_stem).
+    session_label = run_stem or args.parent_session
+
+    if not args.no_csv:
+        write_csv(
+            metrics,
+            durations,
+            ticket_id,
+            session_label,
+            git_branch,
+            args.story_points,
+            args.manual_hours,
+            run_stem=run_stem,
+            metrics_provenance=prov_str,
+        )
+        print(f"\nCSV updated at {CSV_PATH} (run_stem={run_stem})", file=sys.stderr)
+
+    session_number = get_session_number(ticket_id, session_label)
+    report = format_report(
+        metrics, durations, ticket_id, session_number, git_branch,
+        session_label, args.summary_file, args.story_points,
+        cumulative, current_total_cost,
+        run_stem=run_stem, provenance=provenance,
+    )
+
+    if args.json:
+        print(json.dumps(
+            {
+                "ticket_id": ticket_id,
+                "run_stem": run_stem,
+                "parent_session": args.parent_session,
+                "subagents_matched": len(provenance),
+                "total_cost": round(current_total_cost, 4),
+                "total_tokens": agg["total_tokens"],
+                "provenance": provenance,
+            },
+            indent=2,
+            default=str,
+        ))
+    else:
+        print(report)
+
+    if not args.no_linear:
+        api_key = get_linear_api_key()
+        if api_key:
+            ok = post_to_linear(ticket_id, report, api_key, session_label, run_stem=run_stem)
+            if ok:
+                print(f"Posted to Linear: {ticket_id} (run_stem={run_stem})", file=sys.stderr)
+            else:
+                print(f"Failed to post to Linear: {ticket_id}", file=sys.stderr)
+        else:
+            print("Warning: No Linear API key found in settings", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Claude Code session metrics")
     parser.add_argument("--pid", type=int, help="Process ID to look up session")
@@ -1242,6 +1573,33 @@ def main():
         default=7,
         help="Lookback window for --include-dispatcher (default: 7)",
     )
+    # ---- GGC-74: batch dispatcher finalize mode ----
+    # Scan a parent session's sibling subagent transcripts for one ticket and
+    # aggregate (SUM) their cost/tokens/durations into a single synthetic
+    # metrics object. Used by the /ggx-dispatcher --metric finalize stage where
+    # a worker's transcript lives under the PARENT's subagents/ dir and is
+    # invisible to find_current_session (top-level glob only).
+    parser.add_argument(
+        "--scan-subagents",
+        action="store_true",
+        help=(
+            "Batch finalize mode: scan <parent-session>/subagents/agent-*.jsonl "
+            "for --ticket-id, sum their metrics, and post one CSV row + Linear "
+            "report. Requires --parent-session, --run-ts, --run-stem."
+        ),
+    )
+    parser.add_argument(
+        "--parent-session",
+        help="Parent (launching) session UUID whose subagents/ dir to scan (--scan-subagents).",
+    )
+    parser.add_argument(
+        "--run-ts",
+        help="Run-start UTC cutoff (compact YYYYMMDDTHHMMSSZ); only subagents started at/after it count.",
+    )
+    parser.add_argument(
+        "--run-stem",
+        help="Upsert key (the RUN_TS-$$ stem) used for the (ticket,run) CSV/Linear dedup in --scan-subagents.",
+    )
     args = parser.parse_args()
 
     # Hook mode: read session info from stdin, force CSV-only
@@ -1249,6 +1607,14 @@ def main():
     if args.hook:
         hook_ctx = read_hook_stdin()
         args.no_linear = True  # Never post to Linear from a hook
+
+    # ---- GGC-74: batch dispatcher finalize mode ----
+    # Scan the parent session's sibling subagents for this ticket, SUM them, and
+    # emit ONE CSV row + Linear "AI Session Report". Returns before the legacy
+    # single-session resolution (and so never reaches the P2 subagent guard).
+    if args.scan_subagents:
+        run_scan_subagents_mode(args)
+        return
 
     # ---- Resolve session ----
     cwd = args.cwd or (hook_ctx or {}).get("cwd") or os.getcwd()
