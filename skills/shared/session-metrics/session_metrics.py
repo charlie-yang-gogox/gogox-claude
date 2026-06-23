@@ -525,10 +525,58 @@ def _first_record(jsonl_path: Path) -> dict | None:
     return None
 
 
+def _invoked_scan_subagents(jsonl_path: Path) -> bool:
+    """True if this transcript ITSELF ran ``session_metrics.py --scan-subagents``
+    — i.e. it IS the batch metric scanner (GGC-78). Such a transcript is a
+    sibling subagent under the same parent session, so without this guard the
+    scanner would sum ITSELF into a ticket's total (a small but real
+    over-count, visible via the provenance line).
+
+    Detection is by an actual ``Bash`` tool invocation — the command string
+    must contain BOTH ``session_metrics`` and ``--scan-subagents`` — NOT a bare
+    substring scan. A worker that merely EDITED ``session_metrics.py`` also
+    carries the literal ``--scan-subagents`` in its transcript (in an Edit/Write
+    tool_use), and must NOT be excluded. Being content-based, this holds
+    regardless of the scanner's process cwd — replacing the fragile, incidental
+    cwd-based exclusion the bug report flags.
+    """
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                # Cheap pre-filter: skip the JSON parse unless the token is present.
+                if "--scan-subagents" not in line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("type") != "assistant":
+                    continue
+                msg = data.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+                for block in msg.get("content", []):
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") != "tool_use" or block.get("name") != "Bash":
+                        continue
+                    cmd = (block.get("input") or {}).get("command", "")
+                    if (
+                        isinstance(cmd, str)
+                        and "--scan-subagents" in cmd
+                        and "session_metrics" in cmd
+                    ):
+                        return True
+    except OSError:
+        return False
+    return False
+
+
 def scan_subagents_aggregate(
     parent_session: str,
     ticket_id: str,
     run_ts: str,
+    exclude_agents: set[str] | None = None,
 ) -> dict | None:
     """Scan ``PROJECTS_DIR/*/<parent_session>/subagents/agent-*.jsonl`` for the
     given ticket and aggregate (SUM) cost/tokens/durations/model_usage across
@@ -539,6 +587,11 @@ def scan_subagents_aggregate(
     cutoff, both normalized to epoch seconds). Unparseable timestamps are
     EXCLUDED (safer than over-counting).
 
+    Two transcripts are always excluded (GGC-78): any stem in ``exclude_agents``
+    (explicit caller lever) and the scanner's OWN transcript — detected by it
+    having invoked ``--scan-subagents`` (``_invoked_scan_subagents``) — so the
+    batch metric agent never self-counts regardless of its process cwd.
+
     Returns None when ZERO transcripts match (the detectable-failure contract);
     otherwise a dict with the combined ``metrics`` (parse_session shape),
     ``durations``, ``total_cost``, ``total_tokens``, ``git_branch``, ``cwd``,
@@ -547,6 +600,7 @@ def scan_subagents_aggregate(
     if not PROJECTS_DIR.exists() or not parent_session or ticket_id == "UNKNOWN":
         return None
 
+    exclude_agents = exclude_agents or set()
     cutoff = _run_ts_to_epoch(run_ts)
     tre = anchored_ticket_re(ticket_id)
 
@@ -583,6 +637,14 @@ def scan_subagents_aggregate(
     matched = 0
 
     for sub in sub_files:
+        # GGC-78: explicit exclusion lever — the caller (e.g. the Workflow
+        # finalize stage) can name transcript stems to skip.
+        if sub.stem in exclude_agents:
+            print(
+                f"Warning: excluding {sub.name} — named in --exclude-agent",
+                file=sys.stderr,
+            )
+            continue
         head = _first_record(sub)
         if not head:
             continue
@@ -601,6 +663,19 @@ def scan_subagents_aggregate(
                 continue
             if tdt.timestamp() < cutoff:
                 continue
+
+        # GGC-78: never sum the batch scanner's OWN transcript — it is a sibling
+        # subagent that would otherwise self-count. Content-based, so it holds
+        # regardless of the scanner's process cwd (the fragile incidental
+        # exclusion this fix replaces). Checked only for transcripts that already
+        # matched the ticket + time cutoff above, so the extra read is rare.
+        if _invoked_scan_subagents(sub):
+            print(
+                f"Warning: excluding {sub.name} — it invoked --scan-subagents "
+                f"(the metric scanner's own transcript; GGC-78)",
+                file=sys.stderr,
+            )
+            continue
 
         try:
             sub_metrics = parse_session(sub)
@@ -1443,7 +1518,12 @@ def run_scan_subagents_mode(args) -> None:
     ticket_id = args.ticket_id.upper()
     run_stem = args.run_stem
 
-    agg = scan_subagents_aggregate(args.parent_session, ticket_id, args.run_ts or "")
+    agg = scan_subagents_aggregate(
+        args.parent_session,
+        ticket_id,
+        args.run_ts or "",
+        exclude_agents=set(args.exclude_agent or []),
+    )
     if agg is None:
         print(
             f"Error: --scan-subagents found ZERO matching subagent transcripts for "
@@ -1599,6 +1679,17 @@ def main():
     parser.add_argument(
         "--run-stem",
         help="Upsert key (the RUN_TS-$$ stem) used for the (ticket,run) CSV/Linear dedup in --scan-subagents.",
+    )
+    parser.add_argument(
+        "--exclude-agent",
+        action="append",
+        metavar="STEM",
+        help=(
+            "Subagent transcript stem to exclude from --scan-subagents "
+            "aggregation (repeatable). The scanner's own transcript is also "
+            "auto-excluded by content detection (GGC-78), so this is an explicit "
+            "belt-and-braces lever, not the primary guard."
+        ),
     )
     args = parser.parse_args()
 
