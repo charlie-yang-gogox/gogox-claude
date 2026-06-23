@@ -23,8 +23,8 @@
 // does not change R1.
 //
 // NOTE on level: only what the SCRIPT spawns directly is level-1. Agents the
-// WORKER spawns (e.g. verify-agent inside /dev:verify) remain level-2 in BOTH
-// the default and --workflow paths — Phase B does NOT change their depth.
+// WORKER spawns (e.g. verify-agent inside /dev:verify) remain level-2 on the
+// Workflow fan-out path — Phase B does NOT change their depth.
 //
 // args = DISPATCH_ROSTER: JSON array of
 //   { ticketId, lane, worktreePath, url, uiTweak: boolean }

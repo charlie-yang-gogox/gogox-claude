@@ -6,8 +6,8 @@ description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — th
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
 
 <!-- SYNC: workflows/dispatch-fanout.workflow.js `runUiTweak` (Phase B of the R5
-     migration) re-implements this panel's contract when /ggx-dispatcher runs
-     with --workflow: the SCRIPT spawns ui-verify-agent (sonnet) + dev-reviewer
+     migration) re-implements this panel's contract for the /ggx-dispatcher
+     Workflow fan-out: the SCRIPT spawns ui-verify-agent (sonnet) + dev-reviewer
      (opus) as level-1 agents, BOTH must be CLEAR, --auto is loud-fail (no
      repair loop). If the judge contract here changes (figma-context read,
      WILL-EDIT coverage assertion, both-must-be-CLEAR, loud-fail semantics,
