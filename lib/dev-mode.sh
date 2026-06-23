@@ -19,11 +19,16 @@
 #                      Rides the bug-mode FLOW (direct edit, no /opsx:*
 #                      stages, no figma/detect/align) with feature SEMANTICS
 #                      (feat:-typed commits, feature wording in reports).
-#                      Detected dynamically — no marker file is written, so
-#                      pre-existing worktrees pick it up on re-run with zero
-#                      migration. OpenSpec-initialized repos always have
-#                      `openspec/` committed at the root, so they can never
-#                      misdetect into this branch.
+#                      Detected dynamically (the `! -d openspec` branch below),
+#                      so legacy/unmarked worktrees resolve correctly with zero
+#                      migration. As of GGC-76, /dev:start ALSO writes a
+#                      `feature-direct`-valued .dev/mode.md — required by the
+#                      direct-mode walker's start→apply gate, NOT by pipe_mode:
+#                      the value is not a positive bug/port-handoff match, so it
+#                      still falls through to the `! -d openspec` branch here.
+#                      OpenSpec-initialized repos always have `openspec/`
+#                      committed at the root, so they can never misdetect into
+#                      this branch.
 #   `port-handoff`   — .dev/mode.md exists and its first line is exactly
 #                      `port-handoff` (written by /dev:start --port-handoff,
 #                      GGC-56). Rides the FEATURE flow — the OpenSpec apply

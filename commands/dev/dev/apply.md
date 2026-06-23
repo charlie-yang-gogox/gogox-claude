@@ -37,8 +37,9 @@ TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
 # Pipeline mode: bug / feature-direct / feature. Resolved by pipe_mode
-# (lib/dev-mode.sh); .dev/mode.md is written by /dev:start --bug;
-# feature-direct is detected dynamically (no openspec/ dir — GGC-17).
+# (lib/dev-mode.sh); .dev/mode.md is written by /dev:start for --bug,
+# --port-handoff, and feature-direct repos (GGC-76). pipe_mode() resolves the
+# mode dynamically (feature-direct via no openspec/ dir — GGC-17).
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
 

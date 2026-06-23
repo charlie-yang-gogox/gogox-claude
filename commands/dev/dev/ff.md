@@ -51,7 +51,7 @@ PIPELINE_IN_FLIGHT="no"
 - `--from <stage>` flag: delete markers (Step 0a) before dispatching.
 - `--auto` flag is per-invocation. There is no persisted mode; passing `--auto` on resume simply runs the rest of the pipeline in auto mode.
 - `--bug` flag is **persisted via `.dev/mode.md`** (written by `/dev:start --bug`). Resume invocations do not need to re-pass `--bug`; the walker reads `.dev/mode.md` to branch into bug-mode logic automatically. Passing `--bug` on resume when `.dev/mode.md` is absent is a no-op (the walker would still take the feature path).
-- `feature-direct` mode (GGC-17) has **no flag and no marker** — `pipe_mode` detects it dynamically (worktree has no `openspec/` dir → the repo doesn't use OpenSpec, e.g. the `prompt` platform). It shares the bug-mode walker and direct-edit apply branch but keeps feature semantics (`feat:` commits). OpenSpec repos always have `openspec/` committed, so they never misdetect.
+- `feature-direct` mode (GGC-17) has **no flag** — `pipe_mode` detects it dynamically (worktree has no `openspec/` dir → the repo doesn't use OpenSpec, e.g. the `prompt` platform). As of GGC-76 `/dev:start` writes a `feature-direct`-valued `.dev/mode.md` marker so the direct-mode walker's `start→apply` gate fires (it requires `.dev/mode.md` to exist); `pipe_mode` still resolves the mode dynamically (the marker value is not a `bug`/`port-handoff` match), so legacy/unmarked worktrees are unaffected. It shares the bug-mode walker and direct-edit apply branch but keeps feature semantics (`feat:` commits). OpenSpec repos always have `openspec/` committed, so they never misdetect.
 
 ### Step 0a: --from handling
 
@@ -105,8 +105,10 @@ infer_dev_stage() {
   id=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
   # Mode dispatch: direct (bug / feature-direct) vs feature. Resolved by
-  # pipe_mode (lib/dev-mode.sh); .dev/mode.md is written by /dev:start --bug;
-  # feature-direct is detected dynamically (no openspec/ dir — GGC-17).
+  # pipe_mode (lib/dev-mode.sh); .dev/mode.md is written by /dev:start for
+  # --bug, --port-handoff, AND feature-direct (GGC-76). feature-direct is still
+  # resolved dynamically by pipe_mode (no openspec/ dir — GGC-17); its marker
+  # only feeds the start→apply gate below.
   # Both direct modes share the direct walker: same stage chain, no OpenSpec.
   mode=$(pipe_mode "$wt")
   if [ "$mode" = "bug" ] || [ "$mode" = "feature-direct" ]; then
@@ -185,8 +187,9 @@ infer_dev_stage() {
   echo start
 }
 
-# Direct-mode walker — used when pipe_mode says `bug` (mode.md marker) or
-# `feature-direct` (dynamic: no openspec/ dir — GGC-17).
+# Direct-mode walker — used when pipe_mode says `bug` (mode.md=bug marker) or
+# `feature-direct` (no openspec/ dir — GGC-17; /dev:start writes a
+# mode.md=feature-direct marker so the start→apply gate below fires — GGC-76).
 # Skips figma / detect / align entirely. /dev:apply still runs but takes its
 # direct-edit branch (Step 0-bug in commands/dev/dev/apply.md): the agent
 # investigates, hypothesizes, writes the change, and commits autonomously.

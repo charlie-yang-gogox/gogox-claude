@@ -166,6 +166,24 @@ check_behavior_re_sync() {
 }
 check_behavior_re_sync
 
+# --- unit tests: lib/*.test.sh (GGC-76) --------------------------------------
+# No standalone test runner exists yet (a full walker golden-state suite is
+# GGC-27). Run any lib/*.test.sh here so the `prompt` platform's verify-stage
+# test_cmd actually executes them. Each test self-reports and exits non-zero on
+# failure; a failure is a hard ERROR.
+check_lib_unit_tests() {
+  local t
+  for t in lib/*.test.sh; do
+    [ -f "$t" ] || continue   # glob didn't match — no tests present
+    if bash "$t"; then
+      ok "unit-test     $t"
+    else
+      err "unit test failed: $t (run \`bash $t\` to see the failing assertion)"
+    fi
+  done
+}
+check_lib_unit_tests
+
 echo
 echo "prompt-lint: $ERRORS error(s), $WARNS warning(s)  [shellcheck: $([ "$HAVE_SHELLCHECK" = 1 ] && echo present || echo absent)]"
 [ "$ERRORS" -gt 0 ] && exit 1
