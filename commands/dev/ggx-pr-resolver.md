@@ -1,5 +1,6 @@
 ---
 name: ggx-pr-resolver
+argument-hint: "<PR#|URL> [--auto] [--stash-dirty] | --batch [--user=@me] [--auto]"
 description: >
   Unified per-PR health worker. For each target PR it runs ONE pass:
   rebase onto base (resolve conflicts, tests green) THEN auto-resolve

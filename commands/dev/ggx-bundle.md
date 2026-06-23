@@ -1,5 +1,6 @@
 ---
 name: ggx-bundle
+argument-hint: "<lead-ticket> <siblings...> [--auto] [--dry-run]"
 description: >
   Single-feature bundle orchestrator for a dependency-ordered set of `port`
   tickets that are finely-sliced scenarios of ONE feature with code

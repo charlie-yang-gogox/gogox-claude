@@ -1,5 +1,6 @@
 ---
 name: ggx-cloud-onboard
+argument-hint: "[--dev-only | --analyzer-only]"
 description: >
   Semi-automated onboarding for YOUR OWN cloud routine PAIR (CCR):
   `ticket-analyzer-agent` (judges To-Do tickets, writes `ready-to-*` /

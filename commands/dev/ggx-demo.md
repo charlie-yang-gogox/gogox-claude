@@ -1,5 +1,6 @@
 ---
 name: ggx-demo
+argument-hint: "<TICKET|PR> | --batch"
 description: >
   Post-hoc UI demo capture for already-shipped PRs with a recordable UI change.
   Operator skill with two modes — single (`<TICKET|PR>`) and self-discovering
