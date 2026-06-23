@@ -98,9 +98,10 @@ Auditor: verify-agent
 ## Cross-platform notes
 - <none, OR list of schema/contract changes that need manual verification on other platforms>
 
-## Status
-<CLEAR | BLOCKED — see Findings>
+Status: <CLEAR | BLOCKED — see Findings>
 ```
+
+The final `Status:` line MUST be a single line anchored at column 0 in exactly the form `Status: CLEAR` or `Status: BLOCKED` (no `##` heading, no leading whitespace, value on the same line). The `/dev:ff` walker greps `^Status: CLEAR` / `^Status: BLOCKED` to route — a `## Status` heading with the value on the next line is parsed as malformed and FAILs the pipeline.
 
 `Status: CLEAR` is permitted only when the Findings section is empty OR every item is explicitly marked `(intentional — <reason>)`. Anything else → `BLOCKED`.
 
