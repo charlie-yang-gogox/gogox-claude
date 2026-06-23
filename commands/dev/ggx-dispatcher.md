@@ -1,5 +1,6 @@
 ---
 name: ggx-dispatcher
+argument-hint: "[--dry-run] [--test] [--max-parallel:N] [--team:KEY] [--metric] [--demo]"
 description: >
   Manual batch worker for actionable Linear tickets. Sweeps the cwd repo's
   team for `ready-to-port` and `ready-to-dev` tickets, race-locks them, and

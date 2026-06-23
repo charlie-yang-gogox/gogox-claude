@@ -1,5 +1,6 @@
 ---
 name: ggx-work
+argument-hint: "<ticket-id> [--auto] [--metric] [--no-ticket-init]"
 description: >
   Single-ticket orchestrator. Drives one ticket (Linear or Jira) through
   every pipeline it needs (port → spec-review → dev, or just dev, or bug,
