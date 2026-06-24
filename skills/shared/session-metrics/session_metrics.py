@@ -572,6 +572,49 @@ def _invoked_scan_subagents(jsonl_path: Path) -> bool:
     return False
 
 
+def _workflow_agent_ticket_map(parent_session: str) -> dict[str, str]:
+    """Map ``agentId -> TICKET`` for Workflow-spawned worker transcripts, read
+    from the run journal(s) at
+    ``<project>/<parent_session>/subagents/workflows/*/journal.jsonl``.
+
+    Why this exists (GGC-86): every ``Workflow``-spawned agent records
+    ``cwd=<main repo>`` and ``gitBranch=<default branch>`` on *every* record —
+    the per-ticket ``/add-worktree`` ``cd`` moves only the shell, not the agent
+    process the harness records. So first-record cwd/gitBranch cannot tell which
+    ticket a transcript belongs to. The journal, however, persists each work
+    agent's structured result, whose ``ticketId`` is the authoritative signal.
+    This builds the ``agentId -> ticket`` lookup the scan prefers.
+
+    Returns an empty dict for a non-workflow session (no journal) — callers then
+    fall back to the legacy cwd/gitBranch match. Fully fail-soft.
+    """
+    out: dict[str, str] = {}
+    if not PROJECTS_DIR.exists() or not parent_session:
+        return out
+    for journal in PROJECTS_DIR.glob(
+        f"*/{parent_session}/subagents/workflows/*/journal.jsonl"
+    ):
+        try:
+            with journal.open() as fh:
+                for line in fh:
+                    if '"ticketId"' not in line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    agent_id = rec.get("agentId")
+                    result = rec.get("result")
+                    if not agent_id or not isinstance(result, dict):
+                        continue
+                    tid = result.get("ticketId")
+                    if isinstance(tid, str) and tid.strip():
+                        out[agent_id] = tid.strip().upper()
+        except OSError:
+            continue
+    return out
+
+
 def scan_subagents_aggregate(
     parent_session: str,
     ticket_id: str,
@@ -606,7 +649,20 @@ def scan_subagents_aggregate(
 
     # Glob across all project dirs — the parent session UUID is unique, so this
     # finds the right subagents/ dir regardless of which project launched it.
-    sub_files = sorted(PROJECTS_DIR.glob(f"*/{parent_session}/subagents/agent-*.jsonl"))
+    # Recursive (**): Workflow-spawned workers nest under
+    # subagents/workflows/<runId>/agent-*.jsonl; pathlib ** also matches the
+    # zero-intermediate-dir top-level layout, so plain (non-workflow) subagents
+    # still match. Without the recursion, --scan-subagents found ZERO transcripts
+    # for every Workflow-fan-out ticket (the only dispatcher fan-out path since
+    # GGC-55), making --metric a silent no-op on Linear.
+    sub_files = sorted(
+        PROJECTS_DIR.glob(f"*/{parent_session}/subagents/**/agent-*.jsonl")
+    )
+
+    # GGC-86: authoritative agentId -> ticket map from the Workflow journal.
+    # Empty for non-workflow sessions, in which case the per-file loop falls
+    # back to the legacy first-record cwd/gitBranch match below.
+    wf_ticket_map = _workflow_agent_ticket_map(parent_session)
 
     # Combined (synthetic) metrics object in parse_session() shape.
     combined: dict = {
@@ -648,10 +704,21 @@ def scan_subagents_aggregate(
         head = _first_record(sub)
         if not head:
             continue
-        branch = head.get("gitBranch") or ""
-        cwd_field = head.get("cwd") or ""
-        if not (tre.search(branch) or tre.search(cwd_field)):
-            continue
+        # Ticket attribution (GGC-86). Prefer the Workflow journal's authoritative
+        # agentId -> ticket mapping: Workflow workers all record cwd=<main repo> /
+        # gitBranch=<default>, so first-record cwd/gitBranch cannot distinguish
+        # them. Only when the agent has no journal entry (a non-workflow, top-level
+        # subagent) do we fall back to the legacy cwd/gitBranch match.
+        agent_id = sub.stem[len("agent-"):] if sub.stem.startswith("agent-") else sub.stem
+        mapped_ticket = wf_ticket_map.get(agent_id)
+        if mapped_ticket is not None:
+            if mapped_ticket != ticket_id:
+                continue
+        else:
+            branch = head.get("gitBranch") or ""
+            cwd_field = head.get("cwd") or ""
+            if not (tre.search(branch) or tre.search(cwd_field)):
+                continue
         # Time cutoff (epoch-normalized). Unparseable transcript ts → exclude.
         if cutoff is not None:
             tdt = parse_ts(head.get("timestamp"))
