@@ -229,20 +229,47 @@ line and continues; the batch never blocks/fails its caller and never touches sh
 open/closed, ticket status). Per ticket it edits only what the single-ticket flow edits — the Linear
 attachment + the PR-body `<!-- ui-tweak-demo -->` region.
 
-### B1 — discover candidate PRs (no input)
+### B1 — discover candidate PRs (no input) — GGC-75 (attachment-truth dedup)
+
+The "already demoed" dedup keys on the **Linear `ui-tweak-demo-<sha>` attachment**, NOT the PR-body
+`<!-- ui-tweak-demo -->` marker. The marker is written at PR-open *regardless of capture success*:
+forward `/ui-tweak:ff`'s "Deliver PR body" emits a marker-wrapped `## Demo` block even when
+`preview`'s navigate+capture fail-silents (the block just carries a "No screenshot" line). So
+**marker-present ≠ demo-captured** — keying discovery on the marker permanently skipped PRs that never
+actually recorded (CAF-613 #644 / CAF-519 #645, both flagged 2026-06-23). The Linear attachment is the
+authoritative signal: both forward `/ui-tweak:ff` and Step 4 here create `ui-tweak-demo-<sha>` **only
+after a real capture** (`demo-files` non-empty); a fail-silent run produces no such attachment. This is
+the **same signal source** as Step 4's idempotent-attach dedup, so discovery and re-attach agree.
 
 ```bash
-# Every open PR of MINE that still lacks a demo. author=@me is a HARD limit (GGC-69 — never touch
-# others' PRs); the SOLE discovery condition is the absence of the `<!-- ui-tweak-demo -->` marker
-# block a demoed PR carries. NO class/title gate: the old `^## UI Tweak` body filter was DROPPED
-# (GGC-69) because the dispatch finisher emits that title unreliably (GGC-67), which silently yielded
-# 0 candidates even when `--demo` was set (CAF-564 #628 / CAF-556 #629 both missed, 2026-06-17).
-# These are CANDIDATES — recordability is decided per-PR in B1.5 (diff-first), before any device opens.
-CANDIDATES=$(gh pr list --author "@me" --state open --json number,headRefName,url,body \
-  --jq '[.[] | select(.body | test("<!-- ui-tweak-demo -->") | not)]')
-COUNT=$(printf '%s' "$CANDIDATES" | jq 'length')
-[ "$COUNT" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine without a demo."; exit 0; }
+# Every open PR of MINE. author=@me is a HARD limit (GGC-69 — never touch others' PRs). NO class/title
+# gate (the old `^## UI Tweak` body filter was DROPPED in GGC-69; the dispatch finisher emits that title
+# unreliably — GGC-67). Recordability is judged per-PR in B1.5 (diff-first), before any device opens.
+PRS=$(gh pr list --author "@me" --state open --json number,headRefName,url,body,title)
+[ "$(printf '%s' "$PRS" | jq 'length')" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine."; exit 0; }
 ```
+
+Then **you (the LLM executing this skill) build `CANDIDATES`** by excluding only PRs that already carry a
+real demo attachment. For each PR in `$PRS`:
+
+1. **Extract the ticket id** — `[A-Z]+-[0-9]+` from `headRefName` (fallback: `title`, then `body`),
+   uppercased. If none parses → the PR is a **CANDIDATE** (cannot verify a demo without a ticket; safer
+   to re-offer than to silently skip).
+2. **Check the ticket's attachments** — call `mcp__claude_ai_Linear__get_issue --id <ticket-id>` and
+   inspect `.attachments[]`. If any attachment's `.title` starts with `ui-tweak-demo-` → a real demo was
+   recorded → **EXCLUDE** the PR (idempotent: a successfully-demoed PR is never re-recorded). Otherwise
+   (no such attachment — *even if the PR body has the `<!-- ui-tweak-demo -->` marker*) → **CANDIDATE**.
+   A `get_issue` failure (network / not found) → treat as **CANDIDATE** and log one WARN line (fail-soft:
+   re-offering a demo is cheap; the per-ticket flow is idempotent on the attachment title anyway).
+3. Assemble `CANDIDATES` as the JSON array B1.5 consumes — same shape as `$PRS` items
+   (`number,headRefName,url,body,title`).
+
+```bash
+[ "$(printf '%s' "$CANDIDATES" | jq 'length')" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine without a recorded demo."; exit 0; }
+```
+
+This makes the regression cases (#644 / #645 — marker present, no `ui-tweak-demo-*` attachment) candidates
+again, while PRs with a real attachment stay excluded.
 
 (A caller that already holds the freshly-shipped rows — `/ggx-dispatcher --demo`, `/ggx-on-duty --demo`
 — MAY narrow to these PRs, but the default is self-discovery so no caller has to hand-build a JSON array.)
