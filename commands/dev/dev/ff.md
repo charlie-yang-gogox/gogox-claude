@@ -297,7 +297,7 @@ while CURRENT != "done":
     "detect"      → /dev:detect  [--auto if AUTO_FLAG]
     "align"       → /dev:align   [--auto if AUTO_FLAG]
     "apply"       → /dev:apply   [--auto if AUTO_FLAG]
-    "verify"      → /dev:verify
+    "verify"      → /dev:verify  [--auto if AUTO_FLAG]
     "review"      → /dev:review
     "ship"        → /dev:ship    [--auto if AUTO_FLAG]
     (bug mode does not emit "fix-pending" — the agent does the fix
