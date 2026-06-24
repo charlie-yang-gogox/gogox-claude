@@ -1226,9 +1226,13 @@ async function triageUnknownFallback(res) {
 // Default OFF (gated on the roster-level `metric` flag). For each ticket that
 // reached `done`, spawn ONE cheap script-level (level-1) agent that:
 //   (a) blind-estimates manual hours from the ticket title/description ONLY,
-//   (b) runs session_metrics.py --scan-subagents to SUM this ticket's sibling
-//       subagents (scoped by parentSessionId + the run-ts cutoff) into one CSV
-//       row + one "AI Session Report" Linear comment keyed on (run_stem,ticket).
+//   (b) dry-scans session_metrics.py --scan-subagents --json for the numbers,
+//       writes a 3-5 bullet "### Summary" (GGC-89 — parity with a manual
+//       /session-metrics run, which the batch path previously dropped),
+//   (c) runs session_metrics.py --scan-subagents --summary-file to SUM this
+//       ticket's sibling subagents (scoped by parentSessionId + the run-ts
+//       cutoff) into one CSV row + one "AI Session Report" Linear comment
+//       (now including the Summary) keyed on (run_stem,ticket).
 // Fully fail-soft: ANY throw / null / error just logs a WARN. ALWAYS returns the
 // ORIGINAL `res` unchanged — never mutates outcome, never fails the batch.
 async function finalizeMetrics(res, item) {
@@ -1253,21 +1257,44 @@ async function finalizeMetrics(res, item) {
         `how many pure-manual engineer-hours this ticket would have taken a human.`,
         `Emit a single number N (hours). This is the GGC-71 blind estimate.`,
         ``,
-        `STEP 2 — run the metrics scan + post. Run EXACTLY:`,
+        `STEP 2 — scan the metrics (dry, no write yet) to get the numbers for`,
+        `the summary. Run EXACTLY:`,
         `python3 ~/.claude/skills/session-metrics/session_metrics.py \\`,
         `  --scan-subagents --ticket-id ${res.ticketId} \\`,
         `  --parent-session ${parentSessionId} \\`,
         `  --run-ts ${runTs} --run-stem ${runStem} \\`,
-        `  --manual-hours <N> --cwd ${worktree}`,
-        `(substitute <N> with your STEP 1 number). It scans this ticket's sibling`,
-        `subagent transcripts under the parent session, SUMS their cost/tokens/`,
-        `durations, writes ONE CSV row, and upserts ONE "AI Session Report" Linear`,
-        `comment keyed on (run_stem, ticket).`,
+        `  --manual-hours <N> --cwd ${worktree} \\`,
+        `  --json --no-linear --no-csv`,
+        `(substitute <N> with your STEP 1 number). If it exits non-zero (e.g. ZERO`,
+        `matching subagents), report that and STOP — do NOT retry, do NOT fail.`,
+        `The JSON gives total_cost, total_tokens, tokens.cache_read_pct,`,
+        `total_turns, subagents_matched.`,
         ``,
-        `STEP 3 — report whether the script wrote a CSV row + posted/updated Linear`,
-        `(read its stderr lines "CSV updated…" / "Posted to Linear…"). If the script`,
-        `exits non-zero (e.g. ZERO matching subagents), just report that — do NOT`,
-        `retry, do NOT fail. This step must never block the batch.`,
+        `STEP 3 — write a 3-5 bullet "### Summary" (parity with a manual`,
+        `/session-metrics run; the report skeleton alone carries no narrative).`,
+        `From the STEP 2 JSON, write concise markdown bullets (NO heading — the`,
+        `script adds "### Summary") to a temp file, covering: total cost & which`,
+        `is dominant; cache utilization (cache_read_pct — high % = efficient`,
+        `context reuse); prompt efficiency (total_turns); and ONE actionable`,
+        `insight. Save with:  SUMMARY_FILE=$(mktemp -t metric-summary.XXXXXX)`,
+        `and write the bullets into it.`,
+        ``,
+        `STEP 4 — run the real scan + post WITH the summary. Run EXACTLY:`,
+        `python3 ~/.claude/skills/session-metrics/session_metrics.py \\`,
+        `  --scan-subagents --ticket-id ${res.ticketId} \\`,
+        `  --parent-session ${parentSessionId} \\`,
+        `  --run-ts ${runTs} --run-stem ${runStem} \\`,
+        `  --manual-hours <N> --cwd ${worktree} \\`,
+        `  --summary-file "$SUMMARY_FILE"`,
+        `It re-scans this ticket's sibling subagent transcripts, SUMS their`,
+        `cost/tokens/durations, writes ONE CSV row, and upserts ONE "AI Session`,
+        `Report" Linear comment keyed on (run_stem, ticket) — now including the`,
+        `### Summary. Then rm "$SUMMARY_FILE".`,
+        ``,
+        `STEP 5 — report whether the script wrote a CSV row + posted/updated Linear`,
+        `(read its stderr lines "CSV updated…" / "Posted to Linear…"). If STEP 4`,
+        `exits non-zero, just report that — do NOT retry, do NOT fail. This step`,
+        `must never block the batch.`,
       ].join("\n"),
       {
         label: `metric:${res.ticketId}`,
