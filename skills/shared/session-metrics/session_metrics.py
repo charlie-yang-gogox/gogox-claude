@@ -1129,22 +1129,50 @@ def format_report(
     lines.append(
         f"**Ticket:** {ticket_id} | **Branch:** {git_branch or 'N/A'}"
     )
+    # GGC-89: the "(AI active: …)" parenthetical is only honest when active
+    # time was actually measured. Summed subagent transcripts (the batch scan
+    # path) carry no `turn_duration` system records — those come only from the
+    # main interactive loop — so active is always 0 there; printing
+    # "AI active: 0s" reads as "instant". Suppress the parenthetical when there
+    # is no active signal rather than render a misleading zero.
     if prior:
         total_wall = prior["prior_wall_sec"] + durations["wall_clock_sec"]
         total_active = prior["prior_active_sec"] + durations["active_sec"]
         total_cost = prior["prior_cost"] + current_cost
+        active_note = f" (AI active: {format_duration(total_active)})" if total_active > 0 else ""
         lines.append(
-            f"**Duration:** {format_duration(total_wall)} "
-            f"(AI active: {format_duration(total_active)}) "
+            f"**Duration:** {format_duration(total_wall)}{active_note} "
             f"across {total_sessions} sessions"
         )
         lines.append(f"**Cost:** {format_cost(total_cost)}")
     else:
+        active_note = f" (AI active: {format_duration(durations['active_sec'])})" if durations["active_sec"] > 0 else ""
         lines.append(
-            f"**Duration:** {format_duration(durations['wall_clock_sec'])} "
-            f"(AI active: {format_duration(durations['active_sec'])})"
+            f"**Duration:** {format_duration(durations['wall_clock_sec'])}{active_note}"
         )
         lines.append(f"**Cost:** {format_cost(current_cost)}")
+
+    # ---- Token + cache breakdown (GGC-89) ----
+    # Surfaced on BOTH the standalone and batch paths so the data survives even
+    # when no LLM Summary is attached (the batch finalize path posts none). The
+    # report skeleton never carried tokens before — the numbers reached the
+    # reader only via the Summary, which the batch path drops. Reflects THIS
+    # run's metrics (current session, or the summed subagents on the scan
+    # path), not the cumulative cost above.
+    tok_in = tok_out = tok_cw = tok_cr = 0
+    for u in metrics["model_usage"].values():
+        tok_in += u["input_tokens"]
+        tok_out += u["output_tokens"]
+        tok_cw += u["cache_write_tokens"]
+        tok_cr += u["cache_read_tokens"]
+    tok_total = tok_in + tok_out + tok_cw + tok_cr
+    if tok_total > 0:
+        cache_read_pct = round(100 * tok_cr / tok_total)
+        lines.append(
+            f"**Tokens:** {format_tokens(tok_total)} "
+            f"({cache_read_pct}% cache-read · in {format_tokens(tok_in)} · "
+            f"out {format_tokens(tok_out)} · cache-write {format_tokens(tok_cw)})"
+        )
     lines.append("")
 
     # ---- Agent summary (all sessions) ----
@@ -1186,6 +1214,13 @@ def format_report(
         wall_sec = durations["wall_clock_sec"]
         cum_ai = (prior["prior_active_sec"] + ai_sec) if prior else ai_sec
         cum_wall = (prior["prior_wall_sec"] + wall_sec) if prior else wall_sec
+        # GGC-89: active time is unavailable on the summed scan path (no
+        # turn_duration records in subagent transcripts). When it is missing,
+        # don't render "0s" as if real — drop the active row and compute Speed
+        # against WALL CLOCK (a genuine measurement) so the headline
+        # AI-vs-manual multiplier is preserved on a defensible basis rather
+        # than silently suppressed.
+        active_available = cum_ai > 0
 
         lines.append("")
         lines.append("### ⏱ Time Analysis")
@@ -1193,11 +1228,17 @@ def format_report(
         lines.append("| Metric | Duration |")
         lines.append("|--------|---------|")
         lines.append(f"| Story Points (AI-estimated) | **{story_points}** (≈ {format_duration(manual_sec)} manual) |")
-        lines.append(f"| AI Active Time{sess_label} | {format_duration(cum_ai)} |")
+        if active_available:
+            lines.append(f"| AI Active Time{sess_label} | {format_duration(cum_ai)} |")
+        else:
+            lines.append(f"| AI Active Time{sess_label} | n/a (summed subagent transcripts carry no turn-duration records) |")
         lines.append(f"| Wall Clock{sess_label} | {format_duration(cum_wall)} |")
-        if cum_ai > 0:
+        if active_available:
             multiplier = manual_sec / cum_ai
             lines.append(f"| **Speed** | **~{multiplier:.1f}x** vs AI-estimated manual |")
+        elif cum_wall > 0:
+            multiplier = manual_sec / cum_wall
+            lines.append(f"| **Speed** | **~{multiplier:.1f}x** vs AI-estimated manual (wall-clock basis) |")
 
     # ---- Provenance (GGC-74 batch scan) — list each summed subagent so an
     # accidental double-count is visible, not hidden in a summed scalar. ----
@@ -1643,6 +1684,18 @@ def run_scan_subagents_mode(args) -> None:
     )
 
     if args.json:
+        # GGC-89: include a token/cache breakdown + turns so the batch finalize
+        # agent can write a substantive `### Summary` (parity with the
+        # standalone /session-metrics flow). The minimal pre-GGC-89 payload
+        # (cost + total_tokens only) gave the summary agent nothing to say
+        # about cache utilization or prompt efficiency.
+        j_in = j_out = j_cw = j_cr = 0
+        for u in metrics["model_usage"].values():
+            j_in += u["input_tokens"]
+            j_out += u["output_tokens"]
+            j_cw += u["cache_write_tokens"]
+            j_cr += u["cache_read_tokens"]
+        j_total = j_in + j_out + j_cw + j_cr
         print(json.dumps(
             {
                 "ticket_id": ticket_id,
@@ -1651,6 +1704,15 @@ def run_scan_subagents_mode(args) -> None:
                 "subagents_matched": len(provenance),
                 "total_cost": round(current_total_cost, 4),
                 "total_tokens": agg["total_tokens"],
+                "total_turns": metrics["total_turns"],
+                "wall_clock_sec": round(durations["wall_clock_sec"]),
+                "tokens": {
+                    "input": j_in,
+                    "output": j_out,
+                    "cache_write": j_cw,
+                    "cache_read": j_cr,
+                    "cache_read_pct": round(100 * j_cr / j_total) if j_total > 0 else 0,
+                },
                 "provenance": provenance,
             },
             indent=2,
