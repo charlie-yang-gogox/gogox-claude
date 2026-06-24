@@ -52,8 +52,13 @@ gh pr view --json url,number,state 2>/dev/null
 Run these checks sequentially. Stop on first failure.
 
 1. Invoke `/check-clean`. If it fails, stop.
-2. Invoke `/format`. If formatting changes exist, it will auto-commit them.
-3. Invoke `/check-archive`. If it fails, stop.
+2. Invoke `/check-archive`. If it fails, stop.
+
+> **Formatting is NOT here anymore.** It used to live in this create-only block,
+> which meant the update flow (Step 1 routes an already-OPEN PR straight to
+> Step 5) pushed re-runs without ever formatting — the dominant cause of
+> `dart format` CI failures on re-pushed PRs. `/format` now runs in **Step 7,
+> before every push, on both the create and update flows.**
 
 ### 3. Extract Ticket ID
 
@@ -233,7 +238,19 @@ Guidelines:
 
 The test plan is included in both the PR body (`## Test Plan`, before Demo) and the ticket implementation notes (Step 9).
 
-### 7. Push Branch
+### 7. Format, then Push Branch
+
+**Format first — both create AND update flows (this is the enforced format point).**
+Invoke `/format` — **plain**. Do NOT pass `{format_cmd}` (on flutter that resolves
+to `/format --skip-commit`, which aborts on analyze errors and skips its own
+commit), and do NOT hand-roll a `git commit` afterward. `/format` resolves the
+platform formatter, stages **only the files it changed**, and commits them with a
+`style(format):` message (see `commands/dev/format.md`). Because this runs before
+*every* push — including re-pushes to an already-open PR — a pushed branch can
+never carry unformatted code. On the `prompt` platform (empty `format_cmd`) it is
+a no-op. (`--dry-run` already returns at Step 5, so this never runs on a dry run.)
+
+Then push:
 
 ```bash
 git push -u origin <branch-name>
@@ -331,7 +348,8 @@ Show:
 ## Rules
 
 - Automatically detects create vs update — no flags needed
-- Pre-flight checks (`/check-clean`, `/format`, `/check-archive`) only run on create, not update
+- Pre-flight checks (`/check-clean`, `/check-archive`) only run on create, not update
+- `/format` runs on **both** create and update flows — in Step 7, immediately before the push — so every pushed branch (including re-pushes to an existing PR) is formatted. Invoked **plain** (never `--skip-commit`); `/format` does its own scoped `style(format):` commit. Skipped only on `--dry-run` (which returns at Step 5).
 - Always push before creating or updating
 - Use `gh` CLI (not `hub`) for PR operations
 - Summary should be in English, plain language, reviewer-friendly
