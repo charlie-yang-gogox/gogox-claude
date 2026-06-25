@@ -12,7 +12,8 @@ description: "Phase-2 stage of the /ui-tweak pipeline (DELIVER path only) — th
      repair loop). If the judge contract here changes (figma-context read,
      WILL-EDIT coverage assertion, both-must-be-CLEAR, loud-fail semantics,
      diff-computed-once-and-fed-inline, deterministic structural pre-pass
-     short-circuit), update runUiTweak's judge prompts TOO. See
+     short-circuit, binary-only CLEAR-by-construction short-circuit), update
+     runUiTweak's judge prompts TOO. See
      ggx-dispatcher.md §5.2 (Phase B) and ARCHITECTURE.md "Nested-spawn
      constraint" R5. -->
 
@@ -69,6 +70,29 @@ DIFF_TEXT=$(git diff "$BASE")          # the exact text that ships; computed onc
 many changed files — you MAY additionally fan the judges out per-file, but a UI tweak diff is almost
 always tiny, so the default single-diff-inline path is both correct and faster; the bottleneck is the
 opus model latency, not the diff size, which is exactly what Step 1c targets.)
+
+## Step 1b.5 — binary-only short-circuit → CLEAR by construction (GGC-93)
+
+A changeset whose **every** file is binary (image assets at multiple density buckets, fonts, …)
+**cannot carry logic**, so the dual-judge — whose only question is *UI-only vs behavior* — is
+trivially CLEAR. Detect via `--numstat` (binary files report their add/remove columns as `-`):
+
+```bash
+# Every changed file is binary  ⇔  every numstat row begins with "-\t-".
+NUMSTAT=$(git diff "$BASE" --numstat)
+NON_BINARY=$(printf '%s\n' "$NUMSTAT" | grep -cvE '^-\t-\t')   # rows that are NOT binary
+```
+
+- `NUMSTAT` non-empty **and** `NON_BINARY == 0` → **CLEAR by construction**: skip the structural
+  pre-pass (Step 1c) **and** the dual-judge panel (Step 2/3) entirely, write
+  `.dev/ui-verify-pass.md` first line `Status: CLEAR`, and advance straight to `commit`. This is
+  **not** a no-op — the binary assets ARE the change (e.g. CAF-780: a `pick_up_code.png` shipped at
+  1x/2x/3x to fix a blurry retina image). It also closes the CAF-780 false-BLOCK: a binary `git diff`
+  has no `+`/`-` hunks, which a judge misreads as "diff incomplete" and re-diffs with a **bare**
+  `git diff` against the wrong / lagging-trunk repo, confabulating already-merged files as phantom
+  violations.
+- Any text file in the set (`NON_BINARY > 0`) → fall through to Step 1c + the panel as usual (a mixed
+  binary+`.dart` diff still gets full scrutiny on its text hunks).
 
 ## Step 1c — deterministic structural pre-pass (fast; may short-circuit the opus call)
 

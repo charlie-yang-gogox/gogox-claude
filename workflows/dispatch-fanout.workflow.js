@@ -243,6 +243,29 @@ async function runWork(item, trunkSha) {
 // (figma-context read, WILL-EDIT coverage assertion, loud-fail semantics),
 // change BOTH. Failures set uiTweakFailed so triageAndFallback posts Linear (no
 // sub-pipeline posted its own error — the script owns this flow end-to-end).
+// GGC-93 — deterministic backstop for the binary-only short-circuit, independent
+// of the prep agent's self-reported `allBinary`. A `git diff` over binary files
+// (PNGs, etc.) emits `Binary files a/… and b/… differ` markers and NO textual
+// hunks (no `@@`, no content `+`/`-` lines beyond the `+++`/`---` headers). Such a
+// changeset is structurally incapable of carrying logic, so the dual-judge's only
+// question (UI-only vs behavior) is trivially CLEAR. A changeset that mixes a
+// binary asset with a `.dart` (or any text) edit DOES have text hunks → returns
+// false → falls through to the panel. Returns false on a truncated diff (we can't
+// prove the unseen remainder is binary).
+function isAllBinaryDiff(diffText, diffTruncated) {
+  if (!diffText || diffTruncated) return false;
+  const lines = diffText.split("\n");
+  const hasBinaryMarker = lines.some((l) => /^Binary files .* differ$/.test(l));
+  if (!hasBinaryMarker) return false;
+  const hasTextHunk = lines.some(
+    (l) =>
+      l.startsWith("@@") ||
+      (l.startsWith("+") && !l.startsWith("+++")) ||
+      (l.startsWith("-") && !l.startsWith("---")),
+  );
+  return !hasTextHunk;
+}
+
 async function runUiTweak(item, trunkSha) {
   log(`[ui] ${item.ticketId} apply+preview`);
 
@@ -284,6 +307,18 @@ async function runUiTweak(item, trunkSha) {
       `unless it exceeds ~200KB (then return the first ~200KB and set`,
       `diffTruncated:true so the judges know to read remaining files themselves).`,
       ``,
+      // GGC-93 — binary-only short-circuit signal. A PNG/binary asset cannot
+      // carry logic, so an all-binary changeset is CLEAR by construction and must
+      // bypass the dual-judge entirely (a binary `git diff` yields no +/- hunks,
+      // which a judge misreads as "diff incomplete" and re-diffs against the wrong
+      // repo — the CAF-780 false BLOCK). Compute via --numstat: binary files report
+      // `-\t-\t<path>`. Set allBinary:true ONLY when there are changed files AND
+      // every one is binary.
+      "BINARY DETECTION (GGC-93): also run `git diff \"$BASE\" --numstat`. A binary",
+      `file reports its added/removed columns as "-\\t-". Set allBinary:true when`,
+      `there is at least one changed file AND every changed file is binary (every`,
+      `numstat row begins with "-\\t-"). Otherwise allBinary:false.`,
+      ``,
       // GGC-49 (fix 2+4) — a no-op must be EARNED, never silently dropped.
       `EARNED NO-OP (GGC-49): if the diff is EMPTY (apply produced no source change`,
       `because the screen "already matches" the target), do NOT silently finish.`,
@@ -296,7 +331,7 @@ async function runUiTweak(item, trunkSha) {
       ``,
       `Return { ok: boolean, baseRef: string|null, diffText: string|null,`,
       `changedFiles: string|null, diffTruncated: boolean, emptyDiff: boolean,`,
-      `noopJustification: string|null, error: string|null }.`,
+      `allBinary: boolean, noopJustification: string|null, error: string|null }.`,
     ].join("\n"),
     {
       label: `ui-prep:${item.ticketId}`,
@@ -314,6 +349,7 @@ async function runUiTweak(item, trunkSha) {
           changedFiles: { type: ["string", "null"] },
           diffTruncated: { type: "boolean" },
           emptyDiff: { type: "boolean" },
+          allBinary: { type: "boolean" },
           noopJustification: { type: ["string", "null"] },
           error: { type: ["string", "null"] },
         },
@@ -401,14 +437,32 @@ async function runUiTweak(item, trunkSha) {
     };
   }
 
+  // Stage 1b.5: binary-only short-circuit → CLEAR by construction (GGC-93,
+  // mirrors audit.md Step 1b.5). A changeset whose every file is binary (image
+  // assets at multiple density buckets, fonts, …) cannot carry logic, so the
+  // dual-judge — whose ONLY question is UI-only vs behavior — is trivially CLEAR.
+  // Skipping the panel here is also what FIXES the CAF-780 false BLOCK: a binary
+  // `git diff` has no +/- hunks, which a judge misread as "diff incomplete" and
+  // re-diffed with a bare `git diff` against the wrong (main, lagging-trunk) repo,
+  // confabulating already-merged trunk files as phantom violations. Authoritative
+  // signal is the prep agent's --numstat-derived allBinary; isAllBinaryDiff is the
+  // deterministic backstop if the agent omitted it. NOT a no-op (the images ARE
+  // the change) — fall straight through to the Stage 3 finisher (commit → PR).
+  const allBinaryClear =
+    prep.allBinary === true || isAllBinaryDiff(prep.diffText, prep.diffTruncated);
+  if (allBinaryClear) {
+    log(`[ui] ${item.ticketId} all-binary changeset (no text hunks) -> CLEAR by construction, dual-judge skipped (GGC-93)`);
+  }
+
   // Stage 1c: deterministic structural pre-pass (LLM-free; mirrors audit.md
   // Step 1c). Scan the ADDED lines of the precomputed diff for unambiguous
   // non-inert-UI signals; a hit short-circuits to BLOCKED WITHOUT spawning the
   // slow opus dev-reviewer (the obvious-logic-change fast path). This only ever
   // produces an EARLY BLOCKED, never an early CLEAR, so the both-must-be-CLEAR
   // contract is unchanged (a CLEAR still requires BOTH judges to run + return
-  // CLEAR). Skipped when the diff was truncated (can't scan what we don't have).
-  if (prep.diffText && !prep.diffTruncated) {
+  // CLEAR). Skipped when the diff was truncated (can't scan what we don't have)
+  // or already CLEAR-by-construction above (an all-binary diff has no added lines).
+  if (!allBinaryClear && prep.diffText && !prep.diffTruncated) {
     const added = prep.diffText
       .split("\n")
       .filter((l) => l.startsWith("+") && !l.startsWith("+++"));
@@ -447,62 +501,88 @@ async function runUiTweak(item, trunkSha) {
   // Stage 2: decorrelated dual-judge panel — BOTH must be CLEAR (audit.md
   // Step 2/3). Spawned in parallel; tiers PINNED (sonnet vs opus), no downgrade.
   // The precomputed diff (prep.diffText + prep.changedFiles) is fed INLINE to
-  // both judges (GGC-5) — neither re-runs git diff nor re-reads files.
-  log(`[ui] ${item.ticketId} dual-judge (sonnet + opus)`);
-  const diffBlock =
-    prep.diffText && !prep.diffTruncated
-      ? [
-          `Changed files:`,
-          prep.changedFiles || "(none reported)",
-          ``,
-          `Final cumulative diff (precomputed once — do NOT re-run git diff):`,
-          "```diff",
-          prep.diffText,
-          "```",
-        ].join("\n")
-      : // Fallback only if prep could not supply the diff (or it was truncated):
-        `Audit the final cumulative diff in ${item.worktreePath}` +
-        (prep.baseRef ? ` (git diff ${prep.baseRef})` : "") +
-        (prep.diffTruncated ? " — the diff was too large to inline, read the changed files directly." : ".");
-  const judgePrompt = (lens) =>
-    [
-      `Audit the change for ticket ${item.ticketId} through the ${lens} lens.`,
-      diffBlock,
-      ``,
-      `Read .dev/ui-tweak/figma-context.md in ${item.worktreePath} (if present)`,
-      `and assert every WILL-EDIT target is covered — a miss is BLOCKED. Per`,
-      `audit.md: a purely visual/layout/structure change is CLEAR; any`,
-      `logic/behavior change is BLOCKED. Return { status: "CLEAR"|"BLOCKED", reason }.`,
-    ].join("\n");
+  // both judges (GGC-5) — neither re-runs git diff nor re-reads files. SKIPPED
+  // entirely when allBinaryClear (GGC-93): an all-binary changeset is CLEAR by
+  // construction, so there is no panel to run and `blocked` stays false.
+  let blocked = false;
+  let who = null;
+  let reason = null;
+  if (!allBinaryClear) {
+    log(`[ui] ${item.ticketId} dual-judge (sonnet + opus)`);
+    const diffBlock =
+      prep.diffText && !prep.diffTruncated
+        ? [
+            `Changed files:`,
+            prep.changedFiles || "(none reported)",
+            ``,
+            `Final cumulative diff (precomputed once — do NOT re-run git diff):`,
+            "```diff",
+            prep.diffText,
+            "```",
+          ].join("\n")
+        : // Fallback only if prep could not supply the diff (or it was truncated).
+          // GGC-93: PIN re-diffs to the worktree — the judge's cwd is the dispatcher
+          // main repo, NOT the ticket worktree, so a bare `git diff` resolves against
+          // the wrong tree (a lagging local trunk reports already-merged files as
+          // phantom violations — the CAF-780 false BLOCK).
+          `Audit the final cumulative diff in ${item.worktreePath}` +
+          (prep.baseRef ? ` (git -C ${item.worktreePath} diff ${prep.baseRef})` : "") +
+          (prep.diffTruncated ? " — the diff was too large to inline, read the changed files directly." : ".");
+    const judgePrompt = (lens) =>
+      [
+        `Audit the change for ticket ${item.ticketId} through the ${lens} lens.`,
+        diffBlock,
+        ``,
+        // GGC-93: the inline diff above is AUTHORITATIVE and COMPLETE. Forbid a bare
+        // re-diff — your cwd is NOT the worktree, so `git diff`/`git diff <trunk>`
+        // resolves against the wrong repo and confabulates unrelated already-merged
+        // files as "violations". If you must inspect a file, -C-pin to the worktree.
+        `The diff above was precomputed ONCE in the worktree and is the COMPLETE`,
+        `change. Do NOT re-run a bare \`git diff\` — your working directory is NOT`,
+        `${item.worktreePath}, so an unpinned git resolves against a different repo`,
+        `and will report unrelated, already-merged files as phantom violations`,
+        `(GGC-93). If you must inspect a file, pin to the worktree:`,
+        `\`git -C ${item.worktreePath} diff ${prep.baseRef || "$BASE"}\` /`,
+        `\`git -C ${item.worktreePath} show\`. A diff containing only binary files is`,
+        `CLEAR by construction (a binary asset cannot carry logic).`,
+        ``,
+        `Read .dev/ui-tweak/figma-context.md in ${item.worktreePath} (if present)`,
+        `and assert every WILL-EDIT target is covered — a miss is BLOCKED. Per`,
+        `audit.md: a purely visual/layout/structure change is CLEAR; any`,
+        `logic/behavior change is BLOCKED. Return { status: "CLEAR"|"BLOCKED", reason }.`,
+      ].join("\n");
 
-  const [uiVerify, devReview] = await parallel([
-    () =>
-      agent(judgePrompt("UI-only / visual"), {
-        label: `ui-verify:${item.ticketId}`,
-        phase: "ui-judge",
-        agentType: "ui-verify-agent",
-        model: "sonnet",
-        schema: JUDGE_SCHEMA,
-      }),
-    () =>
-      agent(judgePrompt("behavior / logic, with the deterministic structural pre-pass"), {
-        label: `dev-review:${item.ticketId}`,
-        phase: "ui-judge",
-        agentType: "dev-reviewer",
-        model: "opus",
-        schema: JUDGE_SCHEMA,
-      }),
-  ]);
+    const [uiVerify, devReview] = await parallel([
+      () =>
+        agent(judgePrompt("UI-only / visual"), {
+          label: `ui-verify:${item.ticketId}`,
+          phase: "ui-judge",
+          agentType: "ui-verify-agent",
+          model: "sonnet",
+          schema: JUDGE_SCHEMA,
+        }),
+      () =>
+        agent(judgePrompt("behavior / logic, with the deterministic structural pre-pass"), {
+          label: `dev-review:${item.ticketId}`,
+          phase: "ui-judge",
+          agentType: "dev-reviewer",
+          model: "opus",
+          schema: JUDGE_SCHEMA,
+        }),
+    ]);
 
-  // parallel() resolves a failed thunk to null — aligned with audit.md
-  // "missing report / agent error ⇒ BLOCKED". BOTH must be a present CLEAR.
-  const blocked =
-    !uiVerify || uiVerify.status !== "CLEAR" || !devReview || devReview.status !== "CLEAR";
+    // parallel() resolves a failed thunk to null — aligned with audit.md
+    // "missing report / agent error ⇒ BLOCKED". BOTH must be a present CLEAR.
+    blocked =
+      !uiVerify || uiVerify.status !== "CLEAR" || !devReview || devReview.status !== "CLEAR";
+    if (blocked) {
+      who = !uiVerify || uiVerify.status !== "CLEAR" ? "ui-verify" : "dev-reviewer";
+      reason =
+        (!uiVerify || uiVerify.status !== "CLEAR" ? uiVerify?.reason : devReview?.reason) ||
+        "judge error / null verdict";
+    }
+  }
   if (blocked) {
-    const who = !uiVerify || uiVerify.status !== "CLEAR" ? "ui-verify" : "dev-reviewer";
-    const reason =
-      (!uiVerify || uiVerify.status !== "CLEAR" ? uiVerify?.reason : devReview?.reason) ||
-      "judge error / null verdict";
     // --auto is loud-fail (audit.md): no repair loop. Mark failed; the
     // dispatcher-dev-in-flight label stays as the human-resume signal.
     log(`[ui] ${item.ticketId} BLOCKED by ${who}: ${reason}`);
