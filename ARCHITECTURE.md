@@ -85,26 +85,49 @@ Not a platform. Not a service. A git repo + 80 lines of bash. The bet is that **
 
 ## Nested-spawn constraint (subagent depth)
 
-The `--auto` dispatcher pipelines fan work out across nested agents. The official position bounds how deep that nesting may safely go.
+The `--auto` dispatcher pipelines fan work out across nested agents. Whether a subagent can spawn its own subagent depends on **how its parent was spawned — not on the Claude Code version alone**. There are two spawn mechanisms with opposite behavior, and the dispatcher depends on the one that is still blocked.
 
-**Official stance.** The [sub-agents docs](https://code.claude.com/docs/en/sub-agents) state plainly that "subagents cannot spawn other subagents" — nesting is unsupported. The [multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system) post describes the supported shape: a lead (opus) orchestrator that spawns a flat layer of (sonnet) workers — depth-1, no deeper. Our `--auto` pipelines run one level deeper than that: `/ggx-dispatcher` (main) spawns a `general-purpose` worker (level-1), and a few stages inside that worker still spawn their own (level-2) subagents. We had observed empirically that **nested sonnet spawns worked while nested opus spawns failed** — reliance on undefined behavior, not a contract, and an update did remove it: as of v2.1.170 (probed 2026-06-10) the Agent tool is absent inside subagents entirely, so every level-2 spawn — sonnet included — takes its spawn-failure path (R2 fallbacks fire unconditionally; R3 `/dev:verify` hard-fails in `--auto` on code platforms). Official nested-subagent support (depth=5) was announced 2026-06-09 but had not shipped as of 2.1.170 — re-probe after each Claude Code update before relying on any nesting.
+**The two mechanisms (re-probed 2026-06-25).**
+
+| Parent spawned via | Has `Agent` tool? | Can nest level-2? | Used by |
+|---|---|---|---|
+| **Agent tool** (a main / default-mode `/dev:ff` session, or any `Agent`-tool-spawned subagent) | YES | ✅ works — depth-2 proven, both tiers | default-mode pipelines run from a human session |
+| **Workflow `agent()`** | **NO** — `Agent` is absent entirely (not even deferred via `ToolSearch`) | ❌ blocked | `/ggx-dispatcher` fan-out (R5, `dispatch-fanout.workflow.js`) — our ONLY automated path |
+
+Evidence (2026-06-25 probes):
+
+- **Agent-tool path — PASS.** `main → Agent → L1 → Agent → L2` returned cleanly for both sonnet→sonnet and opus→opus (the historically-first-to-break case). The v2.1.170 regression below — where even Agent-tool subagents lacked the `Agent` tool — has **lifted** for this mechanism.
+- **Workflow path — FAIL.** A `Workflow` script that spawns workers which then try to spawn level-2 reported `agentToolAvailable=false` across all four dimensions probed (opus + `bypassPermissions`, opus → typed `Explore`, sonnet → sonnet, and depth-3). Workflow-spawned agents have **no `Agent` tool by design** — the workflow script *is* the orchestration layer. This is intentional and stable, not a version regression.
+
+**Consequence:** the dispatcher fan-out worker (a Workflow `agent()`) still cannot spawn `verify-agent` / `figma-subagent` / `align-subagent` / `dev-agent`. **R1–R5 below remain load-bearing on the `--auto` / Workflow path** — the capability is not missing (R4's headless `claude -p` gives a decorrelated audit; R1/R2 inline keep the worker running), we trade some token efficiency and parallelism, not correctness.
+
+**Don't revive `--classic` to regain nesting.** The retired `--classic` path (Agent-tool fan-out, GGC-55) *would* now nest, since its workers are Agent-tool-spawned. But reviving it trades away Workflow's determinism, journal/resume, token budget, and race-lock orchestration, and re-binds the whole dispatcher to the volatile nesting behavior that has flip-flopped across CC versions — the exact fragility GGC-55 moved away from. The real unlock to wait for is **Workflow-spawned agents gaining the `Agent` tool** (stability + nesting together). Until then, status quo stands. *(Note: only depth-2 was probed on the Agent-tool path; depth-3 there — `dispatcher→worker→stage→judge` — is unverified, relevant only if anyone ever revisits classic.)*
+
+**Historical / official stance (the v2.1.170 framing — now superseded for the Agent-tool mechanism).** The [sub-agents docs](https://code.claude.com/docs/en/sub-agents) state "subagents cannot spawn other subagents" and the [multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system) post describes the supported shape as a lead (opus) orchestrator spawning a flat layer of (sonnet) workers — depth-1. As of v2.1.170 (probed 2026-06-10) the `Agent` tool was absent inside subagents *entirely* — every level-2 spawn, both tiers, took its spawn-failure path. The 2026-06-25 re-probe above shows that absence has lifted **for Agent-tool-spawned subagents**, but NOT for Workflow-spawned agents (which never had it, by design). Official nested-subagent support (depth=5) was announced 2026-06-09. **Re-probe BOTH mechanisms after each Claude Code update** before relying on either — the Workflow-worker path is the one that gates our dispatcher (recipe at the end of this section).
 
 ```
-                  DEPTH        AGENT                        STATUS
+MECHANISM A — Agent-tool spawn (default-mode / human session)        ✅ nests
 ─────────────────────────────────────────────────────────────────────────────
-level-0   main / dispatcher    /ggx-dispatcher              supported
-            │
-            ▼  spawns
-level-1   worker               general-purpose (/ggx-work)  supported (depth-1)
-            │
-            ▼  spawns           ┌─────────────────────────────────────────────┐
-level-2   leaf subagent        │ opus  → BROKEN (fails inside a spawned worker)│
-                               │ sonnet→ BROKEN since 2.1.170 (was working UB) │
+level-0   main session         /dev:ff (default mode)       has Agent tool
+            │ Agent tool
+            ▼
+level-1   subagent             general-purpose / dev-agent  HAS Agent tool
+            │ Agent tool
+            ▼
+level-2   leaf subagent        verify-agent, …              ✅ spawns (2026-06-25)
+
+MECHANISM B — Workflow-spawned agent (the /ggx-dispatcher fan-out)    ❌ no nest
+─────────────────────────────────────────────────────────────────────────────
+level-0   main / dispatcher    /ggx-dispatcher              calls Workflow tool
+            │ Workflow agent()
+            ▼
+level-1   worker               /ggx-work                    NO Agent tool (by design)
+            │ ✗ cannot spawn   ┌─────────────────────────────────────────────┐
+level-2   (unreachable)        │ Agent tool absent → R1/R2/R3/R4 cover this   │
                                └─────────────────────────────────────────────┘
-                                 ↑ the danger zone — officially unsupported
 ```
 
-**Why we still rely on level-2 sonnet:** the few remaining level-2 sonnet spawns (`/dev:figma`, `/dev:align`, `/dev:verify`, `/port:plan`) keep heavy per-node I/O out of the worker's main context. The R1–R5 rules below say which spawns were inlined away, which kept a fallback, and which deliberately did not.
+**Why R1–R5 still stand:** the dispatcher's fan-out worker is Mechanism B — it has no `Agent` tool, so the level-2 spawns it would otherwise make (`/dev:figma`, `/dev:align`, `/dev:verify`, `/port:plan`, `dev-agent`) are unreachable. The R1–R5 rules below — **all still required on the Workflow path** — say which spawns were inlined away, which kept a fallback, and which use the headless `claude -p` escape hatch instead.
 
 | Rule | Scope | Decision | Pointer |
 |---|---|---|---|
@@ -117,6 +140,15 @@ level-2   leaf subagent        │ opus  → BROKEN (fails inside a spawned work
 `/port:plan` is excluded from R2's fallback for its own reason: its parallel-dispatch invariant (two agents in one message) resists inlining, and its existing retry-once + designer-placeholder degradation is already graceful. See `commands/dev/port/plan.md` Step 7.
 
 The machine-checkable subagent invariants (output-file contracts, prohibitions) live in `agents/AGENTS.md`; the per-stage spawn-shape rationale lives in `commands/dev/ggx-dispatcher.md` §5.1 / §5.2 (the §5.0 / §5.3 sections were retired with the `--classic` path in GGC-55).
+
+### Re-probe recipe (run after each Claude Code update)
+
+Both mechanisms must be re-checked — the Agent-tool result does NOT predict the Workflow result. The Workflow-worker path is the one that gates the dispatcher.
+
+- **Mechanism A (Agent tool):** spawn a `general-purpose` level-1 subagent and have it (a) report whether `Agent` is in its tool list, and (b) spawn a trivial level-2 subagent that echoes a sentinel. Level-2 returns the sentinel ⇒ Agent-tool nesting works.
+- **Mechanism B (Workflow):** run a tiny `Workflow` script whose `agent()` worker reports `agentToolAvailable` (is `Agent` in its tool list / loadable via `ToolSearch "select:Agent"`?). `false` ⇒ Workflow-spawned agents still cannot nest ⇒ R1–R5 stay load-bearing. As of 2026-06-25 this returns `false`.
+
+If Mechanism B ever returns `true`, that is the trigger to revisit R1–R5 (and only then) — see the workaround retirement discussion on GGC-90.
 
 ## Rollout
 
