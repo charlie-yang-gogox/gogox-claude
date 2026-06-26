@@ -439,9 +439,9 @@ comments for the newest `<!-- ta-class:v1 source=analyzer label=<c> -->` marker
 **Gate 1 — decorrelated 2-vote (F1).** Propose a class from the ticket TEXT, then
 confirm with a SECOND, different-tier model — mirroring `audit.md`'s
 both-must-agree contract (one model's "looks clear" is not trusted at a write
-boundary). Only **strong-signal `bug` / `design bug`** are in scope here;
-**port / feature stay in the human tail** (undecidable from text alone — the
-analyzer reads no code; codebase grounding is P3 / GGC-98):
+boundary). `bug` / `design bug` are decided from text here; **port vs feature is
+NOT decidable from text** (the analyzer reads no code) → those route to Gate 1b
+(codebase grounding) before the tail:
 
 1. **Proposer (haiku)** — judge from title + description, emit
    `{class ∈ bug|design bug|port|feature|none, signal: strong|ambiguous, evidence}`.
@@ -450,23 +450,53 @@ analyzer reads no code; codebase grounding is P3 / GGC-98):
    (port/feature, mixed, weak) → `ambiguous`.
 2. **Confirmer (sonnet)** — independently judge the same ticket; emit the same
    shape. Do NOT show it the proposer's answer (decorrelation).
-3. **Consensus** — auto-write ONLY when **both** return the SAME `strong`
-   class **and** it is `bug` or `design bug`. Otherwise → Gate 2 (human tail).
+3. **Consensus** — auto-write a strong `bug` / `design bug` ONLY when **both**
+   return the SAME `strong` class. A port/feature lean (from either vote) →
+   Gate 1b. No consensus and no port/feature lean → Gate 2 (human tail).
+
+**Gate 1b — codebase grounding for port vs feature (GGC-98 / P3, LOCAL-RUN
+ONLY, fail-closed).** port and feature are distinguished by the codebase, not the
+text: a **port** = the feature exists in the **origin** repo and is absent in the
+**current** repo; a **feature** = net-new. Resolve the origin and scan
+**read-only** (Grep/Glob/Read — never write the filesystem/git, R2):
+
+1. **Resolve origin** the same way the dispatcher / spec-review do: read
+   `<repo-root>/.claude/port-settings.json`, `jq -r '.originalProjectPath'`,
+   expand `~`/`$ENV`. **Fail-closed (F4):** if the file/key is missing/empty, OR
+   the origin path is not a directory on disk, OR the current repo is not checked
+   out (the **cloud-routine case** — there is no working tree to scan) → **do NOT
+   guess.** Skip grounding and send the ticket to Gate 2's human tail. So this
+   whole gate is a **no-op in the cloud routine** and only adds value on a local
+   run with both repos on disk.
+2. **Scan (read-only).** Search the **current** repo for the described feature
+   (symbols / screens / strings from the ticket); search the **origin** repo the
+   same way. Cache origin scans per run (one fetch per origin path).
+   - present in origin, absent in current → **`port`**.
+   - net-new (absent in both, no origin reference) → **`feature`**.
+   - **inconclusive / mixed / partial** → Gate 2 human tail (never a guess).
+3. **Known limit (accepted):** a *partial* port — the feature exists in the
+   current repo but the ticket wants a missing variant — reads as "present →
+   feature" and may misclassify. This is left for the human tail + spec-review to
+   catch; biasing toward the tail on ambiguity keeps it safe.
+4. A confident `port` / `feature` from this gate is auto-written exactly like a
+   Gate-1 consensus (label-only, ta-class marker). Anything less → Gate 2.
 
 **Gate 2 — outcome:**
 
-- **Consensus strong `bug` / `design bug`** → write the single classification
-  label (read-before-write full-set, reusing the Step 8.4 pattern; ensure the
-  label exists via `list_issue_labels`, create on miss). Post the
+- **Gate-1 consensus strong `bug` / `design bug`, OR Gate-1b grounded
+  `port` / `feature`** → write the single classification label (read-before-write
+  full-set, reusing the Step 8.4 pattern; ensure the label exists via
+  `list_issue_labels`, create on miss). Post the
   `<!-- ta-class:v1 source=analyzer label=<c> -->` marker (F3). Set `<lane>`
   accordingly and continue to Step 3 with the right lane checklist. **No
   assignee write.**
-- **No consensus / port / feature / `none`** → the ticket is the **human tail**:
-  leave it lane `unknown`, do NOT write a classification label, and let Step 3 /
-  Step 6 record it as `need-revision`. The Step 8 comment MUST state plainly this
-  is the *"couldn't auto-classify the lane — please set one"* case (with the
-  best-guess lane + evidence as a suggestion), distinct from the *"content
-  incomplete"* case (Q3 — one label, two clearly-worded comment variants).
+- **No consensus / ungrounded port-or-feature / `none`** → the ticket is the
+  **human tail**: leave it lane `unknown`, do NOT write a classification label,
+  and let Step 3 / Step 6 record it as `need-revision`. The Step 8 comment MUST
+  state plainly this is the *"couldn't auto-classify the lane — please set one"*
+  case (with the best-guess lane + evidence as a suggestion), distinct from the
+  *"content incomplete"* case (Q3 — one label, two clearly-worded comment
+  variants).
 
 `--non-interactive` / unattended (cloud) runs behave identically — there is no
 human confirm in this step (that was the old `--triage` bottleneck). `--dry-run`
@@ -908,7 +938,9 @@ Rules:
 | Ticket in pipeline (`need-spec-review`, `dispatcher-*-in-flight`) | 1.5.5 | Skipped |
 | `need-revision` / `need-dependency` ticket | 1.5.5 | Re-analyzed (the revise → ready loop) |
 | Unclassified ticket, 2-vote agrees strong `bug`/`design bug` | 2.7 | Auto-write that classification label (label-only) + `ta-class:v1` marker (GGC-96) |
-| Unclassified ticket, votes disagree / port / feature / weak | 2.7 | Human tail — no auto-label; `need-revision` comment says "couldn't classify the lane, pick one" + suggested lane (Q3) |
+| Unclassified ticket, port/feature lean, origin on disk + scan conclusive | 2.7 Gate 1b | Auto-write `port`/`feature` from read-only codebase grounding (GGC-98) |
+| Unclassified port/feature lean, origin unresolvable / repo not checked out (cloud) | 2.7 Gate 1b | Fail-closed (F4) → human tail; Gate 1b is a no-op in the cloud routine |
+| Unclassified ticket, votes disagree / ungrounded port-feature / weak | 2.7 | Human tail — no auto-label; `need-revision` comment says "couldn't classify the lane, pick one" + suggested lane (Q3) |
 | `ta-class` marker exists but current classification differs (human override) | 2.7 Gate 0 | Classification is human-owned — never re-flip (GGC-96 / GGC-60 invariant) |
 | Missing/multiple classification labels (after Step 2.7 tail) | 3 | Revision reason, not a prompt |
 | Missing classification, strong lane signal in text | 3 | Reason carries a suggested lane + evidence (comment text only, never a label write) |
@@ -966,6 +998,11 @@ Rules:
   per-batch pull cap. `Label-only` (the default) and `Skip` make zero
   assignee/status writes. No bulk self-assign exists anywhere (pull model —
   PM never assigns; people pull their own tickets).
-- Do NOT touch the filesystem / git — pure tracker-side analysis.
+- Filesystem: **READ-ONLY scanning is allowed ONLY in Step 2.7 Gate 1b
+  (R2 / GGC-98)** — Grep/Glob/Read over the current repo + the origin repo
+  (`originalProjectPath`) to ground a port-vs-feature classification, fail-closed
+  to the human tail when either repo is not on disk. **Never write** the
+  filesystem or git anywhere; outside Gate 1b the analyzer stays pure
+  tracker-side. (Cloud runs have no working tree → Gate 1b is a no-op there.)
 - Do NOT support resume / state files — restart-on-interrupt re-derives
   everything from live tracker state.
