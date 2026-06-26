@@ -142,6 +142,14 @@ safety net for whatever the predictive (b) half misses.
 | `ready-to-port` / `ready-to-dev` | skipped (already actionable; re-analyzing races the dispatcher) |
 | `need-spec-review` / `dispatcher-*-in-flight` | skipped (already inside a pipeline) |
 
+**Classification stickiness (GGC-96, orthogonal to the analyzer-label axis
+above).** Step 2.7 may auto-write a *classification* label (`bug` / `design
+bug`) on a 2-vote consensus, leaving a `<!-- ta-class:v1 source=analyzer -->`
+marker. On any later run, if the ticket's current classification differs from
+that marker, a human overrode it → the classification is **human-owned and never
+re-flipped** (same anti-re-flip invariant as `analyze-hold`, applied to
+classification). port / feature are never auto-written (deferred to GGC-98).
+
 ---
 
 ## Steps
@@ -269,6 +277,15 @@ timestamp is shared across all tickets in the run.
 
 ### Step 1.6: Triage intake pass (`--triage` only)
 
+> **Superseded by Step 2.7 (GGC-96).** The default sweep now auto-classifies the
+> pool through the Step 2.7 confidence gate (2-vote; strong `bug` / `design bug`
+> auto-labeled, the rest to the human tail) — so the intake-starvation this pass
+> was built to solve is handled automatically, no flag required. `--triage` is
+> kept as the **manual-override / deliberate-pull** path: a human who wants to
+> classify ambiguous port/feature tickets by hand (Step 2.7 leaves those in the
+> tail) or to *pull* a chosen ticket into their own queue. It is no longer the
+> primary intake mechanism. Unchanged below for that manual use.
+
 Runs ONLY when `--triage` is set; otherwise skipped entirely (no behavior
 change for any existing invocation — AC1). This is the loop's **intake
 stage**: untriaged pool tickets carry no classification label, so `/route`
@@ -386,6 +403,69 @@ names from its field-mapping table:
 
 Print one line per ticket (non-held):
 `[<k>/<N>] Fetched <ticket-id> "<title>" — lane: <lane>, relations: <n>`
+
+### Step 2.7: Auto-classification (GGC-96 — default flow, replaces the `--triage` per-ticket HITL)
+
+Runs for every queued ticket whose Step 2 lane is `unknown` (no single
+classification label among `{bug, port, feature}` and no `design bug`). A
+classified ticket skips this step entirely — its human-set lane is authoritative.
+This folds the old Step 1.6 (`--triage`) classification into the default sweep,
+but **automated behind a confidence gate** instead of a per-ticket human confirm.
+The analyzer still **assigns nothing** here — it writes at most one classification
+label (label-only). Relaxes §C's "never write classification labels" behind the
+two gates below (R1).
+
+**Gate 0 — sticky human override (F3, the GGC-60 lesson).** Read the ticket's
+comments for the newest `<!-- ta-class:v1 source=analyzer label=<c> -->` marker
+(the idempotency key this step writes, §A2):
+
+- **No marker** → fresh ticket; proceed to Gate 1.
+- **Marker present AND current classification == the marker's `<c>`** → this is
+  our own prior auto-label, unchanged by a human; re-affirm the lane and skip the
+  re-classification (no duplicate write).
+- **Marker present AND current classification differs** (a human removed it,
+  changed it, or set a different one) → **the classification is now HUMAN-OWNED.
+  Never re-flip it.** Do NOT auto-classify, do NOT re-add the old label. If the
+  current classification is a single valid label, use it as `<lane>`; if it is now
+  empty/ambiguous, treat the ticket as the human tail (Gate 2 "ungroundable" path)
+  — the human deliberately un-classified it. This is the exact re-flip loop
+  GGC-60 fixed for `need-revision`; do not reintroduce it for classification.
+
+**Gate 1 — decorrelated 2-vote (F1).** Propose a class from the ticket TEXT, then
+confirm with a SECOND, different-tier model — mirroring `audit.md`'s
+both-must-agree contract (one model's "looks clear" is not trusted at a write
+boundary). Only **strong-signal `bug` / `design bug`** are in scope here;
+**port / feature stay in the human tail** (undecidable from text alone — the
+analyzer reads no code; codebase grounding is P3 / GGC-98):
+
+1. **Proposer (haiku)** — judge from title + description, emit
+   `{class ∈ bug|design bug|port|feature|none, signal: strong|ambiguous, evidence}`.
+   `strong` only when: repro steps + expected-vs-actual → `bug`; an explicit
+   visual/layout defect with no behaviour language → `design bug`. Anything else
+   (port/feature, mixed, weak) → `ambiguous`.
+2. **Confirmer (sonnet)** — independently judge the same ticket; emit the same
+   shape. Do NOT show it the proposer's answer (decorrelation).
+3. **Consensus** — auto-write ONLY when **both** return the SAME `strong`
+   class **and** it is `bug` or `design bug`. Otherwise → Gate 2 (human tail).
+
+**Gate 2 — outcome:**
+
+- **Consensus strong `bug` / `design bug`** → write the single classification
+  label (read-before-write full-set, reusing the Step 8.4 pattern; ensure the
+  label exists via `list_issue_labels`, create on miss). Post the
+  `<!-- ta-class:v1 source=analyzer label=<c> -->` marker (F3). Set `<lane>`
+  accordingly and continue to Step 3 with the right lane checklist. **No
+  assignee write.**
+- **No consensus / port / feature / `none`** → the ticket is the **human tail**:
+  leave it lane `unknown`, do NOT write a classification label, and let Step 3 /
+  Step 6 record it as `need-revision`. The Step 8 comment MUST state plainly this
+  is the *"couldn't auto-classify the lane — please set one"* case (with the
+  best-guess lane + evidence as a suggestion), distinct from the *"content
+  incomplete"* case (Q3 — one label, two clearly-worded comment variants).
+
+`--non-interactive` / unattended (cloud) runs behave identically — there is no
+human confirm in this step (that was the old `--triage` bottleneck). `--dry-run`
+proposes + reports the would-write class but writes no label and posts no marker.
 
 ### Step 3: Per-ticket completeness analysis
 
@@ -790,6 +870,28 @@ Schema rules:
 - Jira: same body; it is the primary record there (string labels are only
   a filterable index).
 
+### §A2 — Auto-classification provenance marker (GGC-96)
+
+When Step 2.7 auto-writes a classification label, it posts a **standalone**
+one-line marker comment (separate from the `ticket-analysis:v1` body above):
+
+```markdown
+<!-- ta-class:v1 source=analyzer label=<bug|design bug> ts=<ISO timestamp> -->
+Auto-classified `<label>` (2-vote consensus: <one-line evidence>). A human can
+change this label any time — the analyzer will then treat the classification as
+human-owned and never re-flip it.
+```
+
+Rules:
+- `label=` is the class the 2-vote agreed on; `source=analyzer` is fixed (the
+  marker is only ever written by this step).
+- This marker is the **sticky-override key** read by Step 2.7 Gate 0: on the next
+  sweep, if the ticket's current classification label ≠ this marker's `label`, a
+  human overrode it → never re-classify (the GGC-60 anti-re-flip invariant,
+  generalized to classification).
+- Posted ONLY on an actual auto-write — never for the human tail, never in
+  `--dry-run`, never when re-affirming an unchanged prior auto-label.
+
 ## §B — Edge case reference
 
 | Scenario | Step | Behavior |
@@ -800,7 +902,10 @@ Schema rules:
 | Ticket already `ready-to-*` | 1.5.5 | Skipped — re-analysis would race the dispatcher |
 | Ticket in pipeline (`need-spec-review`, `dispatcher-*-in-flight`) | 1.5.5 | Skipped |
 | `need-revision` / `need-dependency` ticket | 1.5.5 | Re-analyzed (the revise → ready loop) |
-| Missing/multiple classification labels | 3 | Revision reason, not a prompt |
+| Unclassified ticket, 2-vote agrees strong `bug`/`design bug` | 2.7 | Auto-write that classification label (label-only) + `ta-class:v1` marker (GGC-96) |
+| Unclassified ticket, votes disagree / port / feature / weak | 2.7 | Human tail — no auto-label; `need-revision` comment says "couldn't classify the lane, pick one" + suggested lane (Q3) |
+| `ta-class` marker exists but current classification differs (human override) | 2.7 Gate 0 | Classification is human-owned — never re-flip (GGC-96 / GGC-60 invariant) |
+| Missing/multiple classification labels (after Step 2.7 tail) | 3 | Revision reason, not a prompt |
 | Missing classification, strong lane signal in text | 3 | Reason carries a suggested lane + evidence (comment text only, never a label write) |
 | Missing classification, weak/ambiguous signal (esp. port vs feature) | 3 | No suggestion — plain base sentence only |
 | `design bug` text HIGH-confidence predicts a logic-needing fix | 3 / 6 | Design-bug gate (b): `need-revision` + reclassify→`Bug` comment; never `ready-to-dev` |
@@ -832,13 +937,17 @@ Schema rules:
 
 - Do NOT invoke `/ggx-work`, `/route`, or any pipeline — labels are the
   only handoff.
-- Do NOT write classification labels (`bug` / `port` / `feature` /
-  `design bug`) — those are human-owned (`/ggx-dispatcher` ownership
-  table). **Carve-out (`--triage` Step 1.6 only):** the triage pass writes
-  the ONE confirmed classification label, and only after an explicit
-  per-ticket human confirmation (`AskUserQuestion`) — the human's confirm IS
-  the ownership step, there is no `--auto`/`--non-interactive` for Phase 0.
-  Every non-`--triage` invocation still never writes a classification label.
+- Classification labels (`bug` / `port` / `feature` / `design bug`):
+  **auto-write is allowed ONLY through the Step 2.7 confidence gate (R1 /
+  GGC-96)** — a decorrelated 2-vote (haiku + sonnet must agree) on a
+  **strong-signal `bug` / `design bug`**, written label-only with a
+  `<!-- ta-class:v1 source=analyzer -->` provenance marker. Outside that gate
+  the analyzer never writes a classification label: **port / feature are never
+  auto-written here** (undecidable from text — deferred to P3/GGC-98 codebase
+  grounding), and a human's classification is **sticky** — once a human sets or
+  changes the label away from our marker, Step 2.7 Gate 0 never re-flips it.
+  (Legacy carve-out: the `--triage` Step 1.6 per-ticket-confirm path still
+  exists but is superseded by Step 2.7's automated gate — see Step 1.6's note.)
 - Do NOT write `dispatcher-*-in-flight` or `need-spec-review` — other
   writers own those. (The `--triage` carve-out does NOT extend here — triage
   writes only the classification label, and on a Pulled ticket may clear a
