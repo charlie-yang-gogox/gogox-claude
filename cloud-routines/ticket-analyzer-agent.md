@@ -2,9 +2,9 @@
 name: ticket-analyzer-agent
 description: >
   Cloud routine template that runs `/ticket-analyze --non-interactive` in
-  batch mode twice a day (lunch + after-work slots), judging the
-  routine-owner's To-Do tickets for pipeline readiness and writing the
-  verdict labels
+  batch mode, judging the team's **actionable pool** (Triage/Backlog/To-Do,
+  any assignee — GGC-95) for pipeline readiness, auto-classifying strong
+  signals (GGC-96), and writing the verdict labels
   (`ready-to-port` / `ready-to-dev` / `need-revision` / `need-dependency`)
   + structured comments back to Linear. Pure ANALYSIS — never writes code,
   never opens PRs, never invokes any pipeline. Designed to fire 30 minutes
@@ -36,8 +36,10 @@ placeholders in §3, and creates their own routine.
 An unattended cloud run of `/ticket-analyze` batch mode
 (`commands/dev/ticket-analyze.md`). Per fire it:
 
-1. Discovers analysis candidates assigned to the routine owner on the
-   team: To-Do tickets + `need-revision` / `need-dependency` re-runs.
+1. Discovers analysis candidates across the team **actionable pool**
+   (Triage/Backlog/To-Do, **any assignee** — GGC-95): fresh tickets +
+   `need-revision` / `need-dependency` re-runs. Output is label-only — the
+   routine never assigns (pull model).
 2. Bootstraps gogox-claude (install.sh ONLY — no Flutter, no openspec,
    no gh; the analyzer never builds or pushes).
 3. Follows `/ticket-analyze --non-interactive` from the target repo's
@@ -131,3 +133,33 @@ Live instance (Charlie): `trig_01VxjNnJXw3F3y9qe3fgmYAj`, created
   this template targets Linear teams.
 - `--dry-run` exists on the command — flip the prompt to it if you want a
   no-write observation period first.
+
+## 6. Fan-out execution + raised cadence (GGC-97 / P2)
+
+The batch sweep is now backed by `workflows/ticket-analyze-fanout.workflow.js`
+— a thin Workflow harness that fans out per-ticket analysis (Step 2.7 classify +
+Step 3 completeness) in parallel, computes the Step-5 dependency graph in a
+single JS barrier, then fans out the label-only writes. The per-ticket judgment
+still lives in `commands/dev/ticket-analyze.md` (the harness only orchestrates),
+so there is no logic to keep in sync. Model tiering: classify+completeness on
+sonnet, writes on haiku, **no opus** — the analyzer judges, it never implements.
+
+**Execution path:** the routine runs `/ticket-analyze --non-interactive`, which
+does discovery + the re-analysis filter (its Step 1.5) and then drives the
+fan-out workflow over the surviving roster. Per-ticket failure resolves to an
+`errored` row and never aborts the batch (the barrier filters nulls).
+
+**Raised cadence:** because the fan-out completes in **minutes** (no builds, no
+opus, parallel agents), the old 2×/day slots are no longer the constraint — the
+queue can be kept continuously classified. Recommended: tighten the cron to
+hourly during working hours (e.g. `0 1-10 * * *` UTC ≈ TW 09:00–18:00), keeping
+the 30-min offset before each `ggx-dev-agent` slot if you still pair them. Keep
+2×/day only if you deliberately want a slower, lower-cost cadence.
+
+**F2 watch (load-bearing, per the plan review):** the analyzer auto-tags the
+pool `ready-to-*` **label-only** — a ticket then waits unassigned until a human
+pulls it (assigns). The workflow logs an **unclaimed-ready** list each run; the
+routine report must surface it so a `ready` + unassigned ticket never silently
+looks done. Track the `ready-to-*` → assigned latency before treating throughput
+as "solved"; if that tail grows, revisit the capped-auto-pull alternative
+(`plans/ticket-analyzer-evolution.md` §2.5-F2).
