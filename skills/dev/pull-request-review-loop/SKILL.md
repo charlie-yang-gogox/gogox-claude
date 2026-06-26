@@ -21,7 +21,7 @@ description: >
 >
 > **Locked design decisions** (do not re-litigate):
 > - **No PR id argument.** The PR is always resolved from the current branch; if there is none, the skill creates one via `/pull-request --draft`. The PR number is never known in advance.
-> - **English only — interface and artifacts.** Every progress line, commit, and review reply is English. The one exception is the `--notify` Slack message, which is Chinese by team convention (see Step 4 / CLAUDE.md §8) — but this file itself stays English.
+> - **English only — interface and artifacts.** Every progress line, commit, review reply, and the `--notify` Slack message is English. The message greets the assigned reviewers by their GitHub login (plain text — see Step 4); the skill keeps no GitHub→Slack mapping, so it stays generic for any team.
 > - **Default = stop at draft; `--assign` is the human's explicit opt-in to promote.** The team uses a PR's draft/ready state as the marker for "AI-written, not yet verified" (draft) vs "a human has checked it" (ready), so the skill never *auto*-promotes. By default it takes the PR only as far as "AI review clean + CI green" and stops, leaving it a draft. When the human runs it with `--assign=<logins>`, that invocation *is* the human sign-off — so the skill then un-drafts and assigns those reviewers. (Caveat: `--assign` is pre-authorization given at invocation, before the final diff exists — a deliberate, opt-in trade-off.) Merging is always the human's.
 > - **Slack is opt-in via `--notify`, never on the skill's own initiative.** By default the skill posts nothing to Slack. It posts one PR-review request only when the human passes `--notify=<channel>` alongside `--assign`, and only to the channel the human named — the same "the invocation is the authorization" logic as `--assign`.
 > - **CI is waited for *while still a draft*.** The build/test CI (e.g. Codemagic on `gogox-driver-flutter`) runs on draft PRs, so the skill can confirm it green without un-drafting. (Verified: `gogox-driver-flutter` PR #83 was a draft yet its `PR Check` had passed.)
@@ -125,7 +125,16 @@ Your turn (a human's sign-off — the skill does none of these):
    gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" \
      -f 'reviewers[]=AlexWangGoGoX' -f 'reviewers[]=AlanCHTseng'
    ```
-4. **Notify (only if `--notify=<channel>` is given).** Post a PR-review request to that Slack channel (the id or `#name` passed in) via `slack_send_message`. Write the message in **Chinese** — this is the team's internal channel and the documented exception to English-only (CLAUDE.md §8). Structure it like the channel's existing convention: a short greeting with a thank-you emoji (e.g. `:gogobear_thankful:`), the PR URL on its own line, then one `•` bullet describing in Chinese what the PR does (ticket id welcome). Do **not** @-mention anyone — reviewers were assigned on GitHub in step 3, and the channel claims PRs by emoji reaction. Post **once** per PR (on a re-run, do not repost). If `--notify` is absent, post nothing — assignment alone is the handoff.
+4. **Notify (only if `--notify=<channel>` is given).** Post a PR-review request to that Slack channel (the id or `#name` passed in) via `slack_send_message`. Write the message in **English** and greet the reviewers by the GitHub logins passed to `--assign` (plain text, not Slack `<@id>` mentions — the skill keeps no GitHub→Slack mapping, by design, so it stays generic for org-wide use; a plain login does not ping anyone). Format it as four lines:
+
+   ```
+   Hi <login1>, <login2>
+   Please review this PR :gogobear_thankful: :
+   <PR_URL>
+   • <one-line summary of what the PR does>
+   ```
+
+   The thank-you emoji (`:gogobear_thankful:`) follows the target channel's convention; the `•` bullet describes what the PR does (ticket id welcome). Post **once** per PR (on a re-run, do not repost). If `--notify` is absent, post nothing — assignment alone is the handoff.
 5. **Merge** is still the human's — the skill never merges.
 
 **Neither `--assign` nor `--notify` overrides a STOP.** They only reach this step when the review loop AND CI are both clean. If the loop stopped on a human-decision finding, or CI is red, the skill never un-drafts, assigns, or notifies — the PR stays a draft.
@@ -137,7 +146,7 @@ Your turn (a human's sign-off — the skill does none of these):
 - **CI runs on drafts here.** On `gogox-driver-flutter` the real build/test check, `PR Check (format, analyze, test, build-verify)`, is run by Codemagic (an external CI) and fires on draft PRs — so the skill can confirm it green without un-drafting. The `WIP` marketplace check, by contrast, stays `pending` until the PR is un-drafted; Step 3 excludes it for that reason.
 - **Assign via REST, not `gh pr edit`.** `gh pr edit --add-reviewer` uses GraphQL and fails when the local token lacks the `read:org` scope; the `requested_reviewers` REST endpoint works regardless.
 - **WIP nudge after un-draft.** The Marketplace WIP check leaves a stale `pending` after un-draft because it does not listen for `ready_for_review`; the title append-and-revert in Step 4 triggers the `edited` event it does listen for.
-- **Slack notification (`--notify`) follows §8 convention.** The message is Chinese (the target channels are the team's internal Chinese channels — the documented §8 exception to English-only), with a greeting + thank-you emoji, the PR URL, and one `•` Chinese bullet, no @-mention, once per PR. The channel is always whatever the human passes to `--notify`; the skill never picks one on its own, and posts nothing without the flag.
+- **Slack notification (`--notify`) is generic and English.** The message is English so the skill works for any team, not tied to one team's language convention. It greets the reviewers as `Hi <logins>` (the GitHub logins from `--assign`, plain text — no GitHub→Slack mapping, so no real ping), then `Please review this PR` + a thank-you emoji, the PR URL, and one `•` bullet, once per PR. The channel is always whatever the human passes to `--notify`; the skill never picks one on its own, and posts nothing without the flag.
 
 ## Output
 
@@ -157,4 +166,5 @@ Next: <human: review → un-draft → assign → merge | merge once approved>
 > Update this footer when you use the skill, so the next person knows the real-world use case.
 > Format: `YYYY-MM-DD by @username — one-line context`
 
+- 2026-06-26 by @broccoli.huang — switched the `--notify` message from Chinese to English and made it greet the assigned reviewers by GitHub login (`Hi <logins>` / `Please review this PR`). Addressing reviewers by login needs no GitHub→Slack mapping, decoupling the skill from §8's team-specific Chinese convention so it stays generic for org-wide use.
 - 2026-06-25 by @broccoli.huang — reworked to stop at draft by default (runs the AI-review loop, waits for CI green, then leaves the PR a draft), after team feedback that draft↔ready is the team's human-verified marker. Added `--assign=<logins>` (opt-in un-draft + assign) and `--notify=<channel>` (opt-in Slack PR-review ping after assigning — added because the repo's assumed notify Action turned out not to exist, so the notification had to be the skill's own step). CI is waited for in draft because the build CI (Codemagic) runs on drafts. Shipped as GGC-88 / PR #137. Not yet dogfooded end-to-end on a live PR.
