@@ -220,6 +220,26 @@ def find_current_session(cwd: str):
     return None, None
 
 
+def find_jsonl_by_session_id(session_id: str):
+    """Locate a transcript by session id across ALL project dirs — cwd-independent.
+
+    The transcript is filed under the hash of the session's STARTUP cwd, which
+    diverges from the live cwd after an EnterWorktree. Globbing by the (unique)
+    session id sidesteps the cwd-hash entirely. Top-level ``*.jsonl`` only —
+    subagent transcripts live under ``<dir>/subagents/`` or ``<dir>/<parent-sid>/``
+    and are intentionally excluded. Returns (stem, path) or (None, None)."""
+    if not session_id:
+        return None, None
+    for p in sorted(
+        PROJECTS_DIR.glob(f"*/{session_id}.jsonl"),
+        key=lambda p: p.stat().st_size,
+        reverse=True,
+    ):
+        if "subagents" not in p.parts:
+            return p.stem, p
+    return None, None
+
+
 # ===================================================================
 # Ticket / branch detection
 # ===================================================================
@@ -1843,12 +1863,16 @@ def main():
 
     if hook_ctx and hook_ctx.get("session_id"):
         session_id = hook_ctx["session_id"]
-        project_name = cwd_to_project_dir_name(cwd)
-        jsonl_path = PROJECTS_DIR / project_name / f"{session_id}.jsonl"
+        # Locate by session id first (cwd-independent); the cwd-hash path is only
+        # correct when the live cwd is still the session's startup dir.
+        _, jsonl_path = find_jsonl_by_session_id(session_id)
+        if not jsonl_path:
+            jsonl_path = PROJECTS_DIR / cwd_to_project_dir_name(cwd) / f"{session_id}.jsonl"
     elif args.session_id:
         session_id = args.session_id
-        project_name = cwd_to_project_dir_name(cwd)
-        jsonl_path = PROJECTS_DIR / project_name / f"{session_id}.jsonl"
+        _, jsonl_path = find_jsonl_by_session_id(session_id)
+        if not jsonl_path:
+            jsonl_path = PROJECTS_DIR / cwd_to_project_dir_name(cwd) / f"{session_id}.jsonl"
     elif args.pid:
         info = find_session_by_pid(args.pid)
         if info:
@@ -1857,7 +1881,17 @@ def main():
             project_name = cwd_to_project_dir_name(cwd)
             jsonl_path = PROJECTS_DIR / project_name / f"{session_id}.jsonl"
     else:
-        session_id, jsonl_path = find_current_session(cwd)
+        # Prefer the live session id (cwd-independent) over a cwd-hash glob: a
+        # finalize that runs from a worktree (EnterWorktree moved cwd off the
+        # startup dir where the transcript is filed) still resolves. Guards:
+        #  - skip inside a child/subagent session — there CLAUDE_CODE_SESSION_ID is
+        #    the SUBAGENT's id; the dispatcher batch path (--scan-subagents) owns it.
+        #  - skip when --cwd was explicit — the caller pinned a dir on purpose.
+        env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        if env_sid and not os.environ.get("CLAUDE_CODE_CHILD_SESSION") and not args.cwd:
+            session_id, jsonl_path = find_jsonl_by_session_id(env_sid)
+        if not jsonl_path:
+            session_id, jsonl_path = find_current_session(cwd)
 
     if not jsonl_path or not jsonl_path.exists():
         print("Error: Could not find session JSONL", file=sys.stderr)
