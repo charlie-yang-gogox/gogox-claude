@@ -4,7 +4,12 @@ description: >
   Upstream ticket analyzer — the automated replacement for the manual
   "human marks ready" step that feeds `/ggx-dispatcher`. Two invocation
   shapes: pass a ticket id to analyze just that one, or call with no args
-  to sweep every **To-Do** ticket **assigned to me** on the active team.
+  to sweep the active team's **actionable pool** — every ticket in
+  Triage / Backlog / To-Do, **any assignee** (GGC-95: PM/QA tickets land
+  unassigned in the pool, so an assigned-to-me-only sweep never saw them).
+  Output is always **label-only — the analyzer assigns NOTHING** (pull
+  model: a human/teammate assigns to pull; the dispatcher still filters
+  `assignee = me`).
   Per ticket it judges content completeness against the lane's pipeline
   needs (port / feature / bug / ui-tweak), builds a dependency graph from explicit
   relations (Linear `.relations[]`, Jira `issuelinks`) plus LLM content
@@ -33,7 +38,7 @@ Prerequisite: >
 
 # `/ticket-analyze [ticket-id]`
 
-Analyze To-Do tickets assigned to me for **pipeline readiness**: is the
+Analyze the team's actionable-pool tickets for **pipeline readiness**: is the
 content sufficient for the port / feature / bug / ui-tweak workflow, and is
 the ticket blocked by another ticket? Persist the verdict as workflow labels + a
 structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
@@ -41,9 +46,11 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 
 **Usage**:
 
-- `/ticket-analyze` — **batch mode**. Sweep every To-Do ticket assigned to
-  me on the active project's team, analyze cross-ticket dependencies, and
-  write per-ticket verdicts. Per-ticket failures do NOT abort the batch.
+- `/ticket-analyze` — **batch mode**. Sweep the active project's team
+  **actionable pool** — every Triage / Backlog / To-Do ticket regardless of
+  assignee (GGC-95) — analyze cross-ticket dependencies, and write per-ticket
+  verdicts **label-only (never assign)**. Per-ticket failures do NOT abort the
+  batch.
 - `/ticket-analyze <ticket-id>` — **single mode**. Analyze just this one
   ticket. Dependency edges to other tickets are still detected and
   resolved against their live status, but no batch-wide ordering is
@@ -190,21 +197,27 @@ timestamp is shared across all tickets in the run.
    and continue. If `ticket_system == unknown` → STOP (never default to
    Linear silently).
 
-3. **Resolve the To-Do state name** — do NOT hardcode it:
-   - Linear: `mcp__claude_ai_Linear__list_issue_statuses` for
-     `<team_key>`; pick the status whose `type == unstarted` and whose
-     name matches `To-Do` / `Todo` / `To Do` (case-insensitive). Multiple
-     `unstarted` states (e.g. `Backlog` + `Todo`) → pick the To-Do-named
-     one; Backlog is intentionally out of scope.
-   - Jira: target status name `To Do` (post-filter on
-     `.fields.status.name` after a JQL search
-     `assignee = currentUser() AND project = <team_key> AND statusCategory = "To Do"`
-     via `mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql`).
+3. **Resolve the actionable-pool states** (GGC-95 — do NOT hardcode names):
+   - Linear: `mcp__claude_ai_Linear__list_issue_statuses` for `<team_key>`;
+     the pool = every status whose `type ∈ {triage, backlog, unstarted}`.
+     This captures Triage, Backlog, AND the To-Do-named unstarted state(s) —
+     the wider scope is the whole point: PM/QA tickets sit unassigned in
+     Triage/Backlog, never To-Do. Record the matching state names/ids.
+   - Jira: the pool = `statusCategory = "To Do"` (covers the Backlog / To Do /
+     Triage-equivalent column) via the JQL below.
 
-4. **List tickets**:
-   - Linear: `mcp__claude_ai_Linear__list_issues` with `team =
-     <team_key>`, `assignee = me`, `state = <resolved To-Do name>`.
-   - Jira: the JQL search above.
+4. **List tickets — team-wide, NO assignee filter** (GGC-95):
+   - Linear: run one `mcp__claude_ai_Linear__list_issues` per resolved pool
+     state (`team = <team_key>`, `state = <pool state>`, and **OMIT
+     `assignee`** so every assignee — and the unassigned pool — is covered);
+     union the results and dedup by id. Per-state queries because `state` is
+     singular in the MCP schema — the same multi-query shape as
+     `/ggx-dispatcher`'s discovery (§ Discovery). The analyzer still **writes
+     no assignee on any ticket** — label-only output regardless of who (if
+     anyone) owns the ticket.
+   - Jira: `project = <team_key> AND statusCategory = "To Do"` (no `assignee`
+     clause) via `mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql`,
+     post-filtering on `.fields.status.name` as before.
 
 5. **Re-analysis post-filter** — apply to the fetched set, printing one
    skip line per excluded ticket:
@@ -228,15 +241,15 @@ timestamp is shared across all tickets in the run.
    `createdAt` ascending.
 
 7. **Empty case**: print
-   `No analyzable To-Do tickets assigned to you on team <team_key>.` and
+   `No analyzable actionable-pool tickets on team <team_key>.` and
    STOP cleanly (exit zero) — **UNLESS `--triage` is set**, in which case
    continue to Step 1.6 with an empty base `<queue>` (the triage pass may
-   pull pool tickets into it; a triage run with no To-Do backlog is normal).
+   pull pool tickets into it; a triage run with no pool backlog is normal).
 
 8. **Print queue overview** — ONE row per surviving ticket (the template
    below is a format, not an output cap; never truncate the table):
    ```
-   Found <N> To-Do tickets on team <team_key> (<F> fresh, <R> re-analysis):
+   Found <N> actionable-pool tickets on team <team_key> (<F> fresh, <R> re-analysis):
 
    | # | ticket          | title                        | priority | current label |
    |---|-----------------|------------------------------|----------|---------------|
@@ -584,14 +597,30 @@ Iterate `<queue>` in order. All writes are read-before-write.
    affected tickets `errored (label create failed)`, continue.
 
 2. **Pre-write concurrency check**: re-fetch the ticket's comments +
-   labels. If a `ticket-analysis:v1` comment by another author is newer
-   than `<batch-start-time>`, OR the ticket now carries
-   `dispatcher-*-in-flight` (dispatcher locked it mid-analysis):
+   labels; call the fresh label set `<labels-fresh>` (it is the authoritative
+   base for the Step 8.4 rewrite — see below). Decide as follows:
+
+   **(i) hard conflict → skip/STOP.** If a `ticket-analysis:v1` comment by
+   another author is newer than `<batch-start-time>`, OR the ticket now carries
+   `dispatcher-*-in-flight` (dispatcher locked it mid-analysis), OR
+   `<labels-fresh>` now carries `analyze-hold` (a human parked it mid-run), OR
+   the **classification label changed** since the Step-2 read (the lane this
+   verdict was computed for is no longer current):
    - **Single mode** → STOP:
      `Concurrent actor detected on <ticket-id> (<which signal>). Re-run /ticket-analyze <ticket-id> to see the latest state.`
    - **Batch mode** → print
      `[<k>/<N>] <ticket-id> skipped — concurrent actor (<which signal>).`,
      mark `skipped`, continue.
+
+   **(ii) benign label drift → keep, but rebase the write (GGC-95 / F5).** If
+   `<labels-fresh>` differs from the Step-2 `<labels>` only in labels that do
+   NOT affect the verdict (e.g. a human added a priority/area tag between our
+   read and write), do NOT skip — but the Step 8.4 full-set rewrite MUST be
+   computed against `<labels-fresh>`, never the stale Step-2 `<labels>`.
+   Otherwise the rewrite (which sends a complete label list) silently drops the
+   concurrently-added label — a lost update. Always rebasing on the just-fetched
+   set makes a benign concurrent label edit safe; the hard-conflict cases above
+   are the only ones that skip.
 
    **2b. Design-bug ready-to-dev gate** (GGC-37 — reuse the comments just
    re-fetched in 8.2, no extra MCP call): if `target_label == ready-to-dev`
@@ -621,7 +650,8 @@ Iterate `<queue>` in order. All writes are read-before-write.
    `ticket-analysis:v1` comment is authoritative on read.
 
 4. **Label write**:
-   - **Linear**: compute the new set = current labels − the other three
+   - **Linear**: compute the new set = **`<labels-fresh>`** (the set re-fetched
+     in Step 8.2 — NOT the stale Step-2 read, F5) − the other three
      analyzer-owned labels + `<target_label>`, preserving everything else;
      `mcp__claude_ai_Linear__save_issue --labels <new set>`. Already at
      target → skip the write, log `labels: already at target`.
@@ -782,6 +812,9 @@ Schema rules:
 | Cycle among queue tickets | 5.2 | All members blocked w/ cycle reason; loud warning; no crash |
 | Dispatcher locks a ticket mid-run | 8.2 | Pre-write re-check skips it |
 | Newer foreign `ticket-analysis:v1` comment | 8.2 | Skip (batch) / STOP (single) |
+| Classification label / `analyze-hold` changed since read | 8.2(i) | Hard conflict — skip (batch) / STOP (single); verdict was computed for a stale lane |
+| Benign label added by a human between read and write | 8.2(ii) / 8.4 | Keep; rebase the full-set rewrite on the freshly-fetched labels so the new label is preserved (F5 — no lost update) |
+| Unassigned / other-assignee pool ticket | 1.5.4 | In scope (GGC-95) — analyzed + labeled, never assigned |
 | `need-revision` label missing on team | 8.1 | Auto-create; on failure post comment + manual hint |
 | Label already at target | 8.4 | No-op write, logged |
 | 5xx on comment or label | 8.5 | Retry once; then errored + continue (batch) / STOP (single) |
