@@ -50,7 +50,12 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
   **actionable pool** — every Triage / Backlog / To-Do ticket regardless of
   assignee (GGC-95) — analyze cross-ticket dependencies, and write per-ticket
   verdicts **label-only (never assign)**. Per-ticket failures do NOT abort the
-  batch.
+  batch. **Execution (GGC-97):** after Step 1.5 discovery + the re-analysis
+  filter, batch mode fans the surviving roster out via
+  `workflows/ticket-analyze-fanout.workflow.js` — a thin harness that runs the
+  per-ticket Step 2.7/3 judgment in parallel, builds the Step-5 dependency graph
+  in one barrier, then fans out the Step-8 writes (haiku/sonnet tiered, no opus).
+  The judgment below is the source of truth; the harness only orchestrates.
 - `/ticket-analyze <ticket-id>` — **single mode**. Analyze just this one
   ticket. Dependency edges to other tickets are still detected and
   resolved against their live status, but no batch-wide ordering is
