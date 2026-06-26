@@ -1,38 +1,36 @@
 ---
 name: pull-request-review-loop
 description: >
-  Drive the current branch's PR to a reviewer-ready state — but deliberately
-  STOP at draft. Opens a draft PR if the branch has none, runs the @claude
-  AI-review loop until clean (auto-fixing mechanical findings, pausing for
-  human-decision ones), and waits for CI to go green while the PR stays a
-  draft — then stops and prints a handoff checklist. It does NOT un-draft,
-  assign reviewers, post to Slack, or merge: promoting a draft to a ready PR
-  is a human's sign-off that the AI-produced work has been checked, and that
-  sign-off is never automated. Use after finishing a feature/fix to automate
-  the tedious half of the PR handoff.
+  Drive the current branch's PR to a reviewer-ready state. By default it STOPS
+  at draft: opens a draft PR if the branch has none, runs the @claude AI-review
+  loop until clean (auto-fixing mechanical findings, pausing for human-decision
+  ones), and waits for CI to go green while the PR stays a draft — then prints a
+  handoff checklist. Promoting a draft to ready is a human's sign-off that the
+  AI-produced work has been checked, so it is never automatic — but the human can
+  opt in with --assign=<logins>, which (only after the review is clean and CI is
+  green) un-drafts the PR and assigns those reviewers. The skill never posts to
+  Slack or merges. Use after finishing a feature/fix to automate the PR handoff.
 ---
 
 # Pull Request Review Loop
 
-> **One-line summary**: For the current branch's PR (created as a draft if none exists), post the `@claude` review trigger and loop fix→re-trigger until the AI review is clean, then wait for CI to go green — all while the PR stays a **draft**. The skill stops there and prints a handoff checklist; un-drafting, assigning reviewers, notifying the channel, and merging are deliberately left to a human, because promoting a draft to a ready PR is the team's signal that a person has verified the work.
+> **One-line summary**: For the current branch's PR (created as a draft if none exists), post the `@claude` review trigger and loop fix→re-trigger until the AI review is clean, then wait for CI to go green — all while the PR stays a **draft**. By default the skill stops there and prints a handoff checklist. Promoting the draft to ready is a human sign-off, so it is opt-in: pass `--assign=<logins>` and the skill (once review is clean and CI is green) un-drafts and assigns those reviewers. The skill never posts to Slack or merges.
 >
 > **MCP prerequisites**: none. Uses the `gh` CLI only (must be authenticated: `gh auth status`). No Slack / Linear / Atlassian MCP is required.
 >
 > **Locked design decisions** (do not re-litigate):
 > - **No PR id argument.** The PR is always resolved from the current branch; if there is none, the skill creates one via `/pull-request --draft`. The PR number is never known in advance.
 > - **English only — interface and artifacts.** Every progress line, commit, and review reply is English.
-> - **STOP at draft — never un-draft, assign reviewers, notify, or merge.** The team uses a PR's draft/ready state as the marker for "AI-written, not yet verified" (draft) vs "a human has checked it and it is ready" (ready). If the skill auto-un-drafted, the AI would be stamping its own output as human-verified — destroying that signal. So the skill takes the PR only as far as "AI review clean + CI green" and stops, **leaving it a draft**. Un-drafting, assigning reviewers, the channel notification, and the merge are the human's sign-off and are never automated.
-> - **CI is waited for *while still a draft*.** The build/test CI (e.g. Codemagic on `gogox-driver-flutter`) runs on draft PRs, so the skill can confirm it green without un-drafting. (Verified: `gogox-driver-flutter` PR #83 was a draft yet its `PR Check` had passed.) Any check that only runs *after* un-draft is, by definition, part of the human's post-handoff sign-off.
-> - **Human-decision findings stop the loop — and this skill, not the delegate, catches them.** A review finding that needs a product/AC call (or that cannot be fixed in code) is surfaced and the loop halts for the human. Because `/resolve-pr-comments --auto` runs unattended and never pauses, the triage that catches these findings happens in Step 2 *before* delegating (see Step 2.3) — the delegate handles only the mechanical fixes.
+> - **Default = stop at draft; `--assign` is the human's explicit opt-in to promote.** The team uses a PR's draft/ready state as the marker for "AI-written, not yet verified" (draft) vs "a human has checked it" (ready), so the skill never *auto*-promotes. By default it takes the PR only as far as "AI review clean + CI green" and stops, leaving it a draft. When the human runs it with `--assign=<logins>`, that invocation *is* the human sign-off — so the skill then un-drafts and assigns those reviewers. (Caveat: `--assign` is pre-authorization given at invocation, before the final diff exists — a deliberate, opt-in trade-off.) Merging is always the human's, and the skill never posts to Slack.
+> - **CI is waited for *while still a draft*.** The build/test CI (e.g. Codemagic on `gogox-driver-flutter`) runs on draft PRs, so the skill can confirm it green without un-drafting. (Verified: `gogox-driver-flutter` PR #83 was a draft yet its `PR Check` had passed.)
+> - **Human-decision findings stop the loop — and this skill, not the delegate, catches them.** A review finding that needs a product/AC call (or that cannot be fixed in code) is surfaced and the loop halts for the human. Because `/resolve-pr-comments --auto` runs unattended and never pauses, the triage that catches these findings happens in Step 2 *before* delegating (see Step 2.3). A halt here means no promotion happens, even under `--assign`.
 
 ## Inputs
 
-Invoke directly — no input required for the common case.
+Invoke directly — no input required for the common (stop-at-draft) case.
 
 - **`--max-rounds=N`** (optional, default `5`) — hard cap on AI-review iterations, so a never-converging review can't loop forever.
-- **`--no-review`** (optional) — skip the `@claude` AI-review loop (Step 2) and go straight to waiting for CI green, then stop at draft. For when you have already reviewed the code yourself and only want the skill to confirm the build is green.
-
-There is no reviewer argument — the skill never assigns reviewers (see the locked decisions), so it needs none.
+- **`--assign=<logins>`** (optional) — comma-separated GitHub logins (e.g. `--assign=AlexWangGoGoX,AlanCHTseng`). The human's explicit opt-in to promote: **only after** the review loop is clean and CI is green, the skill un-drafts the PR and requests review from these logins. A leading `@` and surrounding whitespace are tolerated. Without this flag the skill stops at draft and promotes nothing.
 
 ## Steps
 
@@ -47,10 +45,11 @@ echo "{\"skill\":\"pull-request-review-loop\",\"user\":\"$(whoami)\",\"ts\":\"$(
 1. **gh auth.** Abort early with a clear message if `gh` is not authenticated (`gh auth status`).
 2. **Branch + PR.** `gh pr view --json number,url,state,isDraft 2>/dev/null`.
    - A draft PR that is `OPEN` → use it.
-   - No PR (or the last one is `MERGED`/`CLOSED`) → run `/pull-request --draft` to push the branch and open a draft PR, then re-resolve. Capture `PR_NUMBER`, `PR_URL`.
-   - The PR is `OPEN` but already **ready** (a human promoted it) → use it, but do **not** re-draft it. The skill still runs the review loop and the CI wait; it simply never changes the draft/ready state in either direction.
+   - No PR (or the last one is `MERGED`/`CLOSED`) → run `/pull-request --draft` to push the branch and open a draft PR, then re-resolve. Capture `PR_NUMBER`, `PR_URL`, `REPO`.
+   - The PR is `OPEN` but already **ready** (a human promoted it) → use it, do **not** re-draft it. Run the review loop and CI wait as normal; under `--assign` it skips the un-draft step (already ready) and goes straight to assigning.
+3. **Assignees.** If `--assign` is given, parse it into a deduped list of bare GitHub logins (strip a leading `@` and whitespace). Hold for Step 4.
 
-### 2. AI-review loop (skip if `--no-review`)
+### 2. AI-review loop
 
 Repeat up to `--max-rounds` times:
 
@@ -89,9 +88,11 @@ The `WIP` check is excluded on purpose: it stays `pending` for as long as the PR
 - `pending` → keep polling (bounded; print progress). If the build check has not even appeared yet, give it a few seconds to register before judging.
 - `red` → **STOP**. Print which check failed. Fixing CI failures (test/build) is out of this skill's scope. The PR stays a draft and is not handed off as ready.
 
-### 4. Stop at draft — hand off to the human
+### 4. Hand off
 
-The PR now has a clean AI review and green CI, and it is still a draft. **Stop here.** Print a handoff checklist; every item is the human's sign-off, and the skill performs none of them:
+The PR now has a clean AI review and green CI.
+
+**Default (no `--assign`)** — stop at draft. Print the handoff checklist; every item is the human's sign-off, and the skill performs none of them:
 
 ```
 PR #<n> — <url>
@@ -104,14 +105,36 @@ Your turn (a human's sign-off — the skill does none of these):
   4. Merge once approved.
 ```
 
-The skill never un-drafts, assigns reviewers, posts to Slack, or merges. No state is persisted; every marker lives in GitHub.
+**With `--assign=<logins>`** — the invocation is the human's pre-authorization to promote, so carry out the un-draft + assign on their behalf:
+
+1. **Un-draft** (skip if the PR is already ready): `gh pr ready "$PR_NUMBER"`.
+2. **WIP nudge.** Un-drafting leaves this repo's Marketplace WIP check stale at `pending` (it doesn't listen for `ready_for_review`). If `gh pr checks "$PR_NUMBER"` shows WIP `pending`, nudge the `edited` event it does listen for via a REST title append-and-revert:
+
+   ```bash
+   gh api -X PATCH "repos/$REPO/pulls/$PR_NUMBER" -f title="$ORIG_TITLE "   # trailing space
+   sleep 3
+   gh api -X PATCH "repos/$REPO/pulls/$PR_NUMBER" -f title="$ORIG_TITLE"    # revert
+   ```
+3. **Assign reviewers** via REST — NOT `gh pr edit --add-reviewer` (its GraphQL path fails when the token lacks `read:org`):
+
+   ```bash
+   # one -f per login parsed from --assign
+   gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" \
+     -f 'reviewers[]=AlexWangGoGoX' -f 'reviewers[]=AlanCHTseng'
+   ```
+4. **Notification** is not the skill's job: it posts nothing to Slack. Whatever notify flow the repo has (a GitHub Action, or a person) fires from the `review_requested` event the assignment just emitted.
+5. **Merge** is still the human's — the skill never merges.
+
+**`--assign` never overrides a STOP.** It only reaches this step when the review loop AND CI are both clean. If the loop stopped on a human-decision finding, or CI is red, the skill never un-drafts or assigns — the PR stays a draft — even with `--assign`.
 
 ## Gogox Context
 
 - **Trigger comment (verbatim):** `@claude please review this PR — focus on critical issues and security.` Summons the Claude GitHub App. This is a machine instruction to a bot — it stays English and fixed, never localized or templated per-user.
-- **Why stop at draft.** The team reads a PR's draft/ready state as "AI-written, not yet human-verified" (draft) vs "a person has checked it and it is ready" (ready). Promoting draft→ready is therefore a human sign-off; automating it would let the AI vouch for its own output. The skill stops at a clean, green draft and hands off.
+- **Why stop at draft by default.** The team reads a PR's draft/ready state as "AI-written, not yet human-verified" (draft) vs "a person has checked it and it is ready" (ready). Promoting draft→ready is therefore a human sign-off; the skill automates it only when the human explicitly opts in via `--assign`.
 - **CI runs on drafts here.** On `gogox-driver-flutter` the real build/test check, `PR Check (format, analyze, test, build-verify)`, is run by Codemagic (an external CI) and fires on draft PRs — so the skill can confirm it green without un-drafting. The `WIP` marketplace check, by contrast, stays `pending` until the PR is un-drafted; Step 3 excludes it for that reason.
-- **No reviewer assignment, no Slack.** Both are part of the human's post-handoff sign-off. The skill assigns no one and posts nothing; whatever notify flow the repo has (a GitHub Action, or a person posting to the channel) fires from the human's assignment, not from the skill.
+- **Assign via REST, not `gh pr edit`.** `gh pr edit --add-reviewer` uses GraphQL and fails when the local token lacks the `read:org` scope; the `requested_reviewers` REST endpoint works regardless.
+- **WIP nudge after un-draft.** The Marketplace WIP check leaves a stale `pending` after un-draft because it does not listen for `ready_for_review`; the title append-and-revert in Step 4 triggers the `edited` event it does listen for.
+- **No Slack from the skill.** Even under `--assign`, the skill only assigns reviewers; any channel notification rides the repo's own notify flow off the `review_requested` event.
 
 ## Output
 
@@ -119,10 +142,10 @@ A short summary:
 
 ```
 PR #<n> — <url>
-AI review: <clean in N rounds | stopped: needs human (…) | skipped (--no-review)>
+AI review: <clean in N rounds | stopped: needs human (…)>
 CI: <green | red (<check>) | timed out>
-Status: DRAFT (left on purpose)
-Next (human): review → un-draft → assign reviewers → merge
+Status: <DRAFT (left on purpose) | READY — un-drafted, assigned: a, b>
+Next: <human: review → un-draft → assign → merge | merge once approved>
 ```
 
 ## How this was used last
@@ -130,4 +153,4 @@ Next (human): review → un-draft → assign reviewers → merge
 > Update this footer when you use the skill, so the next person knows the real-world use case.
 > Format: `YYYY-MM-DD by @username — one-line context`
 
-- 2026-06-25 by @broccoli.huang — reworked to STOP at draft: the skill runs the AI-review loop and waits for CI green, then leaves the PR a draft. Auto un-draft / assign / notify were removed after team feedback that draft↔ready is the human-verified marker, and after confirming the build CI (Codemagic) runs on drafts. Shipped as GGC-88 / PR #137. Not yet dogfooded end-to-end on a live PR.
+- 2026-06-25 by @broccoli.huang — reworked to stop at draft by default (runs the AI-review loop, waits for CI green, then leaves the PR a draft), after team feedback that draft↔ready is the team's human-verified marker. Added `--assign=<logins>` as the human's explicit opt-in to also un-draft + assign reviewers once clean. CI is waited for in draft because the build CI (Codemagic) runs on drafts. Shipped as GGC-88 / PR #137. Not yet dogfooded end-to-end on a live PR.
