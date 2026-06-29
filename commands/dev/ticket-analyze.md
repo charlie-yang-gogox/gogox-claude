@@ -488,8 +488,8 @@ text: a **port** = the feature exists in the **origin** repo and is absent in th
   full-set, reusing the Step 8.4 pattern; ensure the label exists via
   `list_issue_labels`, create on miss). Post the
   `<!-- ta-class:v1 source=analyzer label=<c> -->` marker (F3). Set `<lane>`
-  accordingly and continue to Step 3 with the right lane checklist. **No
-  assignee write.**
+  accordingly and continue to Step 3 — the holistic judge reads `<lane>` to
+  pick the right per-lane guidance for its prompt. **No assignee write.**
 - **No consensus / ungrounded port-or-feature / `none`** → the ticket is the
   **human tail**: leave it lane `unknown`, do NOT write a classification label,
   and let Step 3 / Step 6 record it as `need-revision`. The Step 8 comment MUST
@@ -502,122 +502,178 @@ text: a **port** = the feature exists in the **origin** repo and is absent in th
 human confirm in this step (that was the old `--triage` bottleneck). `--dry-run`
 proposes + reports the would-write class but writes no label and posts no marker.
 
-### Step 3: Per-ticket completeness analysis
+### Step 3: Per-ticket completeness analysis — one holistic LLM judge (GGC-100)
 
-For each ticket, judge the content (title + description) against the
-lane's checklist. This is an LLM judgment call — be strict about the
-*presence* of each element, lenient about its format. Emit
-`{verdict: complete|incomplete, reasons: [missing items with a one-line
-explanation each]}`.
+For each ticket, completeness is decided by **ONE holistic LLM judge call**
+per ticket — not a per-lane checklist of pass/fail gates. The judge reads the
+ticket the way a senior triager does: form + actionability + lane-fit +
+acceptance-verifiability in a single pass, and answers the only question that
+matters — *can this lane/repo actually start work on this ticket?* (The old
+fixed per-lane checklists do not vanish; they survive only as **reference
+guidance inside the judge's prompt** — "what a good `<lane>` ticket usually
+has" — never as gates. The mechanical decomposition into field-presence
+checks was itself the disease that produced the "form not actionability" miss:
+a ticket can tick every box and still be unactionable — see GGC-100.)
 
-**Lane checklists**:
+**Single call, no 2-vote.** Completeness is cheap to re-run and reversible
+(`need-revision` is re-analyzed every sweep — see Re-run semantics), so it gets
+one judge call. Contrast classification (Step 2.7), whose write is sticky and
+therefore spends a decorrelated 2-vote (GGC-96). Spend the second vote only on
+irreversible writes; completeness is not one.
 
-- **port** — sufficient for `/port:ff`:
-  - [ ] Origin feature reference — names the source feature/screens to
-        port (what `/port:explore` will locate in the origin codebase).
-  - [ ] Scope statement — what's in and out of this port.
-  - [ ] Figma URL — required only when the description implies UI work.
-- **feature** — sufficient for `/dev:ff`:
-  - [ ] Goal / problem statement — why this exists.
-  - [ ] ≥ 1 acceptance criterion (explicit AC list, or testable "done
-        when" statements).
-  - [ ] Figma URL — required only when the description implies UI work.
-- **bug** — sufficient for `/bug:ff`:
-  - [ ] Reproduction steps.
-  - [ ] Expected vs actual behavior.
-  - [ ] Environment / build / version (or an explicit "all versions").
-- **ui-tweak** — sufficient for `/ui-tweak:ff` (a design bug is a visual
-  defect, NOT a logic bug — do not demand repro steps):
-  - [ ] What visual/layout change is wanted (the target look, or the
-        delta from current: size, color, spacing, ordering, …).
-  - [ ] Where — the screen / component the change applies to.
-  - [ ] Figma URL or before/after reference — preferred but not required
-        when the textual description is unambiguous (e.g. "make the
-        order-page CTA button 5dp taller").
+#### Step 3.1: Static rubric + principles (prompt-cache prefix)
 
-  **Logic-prediction sub-judgment (ui-tweak lane only — GGC-58; feeds the
-  Design-bug ready-to-dev gate, input b).** A `design bug` is meant to be a
-  *visual* defect the ui-tweak pipeline can fix without touching behaviour.
-  After the visual checklist above, make ONE additional judgment from the
-  ticket TEXT (description + any technical notes — there is no diff at analyze
-  time, so this is necessarily a heuristic): **does the described fix
-  inherently require logic / behaviour changes?** Flag `needs-logic` ONLY with
-  HIGH confidence — i.e. the text clearly calls for behaviour such as:
-  - gesture / tap recognizers (e.g. `TapGestureRecognizer`, making part of a
-    label tappable), or wiring an `onTap` / handler / callback that does not
-    yet exist;
-  - widget lifecycle — `initState` / `dispose`, controller creation+teardown;
-  - async / await, futures, stream subscriptions, timers;
-  - state mutation — `setState`, view-model / bloc / provider / notifier state;
-  - navigation — pushing / popping routes, deep links;
-  - controllers / view-models / other business-logic objects.
+The block below is **identical for every ticket in a sweep** — the per-lane
+guidance, the platform reinterpretation, and the judging principles never vary
+within a run. Hoist it **above** the per-ticket text as a prompt-cache
+breakpoint so its tokens are paid once per sweep, not N× (one cache prefix, the
+per-ticket payload appended after it).
 
-  Pure-visual work is NOT logic and MUST fall through to the normal verdict:
-  color / spacing / padding / sizing / typography, swapping to a design-system
-  icon or asset, re-ordering or restructuring existing widgets, alignment /
-  constraints (`LayoutBuilder` / `ConstrainedBox`). Worked calibration: CAF-540
-  (LayoutBuilder/ConstrainedBox empty-state) and CAF-611 (design-system icon
-  swap) are visual → NOT flagged (they now pass ui-tweak post-GGC-57); CAF-555
-  (tappable T&C link needing `TapGestureRecognizer` + `initState`/`dispose`)
-  IS flagged.
+**Judging principles (load-bearing — the bias that makes the free judge safe):**
 
-  **Fail-safe rule** (the bias that makes this safe): when the signal is
-  ambiguous, mixed, or clearly visual, judge `visual` (the default). Only an
-  unambiguous behaviour signal sets `needs-logic`. A false `needs-logic`
-  strands a ticket ui-tweak could have shipped — strictly worse than the
-  wasted build — so bias hard toward `visual`. Record
-  `{logic_prediction: needs-logic|visual, evidence: "<quoted phrase>"}` for the
-  gate to consume at Step 6 / Step 8. This is a *prediction*, not the final
-  authority — every ticket that proceeds is still judged by the ui-tweak
-  dual-judge panel downstream.
-- **all lanes**:
-  - [ ] Resolvable lane. Linear: `design bug` present → `ui-tweak`
-        (precedence — always resolvable, even with canonical co-labels);
-        otherwise exactly one classification label — missing or multiple
-        is itself a revision reason
-        (`no single classification label — add exactly one of bug/port/feature, or design bug for UI-only defects`),
-        NOT a HITL prompt (keeps the batch flowing; contrast `/route`,
-        which prompts because it must pick a pipeline *now*).
-        Jira: unrecognized `issuetype.name` → same treatment.
+1. **Fail-safe — bias to `ready`.** Block (`needs-revision`) ONLY on a
+   *clearly* missing essential — something a dev/port/ui-tweak lane provably
+   cannot start without. When the signal is ambiguous, judge `ready`. A false
+   `needs-revision` that strands a good ticket is strictly **worse** than the
+   wasted build a false `ready` costs (the governing principle, inherited from
+   GGC-58). This is the acceptance test for the whole judge.
+2. *(Owner / lane-fit handling — wrong-owner as a high-confidence block — is
+   reworked in the owner-block follow-up, GGC-101, not here. For now `owner` and
+   `lane_fits` are recorded as non-blocking signals: surface a wrong-owner read
+   as a `warnings[]` entry, never as a `needs-revision` on owner grounds alone.)*
+3. **You cannot see attachments.** This is a text-only judge — a ticket may
+   carry its real spec in a screenshot, video, or design file the judge has no
+   eyes on. So treat apparent emptiness as *possibly attachment-borne* and bias
+   to `ready` rather than block on it. Do not invent a missing-content reason
+   that an unseen attachment may already satisfy.
+4. **Acceptance vagueness is a warning, never a downgrade.** "the toast no
+   longer appears" is vague-but-correct; only a *genuinely absent* acceptance
+   signal can block. Borderline / low-confidence → `needs-revision` with a
+   comment that says "needs human judgment: `<why>`" (`confidence:low` routes to
+   `needs-revision`, not a new state — there is no 5th label).
 
-  **Lane suggestion (strong signal only)**: when the classification is
-  missing, append a suggested lane to the revision reason — but ONLY when
-  the ticket text carries an unambiguous signal:
-  - repro steps + expected-vs-actual present → suggest `bug`, citing the
-    signal: `Content suggests \`bug\` (has repro steps + expected vs actual)`
-  - explicit port language in the ticket itself ("port from", "same as
-    v1", "align with the native app", etc.) → suggest `port`, quoting the
-    phrase.
-  - **anything else → NO suggestion** — in particular, port-vs-feature is
-    undecidable from ticket text alone (whether the feature exists in the
-    origin codebase is not in the ticket, and this analyzer never reads
-    code). A coin-flip suggestion is worse than none: the ticket author
-    will trust it. Emit the plain base sentence only.
+**Per-lane guidance — "what a good `<lane>` ticket usually has"** (reference for
+the judge, NOT a checklist of gates; a ticket missing an item is a *prompt to
+weigh it*, not an automatic block):
 
-  The suggestion is comment text only. It is NEVER written as a label —
-  classification stays human-owned (§C), and the human applying the label
-  is the confirmation step.
+- **port** (feeds `/port:ff`): an origin feature reference (the source
+  feature/screens `/port:explore` will locate in the origin codebase); an
+  in/out scope statement; a Figma URL when the description implies UI work.
+- **feature** (feeds `/dev:ff`): a goal / problem statement; ≥ 1 acceptance
+  criterion (explicit AC list, or testable "done-when" statements); a Figma URL
+  when the description implies UI work.
+- **bug** (feeds `/bug:ff`): reproduction steps; expected-vs-actual behaviour;
+  environment / build / version (or an explicit "all versions").
+- **ui-tweak** (feeds `/ui-tweak:ff` — a design bug is a *visual* defect, NOT a
+  logic bug; do not demand repro steps): what visual/layout change is wanted
+  (target look, or the delta — size, color, spacing, ordering, …); where (the
+  screen / component); a Figma URL or before/after reference — preferred but not
+  required when the textual description is unambiguous (e.g. "make the
+  order-page CTA button 5dp taller").
 
-Figma is conditionally required so non-UI tickets are not falsely flagged.
-When in doubt whether UI is implied, do not flag — a missing Figma link
-surfaces again at `/dev:figma` with a better error.
+Figma is only *conditionally* relevant — never flag its absence on a non-UI
+ticket, and when in doubt whether UI is implied, do not block (a missing Figma
+link surfaces again at `/dev:figma` with a better error). This is exactly the
+kind of item the judge weighs, never gates.
 
-**Platform overlay — `platform: prompt` repos (e.g. gogox-claude itself).**
-When the resolved `<platform>` (Step 1.5.1) is `prompt`, the artifacts are
-prompts / skill bodies / workflow scripts, NOT an app — so the lane checklists
-above are reinterpreted, and several items simply do not apply:
+**Platform reinterpretation — `platform: prompt` repos** (e.g. gogox-claude
+itself; resolved `<platform>` at Step 1.5.1). The artifacts are prompts / skill
+bodies / workflow scripts, NOT an app, so the guidance above is reinterpreted:
 
-- **Drop**: device / build / version / OS-environment (there is no build), and
-  Figma / before-after references (there is no UI). Do NOT flag their absence.
-- **Require instead, for every lane** (this replaces the lane-specific items):
-  - [ ] **Where** — which command / skill / workflow file or area changes
-        (e.g. `commands/design/ui-tweak/preview.md`).
-  - [ ] **What** — the concrete change (the fix, the new behavior, the delta).
-  - [ ] **≥ 1 testable acceptance / done-when** statement.
-- Lane derivation is unchanged (`bug` / `feature` still routes via `/route`);
-  only the *completeness* lens changes. A gogox-claude `Bug` like a macOS
-  `timeout` regression is "complete" when it names the file, the defect, and how
-  to confirm the fix — not when it lists repro-env or a Figma link.
+- **Ignore** device / build / version / OS-environment (there is no build) and
+  Figma / before-after references (there is no UI) — never treat their absence
+  as a missing essential.
+- **Look instead, for every lane,** for: **Where** (which command / skill /
+  workflow file or area changes, e.g. `commands/design/ui-tweak/preview.md`);
+  **What** (the concrete change — the fix, the new behaviour, the delta); and
+  **≥ 1 testable acceptance / done-when** statement. A gogox-claude `Bug` like a
+  macOS `timeout` regression is actionable when it names the file, the defect,
+  and how to confirm the fix — not when it lists repro-env or a Figma link.
+  (Lane derivation is unchanged — `bug` / `feature` still route via `/route`;
+  only the *completeness* lens shifts.)
+
+**Logic-prediction sub-judgment (ui-tweak lane only — GGC-58; feeds the
+Design-bug ready-to-dev gate, input b).** For a `design bug` (ui-tweak lane)
+ticket, the same judge call additionally answers ONE question from the ticket
+TEXT (description + any technical notes — there is no diff at analyze time, so
+this is necessarily a heuristic): **does the described fix inherently require
+logic / behaviour changes?** Flag `needs-logic` ONLY with HIGH confidence — i.e.
+the text clearly calls for behaviour such as:
+
+- gesture / tap recognizers (e.g. `TapGestureRecognizer`, making part of a
+  label tappable), or wiring an `onTap` / handler / callback that does not yet
+  exist;
+- widget lifecycle — `initState` / `dispose`, controller creation+teardown;
+- async / await, futures, stream subscriptions, timers;
+- state mutation — `setState`, view-model / bloc / provider / notifier state;
+- navigation — pushing / popping routes, deep links;
+- controllers / view-models / other business-logic objects.
+
+Pure-visual work is NOT logic and MUST fall through to the normal verdict:
+color / spacing / padding / sizing / typography, swapping to a design-system
+icon or asset, re-ordering or restructuring existing widgets, alignment /
+constraints (`LayoutBuilder` / `ConstrainedBox`). Worked calibration: CAF-540
+(LayoutBuilder/ConstrainedBox empty-state) and CAF-611 (design-system icon
+swap) are visual → NOT flagged (they now pass ui-tweak post-GGC-57); CAF-555
+(tappable T&C link needing `TapGestureRecognizer` + `initState`/`dispose`) IS
+flagged. **Fail-safe rule** (same bias as principle 1): when the signal is
+ambiguous, mixed, or clearly visual, judge `visual` (the default). Only an
+unambiguous behaviour signal sets `needs-logic` — a false `needs-logic` strands
+a ticket ui-tweak could have shipped. Record
+`{logic_prediction: needs-logic|visual, evidence: "<quoted phrase>"}` for the
+gate to consume at Step 6 / Step 8. This is a *prediction*, not the final
+authority — every ticket that proceeds is still judged by the ui-tweak
+dual-judge panel downstream.
+
+**Lane resolvability (all lanes).** Linear: `design bug` present → `ui-tweak`
+(precedence — always resolvable, even with canonical co-labels); otherwise
+exactly one classification label. Missing or multiple is itself a
+`needs-revision` reason
+(`no single classification label — add exactly one of bug/port/feature, or design bug for UI-only defects`),
+phrased in `missing[]` as the ask — NOT a HITL prompt (keeps the batch flowing;
+contrast `/route`, which prompts because it must pick a pipeline *now*). Jira:
+unrecognized `issuetype.name` → same treatment. **Lane suggestion (strong
+signal only):** when the classification is missing, append a suggested lane to
+the reason — but ONLY on an unambiguous signal: repro steps + expected-vs-actual
+→ suggest `bug` citing the signal
+(`Content suggests \`bug\` (has repro steps + expected vs actual)`); explicit
+port language in the ticket itself ("port from", "same as v1", "align with the
+native app", …) → suggest `port`, quoting the phrase; **anything else → NO
+suggestion** (port-vs-feature is undecidable from ticket text alone — this
+analyzer never reads code — and a coin-flip suggestion the author will trust is
+worse than none). The suggestion is comment text only; it is NEVER written as a
+label — classification stays human-owned (§C), and the human applying the label
+is the confirmation step.
+
+#### Step 3.2: Per-ticket judge call → structured verdict
+
+Append the single ticket's text (title + description + current lane label) to
+the cached prefix and emit:
+
+```
+{ verdict:    ready | needs-revision,
+  lane_fits:  bool,                              # does the ticket fit its current lane?
+  owner:      <platform-relative> | unclear,     # non-blocking signal (GGC-101 owns enforcement)
+  missing:    [concrete revision asks],          # phrased as next-step asks, not terse "missing X"
+  warnings:   [non-blocking flags],              # lane-fit / owner / vagueness reads that DON'T block
+  confidence: high | med | low }                 # low → needs-revision + "needs human judgment"
+```
+
+`missing[]` items must be concrete enough that the ticket author can fix the
+ticket from the comment alone, without reading this skill — phrase each as the
+*ask* ("add reproduction steps: how to trigger the …"), never a bare label
+("missing repro"). `warnings[]` are recorded and surfaced in the comment but do
+NOT change the verdict (this is where a wrong-owner / wrong-lane read lands until
+GGC-101 makes it a block).
+
+**Mapping to the decision matrix (top of file).** The matrix's `completeness`
+column is keyed `complete | incomplete`; the judge's verdict maps directly —
+`verdict == ready` ⇒ `complete`, `verdict == needs-revision` ⇒ `incomplete`.
+Everything downstream (Step 6 combination, the verdict→label matrix, the §A
+marker's `verdict=<complete-unblocked|complete-blocked|incomplete>`) consumes
+that mapping unchanged. The judge's `missing[]` becomes the comment's revision
+asks and the report's `reasons` column; `warnings[]` are appended to the comment
+as non-blocking flags.
 
 ### Step 4: Dependency inference + confirmation
 
@@ -879,8 +935,12 @@ see `_slack-notify.md` Guardrails); do not add change-detection here.
 **Lane**: <lane> · **Order position**: <n of N | blocked | —> <· Recommended starting point>
 
 ### Completeness
-- ✓ <checklist item present>
-- ✗ <checklist item missing> — <one-line reason / what to add>
+<!-- ready verdict with no missing[] and no warnings[]: -->
+- Ready — no blocking gaps found.
+<!-- needs-revision: one bullet per missing[] ask (phrased as the next step): -->
+- <concrete revision ask from missing[] — what to add, specific enough to fix the ticket without reading this skill>
+<!-- any verdict MAY carry non-blocking warnings[] (lane-fit / owner / vagueness): -->
+- ⚠ <non-blocking warning from warnings[]>
 
 ### Dependencies
 <!-- ta-dep:v1 to=<ID> kind=<blocks|blocked-by|related> source=<explicit|inferred> confirmed=<true|false> status=<open|done> -->
@@ -899,9 +959,13 @@ Schema rules:
 - The header marker is the idempotency / concurrency key — copy exactly.
 - One `ta-dep:v1` marker line immediately above each dependency bullet;
   `to=` is the join key for any future machine reader.
-- The Completeness ✗ bullets are the user-facing revision checklist — be
-  specific enough that the ticket author can fix the ticket without
-  reading this skill.
+- The Completeness section is the user-facing revision list: one bullet per
+  `missing[]` ask on a `needs-revision` verdict (phrased as the concrete next
+  step), specific enough that the ticket author can fix the ticket without
+  reading this skill; a `ready` verdict with no gaps gets the single "Ready —
+  no blocking gaps found." line. `warnings[]` (lane-fit / owner / vagueness)
+  render as `⚠` bullets on ANY verdict — they are non-blocking and never imply
+  the verdict was `needs-revision`.
 - Jira: same body; it is the primary record there (string labels are only
   a filterable index).
 
