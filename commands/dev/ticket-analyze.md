@@ -806,6 +806,51 @@ the cached prefix and emit:
   confidence:  high | med | low }                 # low → needs-revision + "needs human judgment"
 ```
 
+**Malformed-output fail-safe (GGC-104) — applies to every single-ticket judge
+call here.** The judge is a free-form LLM call; in a sweep of N tickets some
+calls WILL come back unparseable or schema-invalid. Handle it inline, in this
+exact order, BEFORE mapping the verdict at Step 6:
+
+1. **Parse + schema-validate.** Take the judge's reply and parse it as a JSON
+   object. It is *schema-invalid* (treated identically to an unparseable reply)
+   when ANY of the following holds — these are concrete checks against the
+   GGC-100/102 verdict schema above:
+   - the reply is not a single parseable JSON object;
+   - a required field is missing (`verdict`, `confidence`, `owner`,
+     `owner_scope`);
+   - `verdict` is not one of `{ready, needs-revision}`;
+   - `confidence` is not one of `{high, med, low}`;
+   - `owner` is outside the **platform-relative** owner enum selected by the
+     resolved `<platform>` (see the per-platform enums above — e.g. on a
+     `prompt` repo only `prompt | other-tooling | unclear` are valid; an
+     app-only value like `backend` is schema-invalid here);
+   - `owner_scope` is not one of `{in-repo, out-of-repo, unclear}`.
+2. **One reparse retry.** On the FIRST such failure, re-issue the SAME judge
+   prompt with one appended reminder line — *"Return ONLY the JSON object, no
+   prose, no code fences."* — and re-run the parse + schema-validate above on
+   the retry's reply. Exactly one retry; do not loop.
+3. **Second failure → degrade to the SAFE outcome (fail-safe principle 1: a
+   parse failure must NEVER strand a good ticket).** If the retry ALSO fails to
+   parse / validate, synthesize this verdict and proceed as if the judge had
+   returned it:
+   ```
+   { verdict: ready, lane_fits: true, owner: unclear, owner_scope: unclear,
+     missing: [],
+     warnings: ["judge output unparseable — auto-passed per fail-safe"],
+     confidence: low }
+   ```
+   The verdict is **always `ready`, never `needs-revision`** — defaulting to
+   `needs-revision` on our own parse failure would strand a ticket the judge
+   could not even speak to. This `ready` then flows through the normal Step 6 →
+   Step 8 label-write path exactly like any other `ready` verdict (→
+   `ready-to-dev` / `ready-to-port`), and the `warnings[]` entry is rendered as
+   the §A `⚠` Completeness bullet by the existing GGC-100 warnings→comment path
+   (Step 8.3 / §A) — so the posted `ticket-analysis` comment SAYS the ticket
+   auto-passed; it is never a silent auto-pass. (The synthesized
+   `owner_scope: unclear` + `confidence: low` cannot trip the GGC-101
+   out-of-repo owner block, which fires only on `out-of-repo` + `high` — correct:
+   a malformed judge gives us no high-confidence owner read to act on.)
+
 `missing[]` items must be concrete enough that the ticket author can fix the
 ticket from the comment alone, without reading this skill — phrase each as the
 *ask* ("add reproduction steps: how to trigger the …"), never a bare label
