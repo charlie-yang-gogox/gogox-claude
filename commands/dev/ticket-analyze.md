@@ -652,7 +652,36 @@ comment (the analyzer is otherwise stateless — the marker is the only state).
    those are not the judge's input (relations drive the deterministic
    `need-dependency` path, handled separately, item 4). Keep the normalization
    minimal: the ticket says `title+desc+lane`; do not over-engineer
-   whitespace/markdown canonicalization beyond the single-`\n` join.
+   whitespace/markdown canonicalization beyond the single-`\n` join — with ONE
+   required exception, the signed-URL strip below.
+
+   **Signed-URL strip — REQUIRED before hashing (GGC-109).** Linear rotates the
+   signed `src` of every attachment on each fetch: the URL of a `<linear-embed>`
+   (and any inline `![](…)`) carries a `?signature=…` JWT whose `iat`/`exp` change
+   on every `get_issue`. Hashing the raw description therefore produces a DIFFERENT
+   `content_sha` on every fetch for any ticket with a screenshot/video (most bug
+   tickets), so the match below never fires and GGC-103 is defeated for exactly the
+   attachment-bearing majority. To track real content, not signature rotation,
+   **strip the volatile query string from every signed Linear asset URL in the
+   canonical string before hashing**: for any URL whose host is `uploads.linear.app`
+   OR that carries a `signature=` query parameter, drop everything from the first
+   `?` onward (keep the scheme + host + path — the path's stable `uploadId` segment
+   survives). Apply it to the description text only (title/lane carry no such URLs).
+   This is deterministic and minimal — it targets the signature volatility
+   specifically; do NOT attempt general URL/markdown canonicalization. **What still
+   flips the hash (correct):** a title/description/lane text edit; an attachment
+   added or removed (its stable URL path / `uploadId` segment enters or leaves the
+   stripped canonical string). **What no longer flips it (the fix):** a signature-
+   only rotation of an unchanged attachment. (Equivalent projection if you prefer:
+   replace each `<linear-embed>` block with `uploadId`+`title`+`size`, which are
+   likewise stable across fetches and never the signed `src` — pick one and apply
+   it identically in both paths; the query-strip is the simpler default.)
+
+   **Parity (binding, GGC-109).** `workflows/ticket-analyze-fanout.workflow.js`
+   (the batch path) computes this same hash and MUST apply the IDENTICAL strip, or
+   a ticket would skip in one path and re-judge in the other. The strip is
+   specified once here and mirrored verbatim in that file's Step-2.9 prompt — keep
+   the two in sync.
 
 2. **Read the persisted marker.** Read the ticket's newest `ticket-analyze:v2`
    marker (the §A header marker — see §A; it carries `content_sha=<...>`). The
@@ -1364,7 +1393,11 @@ Schema rules:
 - **`content_sha` + `judged` (GGC-103) — the write-stability anchor.**
   `content_sha = sha256(title+desc+lane)` over the EXACT Step-2.9 canonical
   normalization (the same `title + "\n" + description + "\n" + lane` the judge
-  reads); `judged` is the ISO timestamp of the judge call that produced this
+  reads, **with the GGC-109 signed-URL strip applied to the description before
+  hashing** — drop the `?…` query from every `uploads.linear.app` / `signature=`
+  URL so attachment signature rotation does not rotate the hash; see Step 2.9
+  item 1 for the canonical rule, which both this skill and the fanout workflow
+  apply identically); `judged` is the ISO timestamp of the judge call that produced this
   verdict. On the next sweep, Step 2.9 reads `content_sha` from the newest header
   marker: a match → skip the judge (input unchanged); a difference → re-judge.
   Stamp BOTH fields whenever a real judge call ran (a fresh analysis, or a
