@@ -86,6 +86,19 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 | complete | unblocked | port | `ready-to-port` |
 | complete | unblocked | feature / bug / ui-tweak | `ready-to-dev` |
 | complete | unblocked | ui-tweak (`design bug`) **whose text high-confidence predicts the fix needs logic** | `need-revision` (+ reclassify → `Bug` recommended — see the Design-bug ready-to-dev gate below) |
+| complete | unblocked | **any lane, but the judge reads the real owner as OUT-OF-REPO** (`backend` / `ios-signing` / `ops` / any non-this-repo platform) **at `confidence:high`** | `need-revision` (+ reclassify-style comment — see the Out-of-repo owner gate below) |
+
+The matrix splits a lane/owner **mismatch** by where the real owner lives (the
+GGC-101 rule). An **in-repo lane mismatch** — a `Bug` that is really a feature,
+a `design bug` that needs logic — is NOT an out-of-repo owner: the redirect
+target is still this repo, so the dispatcher can re-route it within the
+pipeline, and (logic-needing `design bug` aside, which the row above already
+handles) it stays `ready` + a non-blocking warning / reclassify suggestion.
+Only an **out-of-repo owner at `confidence:high`** flips to `need-revision` —
+because `/ggx-dispatcher` discovers tickets by **label only** and never reads
+comments, so a `ready-to-dev` + out-of-repo ticket is indistinguishable from a
+clean dev ticket at the only gate that matters; the owner warning alone is
+written to a channel with no reader and the ticket gets dispatched and bounced.
 
 The four analyzer-owned labels (`ready-to-port`, `ready-to-dev`,
 `need-revision`, `need-dependency`) are **mutually exclusive** — every
@@ -537,10 +550,39 @@ per-ticket payload appended after it).
    `needs-revision` that strands a good ticket is strictly **worse** than the
    wasted build a false `ready` costs (the governing principle, inherited from
    GGC-58). This is the acceptance test for the whole judge.
-2. *(Owner / lane-fit handling — wrong-owner as a high-confidence block — is
-   reworked in the owner-block follow-up, GGC-101, not here. For now `owner` and
-   `lane_fits` are recorded as non-blocking signals: surface a wrong-owner read
-   as a `warnings[]` entry, never as a `needs-revision` on owner grounds alone.)*
+2. **Owner / lane-fit — block ONLY a high-confidence out-of-repo owner (GGC-101).**
+   Judge two things the matrix needs: does the ticket fit its current `<lane>`
+   (`lane_fits`), and who is the real `owner` of the work (`owner`, recorded
+   platform-relative — see Step 3.2; the full platform-relative enum handling is
+   GGC-102, so do NOT hardcode a flutter-only owner set here). Then split a
+   mismatch by **where the real owner lives**:
+   - **In-repo lane mismatch** — a `Bug` that reads as a feature, a `design bug`
+     that needs logic, any "wrong lane but still this repo" case: this is NOT an
+     owner block. Keep `verdict: ready` and surface the read as a `warnings[]`
+     entry / reclassify suggestion — the dispatcher (or a human re-label) can
+     re-route it **within this repo**. (The logic-needing `design bug` is the one
+     in-repo case that still downgrades, and it does so through its own
+     pre-existing Design-bug gate, not this owner rule.)
+   - **Out-of-repo owner** — the work's real owner is another platform / team
+     this repo provably cannot complete (`backend`, `ios-signing`, `ops`, or any
+     non-this-repo platform). Emit `verdict: needs-revision` **ONLY when
+     `confidence:high`** (the same high-confidence bar GGC-58 uses to avoid
+     stranding); the Step 8 comment is reclassify-style: *"owner appears to be
+     `<owner>`; not actionable in this repo. Re-assign or re-scope; if it really
+     is a `<platform>` change, state which one."* At **med/low confidence** the
+     out-of-repo read stays a non-blocking `warnings[]` entry on a `ready`
+     verdict — bias-to-ready (principle 1) still governs the ambiguous case.
+
+   **This block does NOT violate principle 1.** Marking a *high-confidence
+   out-of-repo* ticket `need-revision` is not stranding — it is correct routing
+   off the dispatch queue (the label is the only signal `/ggx-dispatcher` reads;
+   leaving it `ready-to-dev` just gets it dispatched and bounced). The fail-safe
+   that principle 1 protects is the content-thin ticket a dev *could* start, not
+   the ticket this repo *provably cannot* complete. Because this owner-block is
+   near-irreversible (it pulls the ticket out of the dispatch pool until a human
+   acts), the high-confidence owner-block sub-decision — and ONLY it — gets a
+   confirming decorrelated 2nd vote (Step 3.2); the rest of completeness stays a
+   single judge call (GGC-100).
 3. **You cannot see attachments.** This is a text-only judge — a ticket may
    carry its real spec in a screenshot, video, or design file the judge has no
    eyes on. So treat apparent emptiness as *possibly attachment-borne* and bias
@@ -651,20 +693,47 @@ Append the single ticket's text (title + description + current lane label) to
 the cached prefix and emit:
 
 ```
-{ verdict:    ready | needs-revision,
-  lane_fits:  bool,                              # does the ticket fit its current lane?
-  owner:      <platform-relative> | unclear,     # non-blocking signal (GGC-101 owns enforcement)
-  missing:    [concrete revision asks],          # phrased as next-step asks, not terse "missing X"
-  warnings:   [non-blocking flags],              # lane-fit / owner / vagueness reads that DON'T block
-  confidence: high | med | low }                 # low → needs-revision + "needs human judgment"
+{ verdict:     ready | needs-revision,
+  lane_fits:   bool,                              # does the ticket fit its current lane?
+  owner:       <platform-relative> | unclear,     # who really owns the work (see owner_scope)
+  owner_scope: in-repo | out-of-repo | unclear,   # GGC-101: is `owner` this repo, or another platform/team?
+  missing:     [concrete revision asks],          # phrased as next-step asks, not terse "missing X"
+  warnings:    [non-blocking flags],              # lane-fit / owner / vagueness reads that DON'T block
+  confidence:  high | med | low }                 # low → needs-revision + "needs human judgment"
 ```
 
 `missing[]` items must be concrete enough that the ticket author can fix the
 ticket from the comment alone, without reading this skill — phrase each as the
 *ask* ("add reproduction steps: how to trigger the …"), never a bare label
 ("missing repro"). `warnings[]` are recorded and surfaced in the comment but do
-NOT change the verdict (this is where a wrong-owner / wrong-lane read lands until
-GGC-101 makes it a block).
+NOT change the verdict *on their own* — a `lane_fits:false` in-repo mismatch, a
+vague-but-present acceptance signal, and a med/low-confidence out-of-repo read
+all land here as non-blocking flags.
+
+**`owner` is platform-relative (GGC-101 / GGC-102 boundary).** Record `owner`
+as the real owner of the work relative to THIS repo's platform — e.g. for the
+`prompt` platform (gogox-claude) the in-repo owner is "prompt / skill / workflow
+authoring", and out-of-repo owners are anything else (`backend`, `ios-signing`,
+`ops`, a flutter/android/ios app change, …). Do NOT hardcode a flutter-only
+owner enum: the full platform-relative owner handling is GGC-102; this step only
+needs the coarse `owner_scope` split (in-repo vs out-of-repo) that the matrix
+consumes, computed consistently with how GGC-100 left `owner`.
+
+**Out-of-repo owner-block — the ONE completeness sub-decision with a 2nd vote
+(GGC-101).** Because flipping a ticket to `need-revision` on owner grounds pulls
+it off the dispatch queue until a human acts (near-irreversible), the judge does
+NOT block on the first call alone. When the single judge call returns
+`owner_scope: out-of-repo` AND `confidence: high`, run a **confirming
+decorrelated 2nd vote** — a SECOND, different-tier model re-judges *only* the
+owner-scope question (is the real owner out-of-repo at high confidence?), without
+seeing the first call's answer (decorrelation, mirroring the Step 2.7 / `audit.md`
+both-must-agree contract). The owner-block fires (verdict downgraded to
+`needs-revision` at Step 6) **only when both votes agree** out-of-repo +
+high-confidence; if the 2nd vote disagrees or is not high-confidence, the
+out-of-repo read **demotes to a non-blocking `warnings[]` entry** and the verdict
+stays `ready` (bias-to-ready). Every OTHER part of completeness — and the
+in-repo / med-low cases — stays a single judge call (GGC-100): spend the second
+vote only on this near-irreversible write.
 
 **Mapping to the decision matrix (top of file).** The matrix's `completeness`
 column is keyed `complete | incomplete`; the judge's verdict maps directly —
@@ -746,6 +815,32 @@ would be `ready-to-dev`:
 
 If BOTH (a) and (b) fire, **(a) wins** — the silent hold (the marker comment
 already explains the situation; suppress the (b) reclassify comment).
+
+The **Out-of-repo owner gate** (GGC-101, contract + matrix row at top of file)
+is evaluated for **any** lane whose `target_label` would be `ready-to-port` /
+`ready-to-dev` (i.e. a `complete` + unblocked verdict). It consumes the Step 3.2
+owner-block sub-judgment — `owner_scope` + `confidence`, **already confirmed by
+the decorrelated 2nd vote** (Step 3.2 only sets the blocking out-of-repo state
+when both votes agreed; otherwise the read arrived here demoted to a
+`warnings[]` entry and this gate does not fire):
+
+- **Out-of-repo owner at `confidence:high` (2-vote confirmed)** → downgrade
+  `target_label` to `need-revision`, verdict `incomplete`, with a reclassify
+  reason: `owner appears to be \`<owner>\`; not actionable in this repo —
+  re-assign or re-scope; if it really is a \`<platform>\` change, state which
+  one`. Like the Design-bug (b) branch this is NOT a silent hold: it flows
+  through the normal Step 8.3 / 8.4 comment + label write. (This is correct
+  routing off the dispatch queue, NOT a fail-safe violation — see principle 2.)
+- **In-repo lane mismatch, OR out-of-repo at med/low confidence, OR a 2nd vote
+  that did not confirm** → NO downgrade: keep the `ready-to-*` target and carry
+  the read as a non-blocking `warnings[]` ⚠ bullet in the comment. The dispatcher
+  re-routes an in-repo mismatch within this repo; the ambiguous out-of-repo read
+  is left `ready` by bias-to-ready.
+
+This gate is **independent of** the Design-bug gate above — a ticket can hit at
+most one downgrade path, but they are evaluated separately. The owner gate has
+no silent-hold variant: there is no upstream dispatcher comment to lean on, so
+every owner-block posts its own reclassify comment.
 
 ### Step 7: Dry-run gate
 
@@ -1012,6 +1107,10 @@ Rules:
 | `design bug` text HIGH-confidence predicts a logic-needing fix | 3 / 6 | Design-bug gate (b): `need-revision` + reclassify→`Bug` comment; never `ready-to-dev` |
 | `design bug` ambiguous / clearly-visual fix | 3 | No logic flag — `ready-to-dev` as today; ui-tweak dual-judge panel is the authority |
 | `design bug` with BOTH ui-blocked marker and logic-text signal | 8.2b | Reactive marker branch (a) wins — silent hold, no reclassify comment |
+| Judge reads owner as OUT-OF-REPO at `confidence:high`, 2nd vote confirms | 3.2 / 6 | Out-of-repo owner gate: `need-revision` + reclassify-to-`<owner>` comment; never `ready-to-*` (GGC-101) |
+| Out-of-repo owner read but 2nd vote disagrees / not high-confidence | 3.2 | Demotes to non-blocking `warnings[]` ⚠; verdict stays `ready` (bias-to-ready) |
+| In-repo lane mismatch (`Bug` reads as feature, etc.) | 6 | Stays `ready` + warning / reclassify suggestion — dispatcher re-routes within this repo; never an owner block (GGC-101) |
+| Out-of-repo owner at med/low confidence | 3.2 / 6 | Non-blocking `warnings[]` ⚠ on a `ready` verdict |
 | Bare ticket-id mention, no ordering language | 4.1 | `related` edge — recorded, never blocking |
 | Inferred edge, `--non-interactive` | 4.2 | Report-only, never blocking |
 | Blocking edge to a Done/canceled ticket | 4.3 | Satisfied — not blocking |
