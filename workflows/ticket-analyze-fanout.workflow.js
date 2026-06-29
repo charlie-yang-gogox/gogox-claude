@@ -14,6 +14,16 @@
 // cross-item dependency-graph BARRIER (Step 5, pure JS — it needs every
 // ticket's edges at once), and the run-level digest/metrics.
 //
+// GATE ORDER (GGC-105 — must mirror the skill's execution-order invariant):
+//   analyze-hold guard (held:true → DROPPED here, before any write — the judge
+//     never runs on it) → re-analysis precedence (the caller's discovery filter
+//     decides the roster) → Step 2.9 content-hash skip (judgeSkipped, never
+//     bypasses analyze-hold nor the hash-INDEPENDENT blocker re-fetch) → Step 3
+//     judge (CANDIDATE verdict) → deterministic POST-judge override gates
+//     (design-bug GGC-37/58 + out-of-repo owner GGC-101, folded into
+//     completeness / applied in the write stage — a judge `ready` can still be
+//     downgraded or held). The override gates are NOT folded into the free judge.
+//
 // args: the post-discovery roster — an array of { ticketId } (and optionally
 // url/labels) produced by the caller's Step 1.5 discovery + re-analysis filter
 // (the skill / cloud routine does discovery; the analyzer is label-only and
