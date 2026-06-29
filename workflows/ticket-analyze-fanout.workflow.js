@@ -54,7 +54,10 @@ const ANALYZE_SCHEMA = {
     // no comment, no verdict.
     held: { type: "boolean" },
     // Step 2.9 content-hash gate (GGC-103). contentSha = sha256(title+desc+lane)
-    // over the Step-2.9 canonical normalization. judgeSkipped=true ⇒ the persisted
+    // over the Step-2.9 canonical normalization — WITH the GGC-109 signed-URL strip
+    // applied to the description first (drop the ?… query from uploads.linear.app /
+    // signature= URLs so rotating attachment signatures don't rotate the hash; same
+    // strip in the skill's Step 2.9 item 1 — parity). judgeSkipped=true ⇒ the persisted
     // ticket-analyze:v2 marker's content_sha matched the freshly computed hash, so
     // the nondeterministic completeness judge (Step 3) was NOT run — re-judging
     // unchanged content can only flap ready↔needs-revision. On a skip, the agent
@@ -240,7 +243,22 @@ async function analyzeTicket(item) {
       `  the Step 3 judge. Compute contentSha = sha256 of the canonical string`,
       "  `title + \"\\n\" + description + \"\\n\" + lane` (the EXACT three inputs the",
       `  Step 3.2 judge reads; do NOT fold in other labels, comments, status,`,
-      `  priority, or relations). Read the ticket's newest analyzer header marker`,
+      `  priority, or relations). SIGNED-URL STRIP (GGC-109, REQUIRED — apply`,
+      `  IDENTICALLY to the single-ticket skill's Step 2.9 item 1, or a ticket would`,
+      `  skip in one path and re-judge in the other): Linear rotates the signed src`,
+      `  of every attachment on each fetch — a <linear-embed> / inline ![](…) URL`,
+      `  carries a ?signature=… JWT whose iat/exp change every get_issue, so hashing`,
+      `  the RAW description makes content_sha differ on every fetch for any ticket`,
+      `  with a screenshot/video (the attachment-bearing majority) → the skip never`,
+      `  matches. So BEFORE hashing, strip the volatile query string from every`,
+      `  signed Linear asset URL in the canonical string: for any URL whose host is`,
+      "  `uploads.linear.app` OR that carries a `signature=` query param, drop",
+      `  everything from the first ? onward (keep scheme+host+path — the stable`,
+      `  uploadId path segment survives). A real edit (title/desc/lane text, or an`,
+      `  attachment added/removed by its stable URL path/uploadId) still flips the`,
+      `  hash → re-judge; a signature-only rotation no longer does. Keep it minimal`,
+      `  and deterministic — strip the signature query specifically, do NOT attempt`,
+      `  general URL/markdown canonicalization. Read the ticket's newest analyzer header marker`,
       "  (`ticket-analyze:v2`, or a legacy `ticket-analysis:v1` with NO content_sha).",
       `  Decide: (a) marker present AND its content_sha == this contentSha →`,
       `  judgeSkipped:true; do NOT run the Step 3 judge; carry forward the marker's`,
