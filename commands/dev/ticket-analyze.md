@@ -234,9 +234,82 @@ timestamp is shared across all tickets in the run.
    - **Present** → `<batch-mode> = False`. `<queue> = [<ticket-id>]`.
      Resolve `ticket_system` for this id per the `_ticket-lib.md`
      resolution block (replicate it — do not assume an upstream caller
-     resolved). `unknown` → STOP. Skip to Step 2.
+     resolved). `unknown` → STOP. Then run **Step 1.4 (single-mode
+     `<platform>` resolution)** to resolve `<platform>` from the **ticket's
+     own team**, NOT the cwd repo (GGC-108) — single mode may be run from a
+     repo that does not match the ticket. Skip to Step 2.
    - **Absent** → `<batch-mode> = True`. Proceed to Step 1.5 to populate
      `<queue>`. Do NOT prompt for a ticket id — batch is intentional.
+
+### Step 1.4: Single-mode `<platform>` resolution — from the ticket's team, not the cwd repo (GGC-108)
+
+Runs in **single mode only** (`<batch-mode> = False`). Batch mode resolves
+`<platform>` from the cwd repo profile at Step 1.5.1 and is **unchanged** —
+batch only ever sweeps the cwd repo's own team, so cwd-repo == ticket-team
+there by construction. Single mode does NOT have that guarantee: `/ticket-analyze
+<id>` can be run from any repo (e.g. a CAF/`flutter` ticket analyzed from the
+gogox-claude/`prompt` repo). Post-GGC-102 both the Step 3 rubric AND the Step 3.2
+`owner` enum are platform-gated, so resolving `<platform>` from the cwd repo
+applies the wrong lens (and an owner enum the ticket's platform isn't in) → a
+clean flutter bug can be forced to `other-tooling`/out-of-repo → a false GGC-101
+`need-revision`. Single mode therefore resolves `<platform>` from the **ticket's
+team**, reusing the SAME team_key ↔ branch_prefix ↔ platform mapping batch mode
+relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib.md`):
+
+1. **Get the ticket's team key.** Linear: the team key is the ticket id's prefix
+   (`<ticket-id>` up to the first `-`, e.g. `CAF-887` → `CAF`); `get_issue` also
+   returns `.team` / `.teamId` for confirmation. Jira: the project key is likewise
+   the id prefix (e.g. `CET-8362` → `CET`), derived from the project. Call this
+   `<ticket-team-key>`.
+
+2. **Map `<ticket-team-key>` → platform via the profile registry** (the reverse of
+   the cwd-profile lookup — same registry, keyed on `branch_prefix` instead of
+   `basename`). Scan, in this order, for the FIRST profile whose `branch_prefix`
+   equals `<ticket-team-key>` (case-insensitive, the same comparison batch mode's
+   `--team:<KEY>` uses) and read its `platform:`:
+   - the cwd repo's own `<repo-root>/.gogox-claude.yaml` (so a run from the
+     matching repo resolves with zero registry dependency);
+   - then every `~/.claude/commands/profiles/registry/*.yaml`.
+   ```bash
+   # <ticket-team-key> e.g. CAF; resolve its platform from the registry by branch_prefix
+   TICKET_TEAM_KEY="${TICKET_ID%%-*}"   # CAF-887 → CAF (Linear team key / Jira project key)
+   TICKET_PLATFORM=""
+   for PF in "$(git rev-parse --show-toplevel)/.gogox-claude.yaml" \
+             "$HOME"/.claude/commands/profiles/registry/*.yaml; do
+     [ -f "$PF" ] || continue
+     BP=$(grep -E '^branch_prefix:' "$PF" | awk '{print $2}')
+     # case-insensitive match against the ticket's team key
+     if [ "$(printf '%s' "$BP" | tr '[:upper:]' '[:lower:]')" \
+        = "$(printf '%s' "$TICKET_TEAM_KEY" | tr '[:upper:]' '[:lower:]')" ]; then
+       TICKET_PLATFORM=$(grep -E '^platform:' "$PF" | awk '{print $2}')
+       break
+     fi
+   done
+   ```
+   Skip any profile whose `branch_prefix` is `auto` (not a concrete team key — it
+   can't be reverse-matched).
+
+3. **Outcome:**
+   - **Mapped** → set `<platform> = TICKET_PLATFORM`. If it differs from the cwd
+     repo's own platform, **say so in the run header** (Step 2 / report), e.g.
+     `Resolving platform from the ticket's team CAF → flutter (cwd repo is prompt).`
+     This is the GGC-108 fix: the Step 3 rubric + the Step 3.2 owner enum are now
+     selected by the **ticket's** platform, so a clean flutter bug analyzed from
+     gogox-claude is judged with the flutter rubric + `flutter | backend |
+     ios-signing | ops | design | unclear` owner enum and reaches `ready-to-dev`,
+     never a false out-of-repo `need-revision`.
+   - **Unmappable** — `<ticket-team-key>` matches no profile's `branch_prefix` (no
+     registry entry for that team) → **REFUSE / WARN; never silently fall back to
+     the cwd platform.** STOP with:
+     ```
+     Cannot resolve a platform for ticket <ticket-id>'s team (<ticket-team-key>):
+     no project profile maps that team key. The completeness rubric and owner enum
+     are platform-relative (GGC-102), so analyzing it under the cwd repo's platform
+     would judge it with the wrong lens. Add a registry profile for <ticket-team-key>
+     (branch_prefix: <ticket-team-key>, platform: <...>), then re-run.
+     ```
+     (`--dry-run` STOPs the same way — there is no defensible platform to report a
+     would-write verdict against.)
 
 ### Step 1.5: Batch fetch (batch mode only)
 
@@ -673,8 +746,11 @@ so its tokens are paid once per sweep, not N× (one cache prefix, the per-ticket
 payload appended after it).
 
 **Rubric is composed from the resolved `<platform>` (GGC-102).** `<platform>`
-is resolved once per run (Step 1.5.1 in batch mode; single mode resolves it the
-same way from the repo profile) — **no new configuration**. Assembling the
+is resolved once per run (Step 1.5.1 in batch mode, from the cwd repo profile;
+single mode resolves it from the **ticket's team** at Step 1.4 — GGC-108, since a
+single-mode run may target a ticket whose team ≠ the cwd repo) — **no new
+configuration** (both paths read the same registry: batch by `basename`, single by
+`branch_prefix`). Assembling the
 judge prompt's rubric block, **select exactly ONE rubric variant by that
 `<platform>`** and inject it as the prefix's "what a good `<lane>` ticket has"
 section — do NOT concatenate both, and do NOT default to the app rubric:
