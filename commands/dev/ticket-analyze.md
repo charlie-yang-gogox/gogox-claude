@@ -155,8 +155,8 @@ safety net for whatever the predictive (b) half misses.
 |---|---|
 | `analyze-hold` (human-owned park sentinel, GGC-60) | **skipped entirely — never re-analyzed, re-labeled, or re-commented**, regardless of every other label (this row has TOP precedence; it overrides the `need-revision` re-evaluate rule below, which is exactly the manually-parked case). The analyzer NEVER adds or removes `analyze-hold` — a human adds it to park, removes it to resume. It survives any label write because it is non-analyzer-owned. |
 | none (fresh) | analyzed |
-| `need-revision` | re-analyzed — completeness re-judged from current content; may flip to `ready-to-*` / `need-dependency`. EXCEPTION: a `design bug` is held back from `ready-to-dev` by the Design-bug ready-to-dev gate when EITHER it carries the `<!-- dispatch-triage-ui-blocked -->` marker (GGC-37, input a) OR its text still high-confidence predicts a logic-requiring fix (GGC-58, input b) — it stays `need-revision` until reclassified to `bug` (or, for b, until the text no longer reads as logic). |
-| `need-dependency` | re-analyzed — every blocker's live status re-fetched; all blockers Done → flips to `ready-to-*` |
+| `need-revision` | re-analyzed **on content change only (GGC-103)** — completeness is re-judged from current content ONLY when the persisted `ticket-analyze:v2` marker's `content_sha` differs from `sha256(title+desc+lane)` (the author actually revised the ticket); a matching hash → **skipped, not re-judged** (the input is unchanged, so re-running the nondeterministic holistic judge could only flap `ready ↔ needs-revision`). When it does re-judge, it may flip to `ready-to-*` / `need-dependency`. **Backward-compat:** a legacy `ticket-analysis:v1` marker (or any marker with no `content_sha`) reads as "hash absent" → re-judge (the safe default); that first re-judge stamps the v2 hash so subsequent unchanged sweeps skip. EXCEPTION: a `design bug` is held back from `ready-to-dev` by the Design-bug ready-to-dev gate when EITHER it carries the `<!-- dispatch-triage-ui-blocked -->` marker (GGC-37, input a) OR its text still high-confidence predicts a logic-requiring fix (GGC-58, input b) — it stays `need-revision` until reclassified to `bug` (or, for b, until the text no longer reads as logic). |
+| `need-dependency` | re-analyzed — every blocker's live status re-fetched; all blockers Done → flips to `ready-to-*`. This blocker-status path is **deterministic and hash-independent (GGC-103)**: it re-fetches every sweep regardless of the `content_sha` skip, because a blocker closing is a state change the content hash cannot see. |
 | `ready-to-port` / `ready-to-dev` | skipped (already actionable; re-analyzing races the dispatcher) |
 | `need-spec-review` / `dispatcher-*-in-flight` | skipped (already inside a pipeline) |
 
@@ -515,6 +515,73 @@ text: a **port** = the feature exists in the **origin** repo and is absent in th
 human confirm in this step (that was the old `--triage` bottleneck). `--dry-run`
 proposes + reports the would-write class but writes no label and posts no marker.
 
+### Step 2.9: Content-hash gate — skip the judge when content is unchanged (GGC-103)
+
+Runs for every queued ticket AFTER Step 2.7 has resolved the final `<lane>` and
+BEFORE the Step 3 judge call. It is the write-stability guard for the holistic
+completeness judge: because Step 3 is a *single nondeterministic* call (Step 3
+"Single call, no 2-vote"), re-judging a ticket whose **content has not changed**
+can only flap `ready ↔ needs-revision` — the input is identical, only the
+sampling differs. So when the judged input is unchanged, **do not re-judge at
+all.** This is keyed on the ticket's CONTENT, anchored in the persisted marker
+comment (the analyzer is otherwise stateless — the marker is the only state).
+
+1. **Compute the current content hash.** `content_sha = sha256(<canonical>)`
+   where `<canonical>` is the STABLE normalization of `title + "\n" + description
+   + "\n" + lane` — the exact three inputs the judge reads at Step 3.2 (title +
+   description + current lane label). Normalize once, deterministically: join the
+   three fields with a single `\n`, with the lane being the resolved `<lane>`
+   string from Step 2 / Step 2.7 (`port|feature|bug|ui-tweak|unknown`). Do NOT
+   fold in labels other than the lane, comments, status, priority, or relations —
+   those are not the judge's input (relations drive the deterministic
+   `need-dependency` path, handled separately, item 4). Keep the normalization
+   minimal: the ticket says `title+desc+lane`; do not over-engineer
+   whitespace/markdown canonicalization beyond the single-`\n` join.
+
+2. **Read the persisted marker.** Read the ticket's newest `ticket-analyze:v2`
+   marker (the §A header marker — see §A; it carries `content_sha=<...>`). The
+   marker is the anchor; the analyzer keeps no other state.
+
+3. **Decide skip vs re-judge:**
+   - **No `ticket-analyze:v2` marker, OR a marker with no `content_sha`
+     (backward-compat — a legacy `ticket-analysis:v1` marker)** → treat as
+     "hash absent" → **re-judge** (the safe default). This is the migration path:
+     the first v2 sweep over a v1 ticket re-judges and stamps the v2 `content_sha`
+     (Step 8 / §A), so every subsequent unchanged sweep can skip. "No hash" never
+     crashes the skip logic — it always falls to re-judge.
+   - **Marker present AND `content_sha` == the freshly computed hash** → the
+     judged input (title+desc+lane) is byte-for-byte unchanged since the last
+     judge → **SKIP Step 3 entirely. Do NOT call the judge.** Carry forward the
+     marker's persisted `verdict=` as this sweep's completeness verdict (it is the
+     verdict the unchanged content already earned), so Step 6 / the report still
+     have a value, but **make no new label write and post no new comment** for the
+     completeness axis (the label already reflects that verdict; re-writing the
+     same label is a no-op and re-posting a comment is noise). Record the skip in
+     the report (`reasons: content unchanged — judge skipped (GGC-103)`). Print
+     `[<k>/<N>] <ticket-id> — content unchanged (sha match); judge skipped`.
+   - **Marker present AND `content_sha` differs** → the author revised
+     title/description, or the lane changed → **re-judge** (proceed to Step 3).
+     This is the legitimate revise → re-evaluate loop.
+
+4. **Blocker-status path is hash-independent (the deterministic `need-dependency`
+   re-fetch stays).** The content hash covers only title+desc+lane — it cannot
+   see a blocker closing. So a `need-dependency` ticket's blockers are ALWAYS
+   re-fetched (Step 4.3) and the graph re-evaluated (Step 5) **even on a
+   `content_sha` match**: a `content_sha` match suppresses only the nondeterministic
+   *completeness* judge (Step 3), never the deterministic blocker re-resolution.
+   Concretely, a hash-matched ticket still runs Steps 4–5; if every blocker has
+   since closed it flips `need-dependency → ready-to-*` exactly as before — that
+   flip is driven by deterministic blocker state, not by re-judging content, so it
+   does not flap.
+
+5. **`analyze-hold` precedence is unchanged.** The Step 2 universal
+   `analyze-hold` guard has already dropped human-parked tickets before this step;
+   this gate never runs on them.
+
+`--dry-run`: still compute the hash and REPORT the skip/re-judge decision (the
+`would-write` column reflects "judge skipped — content unchanged" on a match),
+but write nothing (no comment, no label) regardless — same as today.
+
 ### Step 3: Per-ticket completeness analysis — one holistic LLM judge (GGC-100)
 
 For each ticket, completeness is decided by **ONE holistic LLM judge call**
@@ -529,10 +596,23 @@ checks was itself the disease that produced the "form not actionability" miss:
 a ticket can tick every box and still be unactionable — see GGC-100.)
 
 **Single call, no 2-vote.** Completeness is cheap to re-run and reversible
-(`need-revision` is re-analyzed every sweep — see Re-run semantics), so it gets
-one judge call. Contrast classification (Step 2.7), whose write is sticky and
-therefore spends a decorrelated 2-vote (GGC-96). Spend the second vote only on
-irreversible writes; completeness is not one.
+(`need-revision` is re-analyzed **on content change** — see Re-run semantics and
+the Step 2.9 content-hash gate, GGC-103), so it gets one judge call. Contrast
+classification (Step 2.7), whose write is sticky and therefore spends a
+decorrelated 2-vote (GGC-96). Spend the second vote only on irreversible writes;
+completeness is not one.
+
+**Why the judge runs only on content change (GGC-103).** The judge is a *single*
+nondeterministic call, so a borderline ticket can land `ready` one sweep and
+`needs-revision` the next **even though its content never changed** — the input
+is identical, only the sampling differs. Re-judging unchanged content can
+therefore ONLY flap the label; it can never produce a better verdict. The Step
+2.9 content-hash gate (below) skips the judge entirely when the persisted marker's
+`content_sha` matches the current `sha256(title+desc+lane)`, which both kills the
+flap **and** is the single biggest token saving in a sweep (an unchanged ticket
+costs zero judge tokens). This is keyed on **content**, not on verdict change: a
+verdict-change key is a no-op against this failure mode, because each flapping
+sweep genuinely produces a *different* verdict and would earn a rewrite.
 
 #### Step 3.1: Static rubric + principles (prompt-cache prefix)
 
@@ -911,8 +991,9 @@ Iterate `<queue>` in order. All writes are read-before-write.
    labels; call the fresh label set `<labels-fresh>` (it is the authoritative
    base for the Step 8.4 rewrite — see below). Decide as follows:
 
-   **(i) hard conflict → skip/STOP.** If a `ticket-analysis:v1` comment by
-   another author is newer than `<batch-start-time>`, OR the ticket now carries
+   **(i) hard conflict → skip/STOP.** If an analyzer header-marker comment
+   (`ticket-analyze:v2`, or a legacy `ticket-analysis:v1` — GGC-103, accept both)
+   by another author is newer than `<batch-start-time>`, OR the ticket now carries
    `dispatcher-*-in-flight` (dispatcher locked it mid-analysis), OR
    `<labels-fresh>` now carries `analyze-hold` (a human parked it mid-run), OR
    the **classification label changed** since the Step-2 read (the lane this
@@ -938,7 +1019,7 @@ Iterate `<queue>` in order. All writes are read-before-write.
    AND `<lane> == ui-tweak` (still classified `design bug`) AND the comments
    contain the literal marker `<!-- dispatch-triage-ui-blocked -->`, then
    **HOLD** — skip the comment + label writes for this ticket (do NOT post a
-   `ticket-analysis:v1` comment, do NOT write `ready-to-dev`; the existing
+   `ticket-analyze:v2` comment, do NOT write `ready-to-dev`; the existing
    `need-revision` is left untouched). Mark the outcome `held (ui-tweak-blocked)`
    and print
    `[<k>/<N>] <ticket-id> skipped — ui-tweak-blocked (reclassify Design bug → Bug to proceed).`,
@@ -957,8 +1038,13 @@ Iterate `<queue>` in order. All writes are read-before-write.
    so no (b) reclassify comment is posted.
 
 3. **Post comment** via the `_ticket-lib.md` `save_comment` branch using
-   the §A schema. Append-only — a fresh comment each run; the newest
-   `ticket-analysis:v1` comment is authoritative on read.
+   the §A schema (the `ticket-analyze:v2` header marker, stamped with the
+   Step-2.9 `content_sha` + `judged` timestamp — GGC-103). Append-only — a fresh
+   comment each run; the newest analyzer header-marker comment (`ticket-analyze:v2`,
+   or a legacy `ticket-analysis:v1`) is authoritative on read. **Not posted on a
+   Step-2.9 content-unchanged SKIP** — that path writes no comment, so the prior
+   marker (with its still-valid `content_sha`) persists as the authoritative
+   record.
 
 4. **Label write**:
    - **Linear**: compute the new set = **`<labels-fresh>`** (the set re-fetched
@@ -1068,7 +1154,7 @@ see `_slack-notify.md` Guardrails); do not add change-detection here.
 ## §A — Output comment schema
 
 ```markdown
-<!-- ticket-analysis:v1 ticket=<TICKET-ID> verdict=<complete-unblocked|complete-blocked|incomplete> lane=<port|feature|bug|ui-tweak|unknown> -->
+<!-- ticket-analyze:v2 ticket=<TICKET-ID> verdict=<complete-unblocked|complete-blocked|incomplete> lane=<port|feature|bug|ui-tweak|unknown> content_sha=<sha256(title+desc+lane)> judged=<ISO timestamp> -->
 ## Ticket Analysis
 
 **Verdict**: <Ready (ready-to-dev) | Ready (ready-to-port) | Blocked (need-dependency) | Needs revision (need-revision)>
@@ -1097,6 +1183,23 @@ not invoke them.
 Schema rules:
 
 - The header marker is the idempotency / concurrency key — copy exactly.
+- **`content_sha` + `judged` (GGC-103) — the write-stability anchor.**
+  `content_sha = sha256(title+desc+lane)` over the EXACT Step-2.9 canonical
+  normalization (the same `title + "\n" + description + "\n" + lane` the judge
+  reads); `judged` is the ISO timestamp of the judge call that produced this
+  verdict. On the next sweep, Step 2.9 reads `content_sha` from the newest header
+  marker: a match → skip the judge (input unchanged); a difference → re-judge.
+  Stamp BOTH fields whenever a real judge call ran (a fresh analysis, or a
+  re-judge on hash mismatch / first v2 sweep over a legacy ticket). On a Step-2.9
+  SKIP (content unchanged) no new comment is posted at all, so the prior marker —
+  with its still-correct `content_sha` — simply persists.
+- **Backward-compat / migration (GGC-103).** A legacy `ticket-analysis:v1` header
+  marker (no `content_sha`) is still a valid prior record: readers MUST accept
+  BOTH `ticket-analyze:v2` and the legacy `ticket-analysis:v1` marker name. A
+  marker with no `content_sha` reads as "hash absent" → Step 2.9 re-judges (the
+  safe default — an unknown hash never matches, so it can never wrongly skip),
+  and that re-judge writes a fresh `ticket-analyze:v2` marker carrying the hash.
+  No crash, no special-casing beyond "absent hash ⇒ re-judge".
 - One `ta-dep:v1` marker line immediately above each dependency bullet;
   `to=` is the join key for any future machine reader.
 - The Completeness section is the user-facing revision list: one bullet per
@@ -1112,7 +1215,7 @@ Schema rules:
 ### §A2 — Auto-classification provenance marker (GGC-96)
 
 When Step 2.7 auto-writes a classification label, it posts a **standalone**
-one-line marker comment (separate from the `ticket-analysis:v1` body above):
+one-line marker comment (separate from the `ticket-analyze:v2` body above):
 
 ```markdown
 <!-- ta-class:v1 source=analyzer label=<bug|design bug> ts=<ISO timestamp> -->
@@ -1160,8 +1263,12 @@ Rules:
 | Inferred edge, `--non-interactive` | 4.2 | Report-only, never blocking |
 | Blocking edge to a Done/canceled ticket | 4.3 | Satisfied — not blocking |
 | Cycle among queue tickets | 5.2 | All members blocked w/ cycle reason; loud warning; no crash |
+| `need-revision`/`need-dependency` ticket, content unchanged since last judge (`content_sha` match) | 2.9 | SKIP the holistic judge — carry forward the marker's verdict; no new comment / label write. Kills the `ready ↔ needs-revision` flap + biggest token saving (GGC-103) |
+| `need-revision` ticket, title/desc/lane edited since last judge (`content_sha` differs) | 2.9 / 3 | Re-judge (the revise → re-evaluate loop); re-stamp the `ticket-analyze:v2` marker with the new hash |
+| Legacy `ticket-analysis:v1` marker (no `content_sha`), or no marker at all | 2.9 | "Hash absent" → re-judge (safe default); first v2 sweep stamps the hash so later unchanged sweeps skip (GGC-103 backward-compat) |
+| `need-dependency` ticket, content unchanged but a blocker just closed | 2.9 / 4.3 / 5 | Blocker re-fetch is hash-INDEPENDENT — still flips `need-dependency → ready-to-*`; `content_sha` match suppresses only the nondeterministic completeness judge (GGC-103) |
 | Dispatcher locks a ticket mid-run | 8.2 | Pre-write re-check skips it |
-| Newer foreign `ticket-analysis:v1` comment | 8.2 | Skip (batch) / STOP (single) |
+| Newer foreign analyzer header-marker comment (`ticket-analyze:v2` or legacy `ticket-analysis:v1`) | 8.2 | Skip (batch) / STOP (single) |
 | Classification label / `analyze-hold` changed since read | 8.2(i) | Hard conflict — skip (batch) / STOP (single); verdict was computed for a stale lane |
 | Benign label added by a human between read and write | 8.2(ii) / 8.4 | Keep; rebase the full-set rewrite on the freshly-fetched labels so the new label is preserved (F5 — no lost update) |
 | Unassigned / other-assignee pool ticket | 1.5.4 | In scope (GGC-95) — analyzed + labeled, never assigned |

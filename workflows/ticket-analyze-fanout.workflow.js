@@ -43,6 +43,20 @@ const ANALYZE_SCHEMA = {
     // analyze-hold guard (GGC-60): a human-parked ticket is dropped — no write,
     // no comment, no verdict.
     held: { type: "boolean" },
+    // Step 2.9 content-hash gate (GGC-103). contentSha = sha256(title+desc+lane)
+    // over the Step-2.9 canonical normalization. judgeSkipped=true ⇒ the persisted
+    // ticket-analyze:v2 marker's content_sha matched the freshly computed hash, so
+    // the nondeterministic completeness judge (Step 3) was NOT run — re-judging
+    // unchanged content can only flap ready↔needs-revision. On a skip, the agent
+    // carries forward the marker's prior verdict into `completeness` (so Step 5/6/
+    // the report still have a value) and the write stage MUST post no completeness
+    // comment and write no completeness label (the label already reflects it). When
+    // judgeSkipped=false the judge ran and the write stage stamps the marker with
+    // contentSha + a fresh `judged` timestamp. NOTE: the blocker-status path (Step
+    // 4/5) is hash-INDEPENDENT and runs regardless — a need-dependency ticket whose
+    // blockers all closed still flips to ready-to-* even on a sha match.
+    judgeSkipped: { type: "boolean" },
+    contentSha: { type: ["string", "null"] },
     lane: { type: "string", enum: ["port", "feature", "bug", "ui-tweak", "unknown"] },
     // Step 2.7 auto-classification outcome (GGC-96). wroteClass=true ⇒ the write
     // stage must persist `classLabel` + the ta-class:v1 marker. classSource lets
@@ -101,7 +115,10 @@ const WRITE_SCHEMA = {
   additionalProperties: false,
   properties: {
     ticketId: { type: "string" },
-    outcome: { type: "string", enum: ["analyzed", "skipped", "errored"] },
+    // "judge-skipped" (GGC-103): content unchanged (Step 2.9 sha match) AND no
+    // deterministic blocker flip — the write stage made no completeness comment /
+    // label write; it is a clean no-op, distinct from a concurrency "skipped".
+    outcome: { type: "string", enum: ["analyzed", "skipped", "judge-skipped", "errored"] },
     targetLabel: { type: ["string", "null"] },
     detail: { type: ["string", "null"] },
   },
@@ -209,7 +226,29 @@ async function analyzeTicket(item) {
       `  port; net-new → feature; inconclusive/partial → human tail. Confident`,
       `  port/feature → wroteClass:true + classLabel. Else → wroteClass:false,`,
       `  revisionKind:"cannot-classify".`,
-      `- Step 3 (GGC-100): completeness is ONE holistic LLM judge per ticket —`,
+      `- Step 2.9 CONTENT-HASH GATE (GGC-103) — run AFTER lane is final, BEFORE`,
+      `  the Step 3 judge. Compute contentSha = sha256 of the canonical string`,
+      "  `title + \"\\n\" + description + \"\\n\" + lane` (the EXACT three inputs the",
+      `  Step 3.2 judge reads; do NOT fold in other labels, comments, status,`,
+      `  priority, or relations). Read the ticket's newest analyzer header marker`,
+      "  (`ticket-analyze:v2`, or a legacy `ticket-analysis:v1` with NO content_sha).",
+      `  Decide: (a) marker present AND its content_sha == this contentSha →`,
+      `  judgeSkipped:true; do NOT run the Step 3 judge; carry forward the marker's`,
+      `  prior verdict into completeness (verdict=ready ⇒ "complete",`,
+      `  needs-revision ⇒ "incomplete"); set missing/warnings/reasons to [] and`,
+      `  return contentSha. Re-running the single nondeterministic judge on`,
+      `  unchanged input can ONLY flap ready↔needs-revision, so we skip it. (b) NO`,
+      `  marker, OR a marker with no content_sha (legacy v1 — backward-compat), OR`,
+      `  content_sha differs (author revised title/desc, or lane changed) →`,
+      `  judgeSkipped:false; proceed to Step 3 and re-judge; the write stage will`,
+      `  stamp the v2 marker with this contentSha. "Hash absent" ALWAYS falls to`,
+      `  re-judge (the safe default — it can never wrongly skip). Either way RETURN`,
+      `  contentSha so the write stage can stamp the marker. NOTE: the blocker path`,
+      `  (Step 4/5) is hash-INDEPENDENT — always capture blockingEdges below even on`,
+      `  a judgeSkipped:true ticket, so a need-dependency ticket whose blockers all`,
+      `  closed still flips to ready-to-* (deterministic, never flaps).`,
+      `- Step 3 (GGC-100) — SKIP THIS STEP ENTIRELY when judgeSkipped:true above;`,
+      `  otherwise: completeness is ONE holistic LLM judge per ticket —`,
       `  apply Step 3.1 (static rubric + judging principles: fail-safe / bias-to-`,
       `  ready; you cannot see attachments; vagueness is a warning, not a block) +`,
       `  Step 3.2 (per-ticket judge), NOT a per-lane pass/fail checklist (the`,
@@ -274,6 +313,8 @@ async function analyzeTicket(item) {
       ticketId: id,
       held: false,
       lane: "unknown",
+      judgeSkipped: false,
+      contentSha: null,
       wroteClass: false,
       classLabel: null,
       classSource: null,
@@ -309,6 +350,13 @@ async function writeTicket(row, graphInfo) {
   else target = row.lane === "port" ? "ready-to-port" : "ready-to-dev";
   // (the design-bug ready-to-dev MARKER gate / GGC-37 8.2b is applied inside the
   // agent — pass the lane + reasons so it can hold when required.)
+  // Step 2.9 judge-skip (GGC-103): the completeness judge was NOT re-run because
+  // content is unchanged. The carried-forward verdict already maps to `target`;
+  // if the deterministic blocker re-eval did not change which analyzer label is
+  // due (target == the label the ticket already carries), the write is a pure
+  // no-op and must post no new completeness comment. The agent confirms this
+  // against the FRESH labels (a blocker-close flip, e.g. need-dependency →
+  // ready-to-*, IS a real write and proceeds normally).
 
   const res = await agent(
     [
@@ -322,12 +370,24 @@ async function writeTicket(row, graphInfo) {
       `  revisionKind=${row.revisionKind || "—"} reasons=${JSON.stringify(row.reasons || [])}`,
       `  warnings=${JSON.stringify(row.warnings || [])}`,
       `  owner=${row.owner || "—"} owner_scope=${row.owner_scope || "—"} confidence=${row.confidence || "—"}`,
+      `  judgeSkipped=${!!row.judgeSkipped} contentSha=${row.contentSha || "—"}`,
       `Do, in order:`,
+      `0. Step 2.9 JUDGE-SKIP (GGC-103). If judgeSkipped=true, the completeness`,
+      `   judge did NOT re-run (content unchanged since the last marker). Re-fetch`,
+      `   fresh labels, then: if target_analyzer_label (${target}) equals the`,
+      `   analyzer label the ticket ALREADY carries (no blocker flip changed it),`,
+      `   this is a pure no-op — do NOT post a ticket-analyze:v2 comment, do NOT`,
+      `   rewrite the completeness label, leave the existing marker (and its still-`,
+      `   valid content_sha) in place. Return outcome="judge-skipped". ONLY when the`,
+      `   deterministic blocker re-eval changed the due label (e.g. need-dependency`,
+      `   → ready-to-* because all blockers closed) do you proceed to the writes`,
+      `   below. judgeSkipped=false → always proceed (a real judge ran).`,
       `1. Step 8.2 pre-write check INCLUDING F5: re-fetch comments+labels; the`,
       `   FRESH label set is the authoritative rewrite base. Hard conflict`,
-      `   (foreign ticket-analysis:v1 newer than now, dispatcher-*-in-flight,`,
-      `   analyze-hold added, or the classification changed since analysis) →`,
-      `   outcome="skipped". Benign label drift → keep, rebase on the fresh set.`,
+      `   (a foreign analyzer header marker — ticket-analyze:v2 or legacy`,
+      `   ticket-analysis:v1 — newer than now, dispatcher-*-in-flight, analyze-hold`,
+      `   added, or the classification changed since analysis) → outcome="skipped".`,
+      `   Benign label drift → keep, rebase on the fresh set.`,
       `2. If wroteClass and classSource!="human": write the classification label`,
       `   (full-set rebase on fresh labels) + post the ta-class:v1 marker (§A2).`,
       `   Honor Gate 0: if a human changed it, skip (never re-flip).`,
@@ -336,8 +396,11 @@ async function writeTicket(row, graphInfo) {
       `4. Write the analyzer label = fresh_labels − {ready-to-port,ready-to-dev,`,
       `   need-revision,need-dependency} + ${target} (preserve everything else).`,
       `   Already at target → skip the label write.`,
-      `5. Post the ticket-analysis:v1 comment (§A). For need-revision, use the`,
-      `   revisionKind to pick the wording: "content-incomplete" lists what to`,
+      `5. Post the ticket-analyze:v2 comment (§A). STAMP the header marker with`,
+      `   content_sha=${row.contentSha || "<recompute sha256(title+desc+lane)>"}`,
+      `   and judged=<now ISO> (GGC-103) — this is what the next sweep's Step 2.9`,
+      `   reads to skip an unchanged ticket. For need-revision, use the revisionKind`,
+      `   to pick the wording: "content-incomplete" lists what to`,
       `   add (one Completeness bullet per reasons[] ask); "cannot-classify" says`,
       `   the lane couldn't be auto-classified and asks the human to set one`,
       `   (+ suggested lane); "owner-out-of-repo" (GGC-101) posts the reclassify-`,
@@ -346,7 +409,7 @@ async function writeTicket(row, graphInfo) {
       `   <platform> change, state which one". On ANY verdict, render each warnings[] entry as a`,
       `   non-blocking "⚠ ..." Completeness bullet (GGC-100 — warnings never imply`,
       `   need-revision). NEVER write an assignee.`,
-      `Return WRITE_SCHEMA: outcome analyzed|skipped|errored, targetLabel, detail.`,
+      `Return WRITE_SCHEMA: outcome analyzed|skipped|judge-skipped|errored, targetLabel, detail.`,
     ].join("\n"),
     {
       label: `write:${id}`,
@@ -400,11 +463,13 @@ phase("digest");
 const rows = written;
 const counts = rows.reduce(
   (a, r) => ((a[r.outcome] = (a[r.outcome] || 0) + 1), a),
-  { analyzed: 0, skipped: 0, errored: 0 },
+  { analyzed: 0, skipped: 0, "judge-skipped": 0, errored: 0 },
 );
 const readyRows = rows.filter((r) => r.targetLabel === "ready-to-dev" || r.targetLabel === "ready-to-port");
+// GGC-103: "judge-skipped" (content unchanged, no blocker flip) is a clean no-op,
+// not a concurrency skip — count it separately so the token saving is visible.
 log(
-  `[analyze-fanout] analyzed=${counts.analyzed} skipped=${counts.skipped + held.length} errored=${counts.errored} · ready=${readyRows.length}`,
+  `[analyze-fanout] analyzed=${counts.analyzed} skipped=${counts.skipped + held.length} judge-skipped=${counts["judge-skipped"]} errored=${counts.errored} · ready=${readyRows.length}`,
 );
 log(`[analyze-fanout] F2 unclaimed-ready (need a human to pull): ${readyRows.map((r) => r.ticketId).join(", ") || "none"}`);
 
