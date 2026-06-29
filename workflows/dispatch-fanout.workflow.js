@@ -269,8 +269,10 @@ function isAllBinaryDiff(diffText, diffTruncated) {
 async function runUiTweak(item, trunkSha) {
   log(`[ui] ${item.ticketId} apply+preview`);
 
-  // Stage 1: /ui-tweak:start → :apply → :preview (R20 direct-ship build-only
-  // gate; --auto never reaches a device preview). STOP before :audit.
+  // Stage 1: /ui-tweak:start → :detect (GGC-107 read-only visual-vs-logic triage;
+  // needs-logic short-circuits to a ui:detect-block terminal block before any edit)
+  // → :apply → :preview (R20 direct-ship build-only gate; --auto never reaches a
+  // device preview). STOP before :audit.
   // The prep agent also computes the final cumulative diff ONCE (after the
   // build-only compile gate / format) and returns it inline, so the panel below
   // never makes either judge re-run `git diff` or re-read the changed files
@@ -281,6 +283,23 @@ async function runUiTweak(item, trunkSha) {
       `For ticket ${item.ticketId} (target worktree ${item.worktreePath}):`,
       `run /ui-tweak:start FIRST — it creates and enters the ../${item.ticketId}`,
       `worktree (do not cd there yourself; the worktree may not exist yet).`,
+      ``,
+      // GGC-107 — read-only visual-vs-logic triage BEFORE any edit. detect is the
+      // first dispatched stage of /ui-tweak:ff; the dispatcher reimplements the
+      // flow here, so run it explicitly right after :start. A needs-logic verdict
+      // is a TERMINAL pre-edit block: do NOT run :apply, return ok:false with a
+      // `UI-TWEAK BLOCKED (detect: needs-logic): ...` error AND detectBlock:true so
+      // runUiTweak emits stage:"ui:detect-block" and classifyFailure routes the
+      // UI-TWEAK BLOCKED prefix to terminal-ui-block (need-revision + reclassify
+      // comment, in-flight label removed) exactly like the earned-no-op path.
+      `Then run /ui-tweak:detect with --auto semantics (read-only visual-vs-logic`,
+      `triage of the target widget). If detect classifies NEEDS-LOGIC (it exits`,
+      `non-zero with a "UI-TWEAK BLOCKED (detect: needs-logic): ..." message, or`,
+      `writes no .dev/ui-tweak/triage-pass), STOP — do NOT run /ui-tweak:apply —`,
+      `and return ok:false with that exact error string (keep the "UI-TWEAK BLOCKED`,
+      `(detect: needs-logic)" prefix) and detectBlock:true. Otherwise detect wrote`,
+      `.dev/ui-tweak/triage-pass (pure-visual) — continue.`,
+      ``,
       `Then run /ui-tweak:apply, then /ui-tweak:preview with --auto semantics`,
       `(R20 direct-ship → build-only compile gate, no device preview). STOP`,
       `before /ui-tweak:audit. Leave .dev/ui-tweak/base_ref and`,
@@ -331,7 +350,9 @@ async function runUiTweak(item, trunkSha) {
       ``,
       `Return { ok: boolean, baseRef: string|null, diffText: string|null,`,
       `changedFiles: string|null, diffTruncated: boolean, emptyDiff: boolean,`,
-      `allBinary: boolean, noopJustification: string|null, error: string|null }.`,
+      `allBinary: boolean, noopJustification: string|null, detectBlock: boolean,`,
+      `error: string|null }. Set detectBlock:true ONLY for the GGC-107`,
+      `needs-logic pre-edit block (ok:false); false otherwise.`,
     ].join("\n"),
     {
       label: `ui-prep:${item.ticketId}`,
@@ -351,17 +372,22 @@ async function runUiTweak(item, trunkSha) {
           emptyDiff: { type: "boolean" },
           allBinary: { type: "boolean" },
           noopJustification: { type: ["string", "null"] },
+          detectBlock: { type: "boolean" },
           error: { type: ["string", "null"] },
         },
       },
     },
   );
   if (!prep || !prep.ok) {
+    // GGC-107 — a needs-logic pre-edit block is its own stage for diagnostics
+    // (ui:detect-block). classifyFailure keys on the UI-TWEAK BLOCKED error
+    // prefix, not on stage, so terminal-ui-block cleanup fires either way; the
+    // stage label only sharpens the §6 rendering / logs.
     return {
       ticketId: item.ticketId,
       outcome: "failed",
       prUrl: null,
-      stage: "ui:apply",
+      stage: prep?.detectBlock ? "ui:detect-block" : "ui:apply",
       error: prep?.error || "ui-tweak apply/preview failed (or prep agent returned null)",
       uiTweak: true, // design-bug row marker (GGC-29) — lets callers filter for the demo pass
       uiTweakFailed: true,

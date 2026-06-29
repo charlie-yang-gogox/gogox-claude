@@ -858,6 +858,19 @@ Steps:
    come back as `outcome:"failed"` via `runFallback`, so all three appear in the
    failed count with their reason — never as a silent close.
 
+   **GGC-107 needs-logic pre-edit block.** A fourth `UI-TWEAK BLOCKED` source:
+   `runUiTweak` now runs `/ui-tweak:detect` right after `:start`. A needs-logic
+   verdict (the design bug actually needs behaviour/logic changes, not a pure
+   visual tweak) short-circuits BEFORE `:apply` — `runUiTweak` returns
+   `outcome:"failed", prUrl:null, stage:"ui:detect-block", uiTweakFailed:true`
+   with a `UI-TWEAK BLOCKED (detect: needs-logic) …` reason. `classifyFailure`
+   keys on the `UI-TWEAK BLOCKED` prefix (NOT the stage), so this routes through
+   the SAME `terminal-ui-block` cleanup as the no-op case — no new dispatcher
+   code, no new marker grammar; only the `stage` label differs (for diagnostics).
+   The reclassify-recommendation comment is the cheap upstream catch the late
+   `/ui-tweak:audit` dual-judge BLOCK previously caught only after a full
+   apply + build + 3× repair cycle.
+
 **Resume (same session only).** If the dispatcher is interrupted and
 re-invoked in the same session, relaunch with
 `Workflow({scriptPath, resumeFromRunId: <runId from run.json>})` — completed
