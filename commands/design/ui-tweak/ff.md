@@ -1,6 +1,6 @@
 ---
 name: ff
-description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me', then (GGC-14, Step 2.5) navigates to the target screen and captures it (screenshot + short recording) — preview is the SOLE capture point (no separate demo stage): Tier-1 fires ONE whitelisted ggv:// deep-link, Tier-2 falls back to an LLM-planned, codebase-guided, navigation-only tap-through for non-deep-linkable screens; if it can't reach the screen it FAIL-SILENTs (no capture, the designer never drives). Phase 2 (audit → commit → pr → review) runs when they pick 'Ship it'. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate runs before the audit (or, with the GGC-14 navigate opt-in, a launch onto an already-running device so preview's Step 2.5 can navigate+capture). Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce; C3/C4 removed); atomic stages render C-MISDIRECT / C6. A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: in interactive mode a draft PR happens only when the designer picks 'Ship it'. --auto (the /ggx-work / /ggx-dispatcher lane for `design bug` tickets) shows no cards and never reaches an interactive device-preview card; instead it auto-takes the R20 direct-ship path after the single apply, with GGC-14 navigate+capture ON by default — build/launch gate (launch onto an already-running device if present, else build-only) → preview Step-2.5 navigate+capture (one ggv:// deep-link + screenshot/recording, best-effort/fail-silent) → dual-judge audit → commit → draft PR (terminal; never draft→ready, never merge). Accepts-and-ignores --no-ticket-init (ui-tweak never calls /_ticket-init; the flag exists so /ggx-work's lane-agnostic spawn builder can append it uniformly)."
+description: "Orchestrator for the /ui-tweak pipeline — the engine behind the designer-facing /ui-tweak alias. Splits a ticket-named worktree up-front (R19, Step 0 → /ui-tweak:start → /add-worktree), mirroring /dev:ff and /port:ff, before the first edit. Derives the current stage from filesystem markers (infer_ui_stage) and dispatches the two-phase flow (R18): iteration is apply-only (no build); Phase 1 (preview) builds the change onto a device when the designer picks 'show me', then (GGC-14, Step 2.5) navigates to the target screen and captures it (screenshot + short recording) — preview is the SOLE capture point (no separate demo stage): Tier-1 fires ONE whitelisted ggv:// deep-link, Tier-2 falls back to an LLM-planned, codebase-guided, navigation-only tap-through for non-deep-linkable screens; if it can't reach the screen it FAIL-SILENTs (no capture, the designer never drives). Phase 2 (audit → commit → pr → review) runs when they pick 'Ship it'. Direct-ship (R20): on C1 (show-me) a designer who already saw the change on their own device can ship without the device preview — a build-only compile gate runs before the audit (or, with the GGC-14 navigate opt-in, a launch onto an already-running device so preview's Step 2.5 can navigate+capture). Owns the navigation cards (C0, C-WT, C1's show-me/looks-good variants, C5, the engineer card Ce, and the GGC-107 pre-edit reclassify card C-RECLASSIFY; C3/C4 removed); atomic stages render C-MISDIRECT / C6. GGC-107: a read-only `/ui-tweak:detect` visual-vs-logic triage runs as the FIRST dispatched stage (after Step 0) — a needs-logic verdict stops before any edit (interactive → C-RECLASSIFY; --auto → UI-TWEAK BLOCKED). A build/audit failure routes back to apply for an agent UI-only fix (max 3, then Ce). Sets UI_TWEAK_FF=1 so atomic stages know they were reached through the orchestrator. No --pr flag: in interactive mode a draft PR happens only when the designer picks 'Ship it'. --auto (the /ggx-work / /ggx-dispatcher lane for `design bug` tickets) shows no cards and never reaches an interactive device-preview card; instead it auto-takes the R20 direct-ship path after the single apply, with GGC-14 navigate+capture ON by default — build/launch gate (launch onto an already-running device if present, else build-only) → preview Step-2.5 navigate+capture (one ggv:// deep-link + screenshot/recording, best-effort/fail-silent) → dual-judge audit → commit → draft PR (terminal; never draft→ready, never merge). Accepts-and-ignores --no-ticket-init (ui-tweak never calls /_ticket-init; the flag exists so /ggx-work's lane-agnostic spawn builder can append it uniformly)."
 ---
 
 <!-- RULE: ALL content, including designer-facing CARD text, is English. No Chinese / non-ASCII. -->
@@ -80,7 +80,8 @@ review the PR".)
 
 ### How cards are rendered (R16)
 
-- **Decision cards (C1's two variants, C3, the engineer card Ce, and the atomic-stage card C6) are
+- **Decision cards (C1's two variants, the engineer card Ce, the pre-edit reclassify card C-RECLASSIFY
+  (GGC-107), and the atomic-stage card C6) are
   rendered with the `AskUserQuestion` tool**, not printed as numbered text. The `📍`/`📦` narrative goes in the
   question text; each choice is one option (`label` short + plain `description`). The tool's built-in
   **"Other"** free-text field IS the correction escape — a designer types "a bit bigger" / "make it
@@ -220,12 +221,22 @@ infer_ui_stage() {
   # ---- iteration (cheap; apply only, NO build) ----
   [ -f "$wt/.dev/ui-tweak/base_ref" ] && { echo done; return; }   # diff exists → card C1 (no build)
 
+  # ---- DETECT (GGC-107): read-only visual-vs-logic triage, FIRST stage of a fresh run ----
+  # Consume-on-existence: once detect writes `triage-pass` (pure-visual verdict) this gate is
+  # skipped and the run falls through to `apply`. A `needs-logic` verdict is NOT handled here — it is
+  # a CARD-TERMINUS the dispatch loop checks BEFORE this walker (it never writes `triage-pass`, so
+  # without that terminus the walker would re-emit `detect` forever — exactly why it is a terminus).
+  # Idempotent on resume: a re-entered run that already passed detect (triage-pass present) skips it.
+  # Reached only on a truly fresh run (no repair-context, no deliver, no preview-requested, no
+  # base_ref) — so detect never retroactively fires on an in-flight worktree that already has a diff.
+  [ ! -f "$wt/.dev/ui-tweak/triage-pass" ] && { echo detect; return; }
+
   # nothing yet — figma is NOT a walker stage (folded into apply). → apply.
   echo apply
 }
 ```
 
-Output whitelist: `start | apply | preview | audit | commit | pr | review | done`. Guard the output
+Output whitelist: `start | detect | apply | preview | audit | commit | pr | review | done`. Guard the output
 against this set (mirror `infer_bug_stage_safe`). There is no standalone `verify` stage — the build is
 folded into `preview` (`flutter run` = build + deploy); `format` is folded into `audit`.
 
@@ -238,7 +249,18 @@ dispatch:
 ```
 Step 0   → split+enter ../<ticket-id> (skip if worktree-ready exists; no id → card C-WT, else STOP)
 loop:
-  # --- card-terminus (checked BEFORE the walker) ---
+  # --- card-termini (checked BEFORE the walker) ---
+  needs-logic marker present (GGC-107)
+                     → `/ui-tweak:detect` triaged the change as needs-logic (it touches behaviour,
+                       not just look) and stopped before any edit. interactive: render card
+                       C-RECLASSIFY (a PRE-edit reclassify card — NOT Ce) and STOP; make no edit,
+                       write no triage-pass, never expose `detect` as a stage name. --auto: detect
+                       already exited non-zero (UI-TWEAK BLOCKED) before reaching here, so this branch
+                       is defensive — print
+                       `FAIL: /ui-tweak:ff --auto — UI-TWEAK BLOCKED (detect: needs-logic); needs an engineer / reclassify Design bug -> Bug.`
+                       to stderr and exit non-zero (R13). (This terminus is checked BEFORE the walker
+                       because detect's needs-logic path writes no `triage-pass`, so the walker would
+                       otherwise re-emit `detect` every iteration.)
   repair-count >= 3  → interactive: render the engineer card (couldn't do it as a pure look change)
                        and STOP. --auto: no card — print
                        `FAIL: /ui-tweak:ff --auto — repair budget exhausted (3); needs an engineer.`
@@ -284,6 +306,7 @@ diff a human reviews on the PR).
 
 | stage | action |
 |---|---|
+| `detect` | `/ui-tweak:detect <source> [figma] [--auto]` — **GGC-107**, the FIRST dispatched stage after Step 0. Read-only visual-vs-logic triage of the target widget. **pure-visual** → writes `.dev/ui-tweak/triage-pass` (resolved widget path + one-line rationale; `:apply` Step 4 reuses that widget) → walker → `apply`. **needs-logic** → stops before any edit: interactive writes `.dev/ui-tweak/needs-logic` (the card-terminus above → **C-RECLASSIFY**); `--auto` exits non-zero with a `UI-TWEAK BLOCKED (detect: needs-logic)` error (→ `/ggx-work` pipeline-failed, or the dispatcher's `terminal-ui-block` cleanup). Never edits code, never auto-reclassifies the ticket |
 | `apply` | `/ui-tweak:apply <source> [figma] [--auto]` — iteration edit (no build). In **repair mode** (`repair-context` present) it reads the error and fixes the edit UI-only (see Correction/Repair loop) |
 | `preview` | `/ui-tweak:preview [--auto]` — **Phase 1**: build INTO a device (cascade: already-running/connected device incl. physical FIRST → boot emulator/sim → honest no-device build-only), then **(GGC-14, Step 2.5) navigate to the target screen + capture it (screenshot + short recording) → `demo-files`** — this is the SOLE capture point. Writes `build-pass` + `preview-shown`. In **direct-ship mode** (`direct-ship` present, R20): build-only compile gate — no `preview-shown`, no card; EXCEPT with `auto-navigate` set it launches onto an already-running device and Step 2.5 captures. Nav can't reach the screen → fail-silent (no capture, designer never drives). Build-fail → repair-context (→ apply, max 3) |
 | `audit` | `/ui-tweak:audit [--auto]` — **Phase 2** first check (deliver only): `/format` then the dual-judge on the final cumulative diff. CLEAR → `commit`; BLOCKED → repair-context (→ apply, max 3) |
@@ -296,9 +319,10 @@ diff a human reviews on the PR).
 ## Wayfinding cards (this orchestrator owns the navigation cards C-WT, C0–C5)
 
 > The stage-stop cards **C-MISDIRECT / C6** are rendered by the atomic stages themselves
-> (`apply.md` / `preview.md` / `start.md`), since those are the stages that physically stop — see
-> `/ui-tweak:apply` Step 0a / Step 4. C-WT + C0–C5 + the repair-exhausted **engineer card Ce** (the
-> flow-navigation cards) live here.
+> (`apply.md` / `detect.md` / `preview.md` / `start.md`), since those are the stages that physically
+> stop — see `/ui-tweak:apply` Step 0a / Step 4, `/ui-tweak:detect` Step 0a. C-WT + C0–C5 + the
+> repair-exhausted **engineer card Ce** + the pre-edit reclassify card **C-RECLASSIFY** (GGC-107,
+> rendered from the `needs-logic` card-terminus) — the flow-navigation cards — live here.
 
 **C-WT — work-item number (split the workspace)** (Step 0, free-text run with no work-item id; R19) —
 *`AskUserQuestion`, `header: "Work-item no."`*. Asked **once, up-front**, before any edit — it's how
@@ -327,6 +351,26 @@ build, or can't be done without touching how the program runs.
   differently` — "Start fresh with a new wording (resets my attempts)."
 - **routing**: `Hand to an engineer` → prepare the summary; `Describe it differently` / **Other** →
   reset `repair-count` + Correction loop.
+
+**C-RECLASSIFY — looks like an engineer change (pre-edit reclassify, GGC-107)** (loop card-terminus
+when `/ui-tweak:detect` wrote `.dev/ui-tweak/needs-logic`) — *`AskUserQuestion`, `header: "Needs an
+engineer"`*. Detect read the target widget BEFORE any edit and judged the change touches how the
+screen behaves, not just its look. **Nothing was changed and no worktree edit was made** — the key
+difference from `Ce`, which fires only after edits + 3 failed repairs and says "everything's back to
+how it was", wording that would misrepresent a pre-edit stop (so `Ce` is deliberately NOT reused here).
+- **question**: "This change looks like it needs an engineer — it touches how the screen behaves
+  (like what a tap does or which screen it opens), not just its look. **Nothing was changed.** I'd
+  suggest re-filing it as a Bug so an engineer can pick it up. (Or pick Other to describe it a
+  different way and I'll take another look.)"
+- **options**: `Hand to an engineer` *(recommended)* — "Re-file this as a Bug for an engineer; I'll
+  note what I found." / `Describe it differently` — "Tell me another way to say it and I'll re-check —
+  maybe it's a pure look change after all."
+- **routing**: `Hand to an engineer` → recommend reclassifying `Design bug → Bug` (human-owned — the
+  orchestrator NEVER flips the issue-type label itself, consistent with the late-audit reclassify
+  policy) and STOP; the `needs-logic` marker stays, so a re-run renders this same card until the
+  ticket is reclassified or the wording changes. `Describe it differently` / **Other** → remove
+  `.dev/ui-tweak/needs-logic` and re-run `detect` with the new wording (a fresh triage may now read
+  pure-visual).
 
 **C0 — first contact** (empty/help `<source>`) — *plain text (info card, no choice)*
 ```

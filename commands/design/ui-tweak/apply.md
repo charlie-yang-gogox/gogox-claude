@@ -142,6 +142,17 @@ by the ticket text.
 
 ## Step 4 — locate + map (+ shared-token blast radius, R12)
 
+**Reuse the `detect`-resolved widget (GGC-107).** If `.dev/ui-tweak/triage-pass` exists, the upstream
+`/ui-tweak:detect` stage already located the primary target widget and recorded it (`Widget:
+<path>[:<line>]`) after judging the change pure-visual. Read that path and use it as the **starting /
+primary code site** for the locate below instead of re-deriving it from scratch — this collapses the
+two "find the widget" passes into one and keeps apply editing the same file detect (and later the
+audit) reasoned about. Still run the per-`Ti` grep to map each target's exact line and to catch
+additional sites (shared tokens, secondary `Ti`s); the marker primes the search, it does not replace
+the coverage gate. If the marker's `Widget` is `<unresolved>` (detect deferred the locate) or the
+marker is absent (e.g. a direct `/ui-tweak:apply` resume on a pre-GGC-107 worktree), fall back to the
+full grep-locate exactly as before.
+
 For each checklist row `Ti`: grep the target screen/component, record
 `{Ti, file, current, target}`, classify the file (UI-eligible vs forbidden), tick the box when a
 code site is found.
