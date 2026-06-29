@@ -50,7 +50,17 @@ const ANALYZE_SCHEMA = {
     wroteClass: { type: "boolean" },
     classLabel: { type: ["string", "null"] },
     classSource: { type: ["string", "null"], enum: ["analyzer", "human", null] },
+    // completeness is the verdict→matrix key (Step 6). It is MAPPED from the
+    // holistic judge's verdict (GGC-100): verdict=="ready" ⇒ "complete",
+    // verdict=="needs-revision" ⇒ "incomplete".
     completeness: { type: "string", enum: ["complete", "incomplete"] },
+    // missing[] = the judge's concrete revision asks (phrased as next steps);
+    // warnings[] = non-blocking flags (lane-fit / owner / vagueness) that do
+    // NOT change the verdict but render as §A `⚠` bullets. reasons[] is the
+    // write-contract alias the write stage passes to the need-revision comment;
+    // the analyze stage MUST set reasons := missing (same content).
+    missing: { type: "array", items: { type: "string" } },
+    warnings: { type: "array", items: { type: "string" } },
     reasons: { type: "array", items: { type: "string" } },
     // human-tail disambiguation (Q3): which need-revision flavor the comment must use.
     revisionKind: { type: ["string", "null"], enum: ["content-incomplete", "cannot-classify", null] },
@@ -182,9 +192,18 @@ async function analyzeTicket(item) {
       `  port; net-new → feature; inconclusive/partial → human tail. Confident`,
       `  port/feature → wroteClass:true + classLabel. Else → wroteClass:false,`,
       `  revisionKind:"cannot-classify".`,
-      `- Step 3: completeness against the resolved lane's checklist (+ the GGC-58`,
-      `  logic-prediction sub-judgment for design bug). reasons[] = the missing`,
-      `  items. If incomplete for content reasons set revisionKind:"content-incomplete".`,
+      `- Step 3 (GGC-100): completeness is ONE holistic LLM judge per ticket —`,
+      `  apply Step 3.1 (static rubric + judging principles: fail-safe / bias-to-`,
+      `  ready; you cannot see attachments; vagueness is a warning, not a block) +`,
+      `  Step 3.2 (per-ticket judge), NOT a per-lane pass/fail checklist (the`,
+      `  per-lane lists are guidance inside the prompt only). The judge emits`,
+      `  { verdict: ready|needs-revision, lane_fits, owner, missing[], warnings[],`,
+      `  confidence } plus the GGC-58 logic-prediction sub-judgment for design bug.`,
+      `  MAP to the schema: completeness="complete" when verdict=="ready",`,
+      `  "incomplete" when verdict=="needs-revision"; missing[] = the concrete`,
+      `  revision asks; warnings[] = the non-blocking flags; reasons[] := missing[]`,
+      `  (same content — the write-contract alias). If incomplete for content`,
+      `  reasons set revisionKind:"content-incomplete".`,
       `- Step 4: capture blocking edges (explicit relations of kind blocks/`,
       `  blocked-by); for each, resolve the target's live status → open:true unless`,
       `  the target is Done/canceled. Inferred edges are report-only — never set`,
@@ -215,6 +234,8 @@ async function analyzeTicket(item) {
       classLabel: null,
       classSource: null,
       completeness: "incomplete",
+      missing: ["analyze agent died (null result)"],
+      warnings: [],
       reasons: ["analyze agent died (null result)"],
       revisionKind: null,
       blockingEdges: [],
@@ -248,6 +269,7 @@ async function writeTicket(row, graphInfo) {
       `  target_analyzer_label=${target}`,
       `  wroteClass=${row.wroteClass} classLabel=${row.classLabel || "—"} classSource=${row.classSource || "—"}`,
       `  revisionKind=${row.revisionKind || "—"} reasons=${JSON.stringify(row.reasons || [])}`,
+      `  warnings=${JSON.stringify(row.warnings || [])}`,
       `Do, in order:`,
       `1. Step 8.2 pre-write check INCLUDING F5: re-fetch comments+labels; the`,
       `   FRESH label set is the authoritative rewrite base. Hard conflict`,
@@ -264,8 +286,11 @@ async function writeTicket(row, graphInfo) {
       `   Already at target → skip the label write.`,
       `5. Post the ticket-analysis:v1 comment (§A). For need-revision, use the`,
       `   revisionKind to pick the wording: "content-incomplete" lists what to`,
-      `   add; "cannot-classify" says the lane couldn't be auto-classified and`,
-      `   asks the human to set one (+ suggested lane). NEVER write an assignee.`,
+      `   add (one Completeness bullet per reasons[] ask); "cannot-classify" says`,
+      `   the lane couldn't be auto-classified and asks the human to set one`,
+      `   (+ suggested lane). On ANY verdict, render each warnings[] entry as a`,
+      `   non-blocking "⚠ ..." Completeness bullet (GGC-100 — warnings never imply`,
+      `   need-revision). NEVER write an assignee.`,
       `Return WRITE_SCHEMA: outcome analyzed|skipped|errored, targetLabel, detail.`,
     ].join("\n"),
     {
