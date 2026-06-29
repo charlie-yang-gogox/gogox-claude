@@ -287,6 +287,21 @@ async function analyzeTicket(item) {
       `  NOT downgrade: keep verdict="ready" and record the out-of-repo read as a`,
       `  warnings[] entry (bias-to-ready). In-repo lane mismatch is NEVER an owner`,
       `  block — it stays ready + a warnings[] entry / reclassify suggestion.`,
+      `- Step 3.2 MALFORMED-OUTPUT FAIL-SAFE (GGC-104): the Step 3 judge is a`,
+      `  free-form call. After it replies, parse + schema-validate it (verdict in`,
+      `  {ready,needs-revision}; confidence in {high,med,low}; owner in the`,
+      `  platform-relative enum; owner_scope in {in-repo,out-of-repo,unclear}; all`,
+      `  required). Unparseable / schema-invalid → re-issue the SAME judge prompt`,
+      `  ONCE with an appended "Return ONLY the JSON object" reminder. If the retry`,
+      `  ALSO fails, DEGRADE to the SAFE verdict (never strand a good ticket): treat`,
+      `  the judge as having returned verdict=ready ⇒ completeness:"complete",`,
+      `  missing:[], confidence:"low", and APPEND`,
+      `  "judge output unparseable — auto-passed per fail-safe" to warnings[] (the`,
+      `  write stage renders it as a §A ⚠ bullet, so the posted comment says the`,
+      `  ticket auto-passed). Do NOT set completeness:"incomplete" on a parse`,
+      `  failure, and do NOT throw/return null — emit the fail-safe row so the`,
+      `  ticket is never dropped. (owner_scope:unclear + confidence:low here can`,
+      `  never trip the GGC-101 owner block, which needs out-of-repo + high.)`,
       `- Step 4: capture blocking edges (explicit relations of kind blocks/`,
       `  blocked-by); for each, resolve the target's live status → open:true unless`,
       `  the target is Done/canceled. Inferred edges are report-only — never set`,
@@ -306,8 +321,17 @@ async function analyzeTicket(item) {
       schema: ANALYZE_SCHEMA,
     },
   );
-  // agent() returns null on user-skip / terminal API error — synthesize an
-  // errored row so the barrier never NPEs and the batch is not aborted (AC1).
+  // agent() returns null on user-skip / terminal API error, OR when the
+  // StructuredOutput schema retries are EXHAUSTED (the judge never produced a
+  // schema-valid ANALYZE_SCHEMA object). The latter is exactly the GGC-104
+  // malformed-judge case at the OUTER (tool) layer — the in-prompt fail-safe
+  // above handles a malformed Step-3 judge that the agent still recovers from;
+  // this handles the agent itself failing to emit a valid row. Either way we
+  // must NOT strand the ticket: synthesize the FAIL-SAFE row (verdict ready ⇒
+  // completeness:"complete", confidence:"low") with the auto-pass warning, so
+  // the ticket flows through the normal ready-to-* write path and the posted
+  // comment renders the ⚠ auto-passed bullet — never a silent drop, never a
+  // spurious need-revision (a parse failure must never strand a good ticket).
   if (!r) {
     return {
       ticketId: id,
@@ -318,13 +342,13 @@ async function analyzeTicket(item) {
       wroteClass: false,
       classLabel: null,
       classSource: null,
-      completeness: "incomplete",
-      missing: ["analyze agent died (null result)"],
-      warnings: [],
-      reasons: ["analyze agent died (null result)"],
-      owner: null,
-      owner_scope: null,
-      confidence: null,
+      completeness: "complete",
+      missing: [],
+      warnings: ["judge output unparseable — auto-passed per fail-safe"],
+      reasons: [],
+      owner: "unclear",
+      owner_scope: "unclear",
+      confidence: "low",
       revisionKind: null,
       blockingEdges: [],
       error: "analyze-agent-null",
