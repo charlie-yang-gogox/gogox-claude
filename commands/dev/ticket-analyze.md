@@ -168,6 +168,49 @@ that marker, a human overrode it → the classification is **human-owned and nev
 re-flipped** (same anti-re-flip invariant as `analyze-hold`, applied to
 classification). port / feature are never auto-written (deferred to GGC-98).
 
+**Execution order — the gate sequence the holistic judge (GGC-100) slots INTO
+(GGC-105, binding invariant).** The free holistic judge (Step 3) is powerful
+enough that, run too early, it could re-qualify a human-parked ticket or silently
+undo the GGC-37/58 design-bug hold by deciding `ready-to-dev` on its own. It must
+not. The judge replaces ONLY the **content judgment _inside_ Step 3** — it does
+NOT subsume the deterministic gates that bracket it. Every sweep (single AND
+batch — the fan-out enforces the same order, see Step 1 batch note) runs these in
+this exact order, and **no later stage may re-decide what an earlier one settled**:
+
+```
+1. analyze-hold guard (Step 2 :~420 / Step 1.5.5 discovery — GGC-60)
+     human-parked → DROPPED. The judge NEVER runs on it; no label, no comment.
+     TOP precedence — overrides every other label incl. need-revision re-evaluate.
+2. re-analysis precedence table (:~152-161 / Step 1.5.5 — decides who reaches Step 3)
+     ready-to-* / need-spec-review / dispatcher-*-in-flight → SKIPPED pre-judge.
+     fresh / need-revision / need-dependency → kept (and NOT also analyze-hold).
+2.9 content-hash skip gate (Step 2.9 — GGC-103)
+     content_sha match → SKIP the judge (carry forward the prior verdict). It is
+     fine to short-circuit the judge here, but this gate MUST NOT bypass (1) the
+     analyze-hold guard [already dropped held tickets before it runs — Step 2.9.5],
+     nor (b) the deterministic need-dependency blocker re-fetch [hash-INDEPENDENT;
+     Steps 4-5 still run on a hash match so a closed blocker still flips to ready].
+── 3. Step 3: holistic judge LLM call (GGC-100) — the ONLY free-judgment stage ──
+     decides completeness; its `ready`/`needs-revision` is a CANDIDATE verdict.
+4. Design-bug hold override — deterministic POST-judge override gate
+   (Step 6 + Step 8.2b · GGC-37 reactive ui-blocked marker + GGC-58 predictive
+    logic-prediction). A judge `ready` on a `design bug` is STILL downgraded to
+    need-revision (or silently held) here. This is NOT a rule folded into the free
+    judge — it is a deterministic gate that overrides the judge AFTER it speaks:
+      (a) reactive — `<!-- dispatch-triage-ui-blocked -->` marker present (GGC-37)
+          → silent HOLD (Step 8.2b). (a) wins if both fire.
+      (b) predictive — Step 3 logic-prediction sub-judgment returned needs-logic
+          at HIGH confidence (GGC-58) → downgrade to need-revision + reclassify
+          comment (Step 6).
+   [The Out-of-repo owner gate (GGC-101) is the other deterministic post-judge
+    override here — same slot, separate axis: see the Step 6 owner gate.]
+```
+
+The analyzer still **NEVER adds or removes `analyze-hold`** (human-owned, §C) and
+never auto-flips a classification (GGC-96 stickiness). The GGC-37/58 gate stays a
+deterministic post-judge override — a free judge that read the design bug as
+`ready` does NOT get to ship it past the hold.
+
 ---
 
 ## Steps
@@ -574,9 +617,15 @@ comment (the analyzer is otherwise stateless — the marker is the only state).
    flip is driven by deterministic blocker state, not by re-judging content, so it
    does not flap.
 
-5. **`analyze-hold` precedence is unchanged.** The Step 2 universal
-   `analyze-hold` guard has already dropped human-parked tickets before this step;
-   this gate never runs on them.
+5. **`analyze-hold` precedence is unchanged — the hash skip never bypasses it
+   (GGC-105).** The Step 2 universal `analyze-hold` guard has already dropped
+   human-parked tickets BEFORE this step, so this gate never runs on them: the
+   content-hash short-circuit can suppress the judge, but it can never re-admit a
+   ticket the analyze-hold guard already removed. Likewise it never bypasses the
+   deterministic blocker re-fetch (item 4 above) — the two are the only gates the
+   hash skip must defer to. This is the coherent ordering the GGC-105 execution-
+   order invariant (top of file) requires: `analyze-hold → re-analysis precedence
+   → [2.9 hash skip] → judge → design-bug/owner post-judge override`.
 
 `--dry-run`: still compute the hash and REPORT the skip/re-judge decision (the
 `would-write` column reflects "judge skipped — content unchanged" on a match),
@@ -966,6 +1015,14 @@ Build a directed graph over `<queue>` using **blocking edges only**
 
 Combine Step 3 + Step 5 per ticket through the decision matrix (top of
 file) → `{verdict, target_label, reasons, blockers, order_position}`.
+
+**Both gates below are deterministic POST-judge override gates (GGC-105).** They
+run AFTER the Step 3 holistic judge, on its candidate verdict — they are NOT rules
+folded into the free judge. A judge that returned `ready` does NOT get to write
+`ready-to-dev` past either gate: each can still downgrade (or silently hold) a
+`ready` candidate. This is the execution-order invariant at the top of the file —
+the judge replaces only the content judgment inside Step 3; the design-bug hold
+(GGC-37/58) and the out-of-repo owner block (GGC-101) override it here.
 
 The **Design-bug ready-to-dev gate** (contract, top of file) has two inputs,
 both evaluated for a `design bug` (ui-tweak lane) ticket whose `target_label`
