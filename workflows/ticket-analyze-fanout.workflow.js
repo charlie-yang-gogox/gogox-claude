@@ -62,8 +62,21 @@ const ANALYZE_SCHEMA = {
     missing: { type: "array", items: { type: "string" } },
     warnings: { type: "array", items: { type: "string" } },
     reasons: { type: "array", items: { type: "string" } },
+    // Step 3.2 owner signal (GGC-101). owner = the real owner of the work,
+    // platform-relative (do NOT hardcode a flutter enum — GGC-102 owns the full
+    // handling). owner_scope = is that owner this repo or another platform/team.
+    // confidence carries the judge's certainty. The owner-block gate (Step 6)
+    // downgrades to need-revision ONLY for owner_scope="out-of-repo" AND
+    // confidence="high" AND the confirming decorrelated 2nd vote agreed — which
+    // the analyze agent applies to its own verdict→completeness mapping (so the
+    // write stage's incomplete→need-revision path carries it). owner_scope is
+    // passed through so the write comment uses the reclassify-style wording.
+    owner: { type: ["string", "null"] },
+    owner_scope: { type: ["string", "null"], enum: ["in-repo", "out-of-repo", "unclear", null] },
+    confidence: { type: ["string", "null"], enum: ["high", "med", "low", null] },
     // human-tail disambiguation (Q3): which need-revision flavor the comment must use.
-    revisionKind: { type: ["string", "null"], enum: ["content-incomplete", "cannot-classify", null] },
+    // "owner-out-of-repo" (GGC-101) is the owner-block reclassify flavor.
+    revisionKind: { type: ["string", "null"], enum: ["content-incomplete", "cannot-classify", "owner-out-of-repo", null] },
     // blocking edges for the Step 5 graph barrier. `open` = target still open.
     blockingEdges: {
       type: "array",
@@ -197,13 +210,29 @@ async function analyzeTicket(item) {
       `  ready; you cannot see attachments; vagueness is a warning, not a block) +`,
       `  Step 3.2 (per-ticket judge), NOT a per-lane pass/fail checklist (the`,
       `  per-lane lists are guidance inside the prompt only). The judge emits`,
-      `  { verdict: ready|needs-revision, lane_fits, owner, missing[], warnings[],`,
-      `  confidence } plus the GGC-58 logic-prediction sub-judgment for design bug.`,
-      `  MAP to the schema: completeness="complete" when verdict=="ready",`,
-      `  "incomplete" when verdict=="needs-revision"; missing[] = the concrete`,
-      `  revision asks; warnings[] = the non-blocking flags; reasons[] := missing[]`,
-      `  (same content — the write-contract alias). If incomplete for content`,
-      `  reasons set revisionKind:"content-incomplete".`,
+      `  { verdict: ready|needs-revision, lane_fits, owner, owner_scope, missing[],`,
+      `  warnings[], confidence } plus the GGC-58 logic-prediction sub-judgment for`,
+      `  design bug. MAP to the schema: completeness="complete" when`,
+      `  verdict=="ready", "incomplete" when verdict=="needs-revision"; missing[] =`,
+      `  the concrete revision asks; warnings[] = the non-blocking flags; reasons[]`,
+      `  := missing[] (same content — the write-contract alias). If incomplete for`,
+      `  content reasons set revisionKind:"content-incomplete". Also return owner,`,
+      `  owner_scope (in-repo|out-of-repo|unclear, platform-relative to THIS repo —`,
+      `  do NOT hardcode a flutter enum), and confidence.`,
+      `- Step 3.2 OUT-OF-REPO OWNER BLOCK (GGC-101) — the ONE completeness sub-`,
+      `  decision with a 2nd vote: when the judge returns owner_scope:"out-of-repo"`,
+      `  AND confidence:"high", run a CONFIRMING decorrelated 2nd vote — re-judge`,
+      `  ONLY the owner-scope question independently (do not look at the first`,
+      `  pass's answer; emulate a different-tier model, mirroring the Step 2.7`,
+      `  Gate-1 / audit.md both-must-agree contract). ONLY when both votes agree`,
+      `  out-of-repo + high-confidence: downgrade — set verdict="needs-revision"`,
+      `  ⇒ completeness:"incomplete", revisionKind:"owner-out-of-repo", and put the`,
+      `  reclassify ask in reasons[] ("owner appears to be <owner>; not actionable`,
+      `  in this repo — re-assign or re-scope; if it really is a <platform> change,`,
+      `  state which one"). If the 2nd vote DISAGREES or is not high-confidence, do`,
+      `  NOT downgrade: keep verdict="ready" and record the out-of-repo read as a`,
+      `  warnings[] entry (bias-to-ready). In-repo lane mismatch is NEVER an owner`,
+      `  block — it stays ready + a warnings[] entry / reclassify suggestion.`,
       `- Step 4: capture blocking edges (explicit relations of kind blocks/`,
       `  blocked-by); for each, resolve the target's live status → open:true unless`,
       `  the target is Done/canceled. Inferred edges are report-only — never set`,
@@ -237,6 +266,9 @@ async function analyzeTicket(item) {
       missing: ["analyze agent died (null result)"],
       warnings: [],
       reasons: ["analyze agent died (null result)"],
+      owner: null,
+      owner_scope: null,
+      confidence: null,
       revisionKind: null,
       blockingEdges: [],
       error: "analyze-agent-null",
@@ -251,13 +283,17 @@ async function analyzeTicket(item) {
 async function writeTicket(row, graphInfo) {
   const id = row.ticketId;
   const g = graphInfo.get(id) || { blocked: false, blockers: [], cycle: false };
-  // Step 6 decision matrix → analyzer target label.
+  // Step 6 decision matrix → analyzer target label. The Out-of-repo owner gate
+  // (GGC-101) and the GGC-58 design-bug (b) gate were already folded into
+  // `completeness` by the analyze stage (both downgrade verdict→needs-revision
+  // ⇒ completeness:"incomplete"), so the incomplete→need-revision row below
+  // carries them; the write agent uses revisionKind to pick the comment wording.
   let target;
   if (row.completeness === "incomplete") target = "need-revision";
   else if (g.blocked) target = "need-dependency";
   else target = row.lane === "port" ? "ready-to-port" : "ready-to-dev";
-  // (the design-bug ready-to-dev gate / GGC-37+58 is applied inside the agent
-  // per Step 6/8.2b — pass the lane + reasons so it can hold when required.)
+  // (the design-bug ready-to-dev MARKER gate / GGC-37 8.2b is applied inside the
+  // agent — pass the lane + reasons so it can hold when required.)
 
   const res = await agent(
     [
@@ -270,6 +306,7 @@ async function writeTicket(row, graphInfo) {
       `  wroteClass=${row.wroteClass} classLabel=${row.classLabel || "—"} classSource=${row.classSource || "—"}`,
       `  revisionKind=${row.revisionKind || "—"} reasons=${JSON.stringify(row.reasons || [])}`,
       `  warnings=${JSON.stringify(row.warnings || [])}`,
+      `  owner=${row.owner || "—"} owner_scope=${row.owner_scope || "—"} confidence=${row.confidence || "—"}`,
       `Do, in order:`,
       `1. Step 8.2 pre-write check INCLUDING F5: re-fetch comments+labels; the`,
       `   FRESH label set is the authoritative rewrite base. Hard conflict`,
@@ -288,7 +325,10 @@ async function writeTicket(row, graphInfo) {
       `   revisionKind to pick the wording: "content-incomplete" lists what to`,
       `   add (one Completeness bullet per reasons[] ask); "cannot-classify" says`,
       `   the lane couldn't be auto-classified and asks the human to set one`,
-      `   (+ suggested lane). On ANY verdict, render each warnings[] entry as a`,
+      `   (+ suggested lane); "owner-out-of-repo" (GGC-101) posts the reclassify-`,
+      `   style ask from reasons[] — "owner appears to be ${row.owner || "<owner>"};`,
+      `   not actionable in this repo — re-assign or re-scope; if it really is a`,
+      `   <platform> change, state which one". On ANY verdict, render each warnings[] entry as a`,
       `   non-blocking "⚠ ..." Completeness bullet (GGC-100 — warnings never imply`,
       `   need-revision). NEVER write an assignee.`,
       `Return WRITE_SCHEMA: outcome analyzed|skipped|errored, targetLabel, detail.`,
