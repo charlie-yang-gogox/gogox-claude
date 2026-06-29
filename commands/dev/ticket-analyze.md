@@ -537,10 +537,29 @@ irreversible writes; completeness is not one.
 #### Step 3.1: Static rubric + principles (prompt-cache prefix)
 
 The block below is **identical for every ticket in a sweep** — the per-lane
-guidance, the platform reinterpretation, and the judging principles never vary
-within a run. Hoist it **above** the per-ticket text as a prompt-cache
-breakpoint so its tokens are paid once per sweep, not N× (one cache prefix, the
-per-ticket payload appended after it).
+guidance, the platform-selected rubric, and the judging principles never vary
+within a run (a sweep is single-repo, so the resolved `<platform>` is constant
+across it). Hoist it **above** the per-ticket text as a prompt-cache breakpoint
+so its tokens are paid once per sweep, not N× (one cache prefix, the per-ticket
+payload appended after it).
+
+**Rubric is composed from the resolved `<platform>` (GGC-102).** `<platform>`
+is resolved once per run (Step 1.5.1 in batch mode; single mode resolves it the
+same way from the repo profile) — **no new configuration**. Assembling the
+judge prompt's rubric block, **select exactly ONE rubric variant by that
+`<platform>`** and inject it as the prefix's "what a good `<lane>` ticket has"
+section — do NOT concatenate both, and do NOT default to the app rubric:
+
+- `<platform> == prompt` (e.g. gogox-claude itself) → the **prompt rubric**
+  (Where / What / done-when; build & Figma dropped — see the prompt block below).
+- any **app platform** (`flutter` / `android` / `ios`, the default) → the
+  **app rubric** (build / repro-env / Figma — the per-lane guidance below).
+
+The two variants are spelled out under "Per-lane guidance" (app) and "Platform
+reinterpretation — `platform: prompt` repos" (prompt) immediately below; the
+selected one is the rubric the judge sees, the other is omitted. This is what
+keeps a gogox-claude (`prompt`) `Feature`/`Bug` ticket from being judged against
+the app rubric and falsely flagged for missing repro-env / Figma.
 
 **Judging principles (load-bearing — the bias that makes the free judge safe):**
 
@@ -552,10 +571,11 @@ per-ticket payload appended after it).
    GGC-58). This is the acceptance test for the whole judge.
 2. **Owner / lane-fit — block ONLY a high-confidence out-of-repo owner (GGC-101).**
    Judge two things the matrix needs: does the ticket fit its current `<lane>`
-   (`lane_fits`), and who is the real `owner` of the work (`owner`, recorded
-   platform-relative — see Step 3.2; the full platform-relative enum handling is
-   GGC-102, so do NOT hardcode a flutter-only owner set here). Then split a
-   mismatch by **where the real owner lives**:
+   (`lane_fits`), and who is the real `owner` of the work (`owner`, drawn from
+   the **platform-relative owner enum** selected by the resolved `<platform>` —
+   see Step 3.2 for the per-platform enums and their `owner_scope` mapping; the
+   enum is `prompt | other-tooling | unclear` on a prompt repo, never a
+   flutter-only set). Then split a mismatch by **where the real owner lives**:
    - **In-repo lane mismatch** — a `Bug` that reads as a feature, a `design bug`
      that needs logic, any "wrong lane but still this repo" case: this is NOT an
      owner block. Keep `verdict: ready` and surface the read as a `warnings[]`
@@ -594,9 +614,10 @@ per-ticket payload appended after it).
    comment that says "needs human judgment: `<why>`" (`confidence:low` routes to
    `needs-revision`, not a new state — there is no 5th label).
 
-**Per-lane guidance — "what a good `<lane>` ticket usually has"** (reference for
-the judge, NOT a checklist of gates; a ticket missing an item is a *prompt to
-weigh it*, not an automatic block):
+**Per-lane guidance — "what a good `<lane>` ticket usually has"** — this is the
+**app rubric variant** (selected when `<platform>` is an app platform; reference
+for the judge, NOT a checklist of gates; a ticket missing an item is a *prompt
+to weigh it*, not an automatic block):
 
 - **port** (feeds `/port:ff`): an origin feature reference (the source
   feature/screens `/port:explore` will locate in the origin codebase); an
@@ -618,9 +639,12 @@ ticket, and when in doubt whether UI is implied, do not block (a missing Figma
 link surfaces again at `/dev:figma` with a better error). This is exactly the
 kind of item the judge weighs, never gates.
 
-**Platform reinterpretation — `platform: prompt` repos** (e.g. gogox-claude
-itself; resolved `<platform>` at Step 1.5.1). The artifacts are prompts / skill
-bodies / workflow scripts, NOT an app, so the guidance above is reinterpreted:
+**Platform reinterpretation — `platform: prompt` repos** — this is the **prompt
+rubric variant** (selected, and used IN PLACE OF the app rubric above, when
+`<platform> == prompt`; e.g. gogox-claude itself, resolved at Step 1.5.1). The
+artifacts are prompts / skill bodies / workflow scripts, NOT an app, so the
+per-lane guidance is reinterpreted as follows — when this variant is selected,
+the judge sees ONLY this, never the app build/Figma rubric:
 
 - **Ignore** device / build / version / OS-environment (there is no build) and
   Figma / before-after references (there is no UI) — never treat their absence
@@ -695,7 +719,7 @@ the cached prefix and emit:
 ```
 { verdict:     ready | needs-revision,
   lane_fits:   bool,                              # does the ticket fit its current lane?
-  owner:       <platform-relative> | unclear,     # who really owns the work (see owner_scope)
+  owner:       <one of the platform-relative owner enum below>,  # who really owns the work (see owner_scope)
   owner_scope: in-repo | out-of-repo | unclear,   # GGC-101: is `owner` this repo, or another platform/team?
   missing:     [concrete revision asks],          # phrased as next-step asks, not terse "missing X"
   warnings:    [non-blocking flags],              # lane-fit / owner / vagueness reads that DON'T block
@@ -710,14 +734,35 @@ NOT change the verdict *on their own* — a `lane_fits:false` in-repo mismatch, 
 vague-but-present acceptance signal, and a med/low-confidence out-of-repo read
 all land here as non-blocking flags.
 
-**`owner` is platform-relative (GGC-101 / GGC-102 boundary).** Record `owner`
-as the real owner of the work relative to THIS repo's platform — e.g. for the
-`prompt` platform (gogox-claude) the in-repo owner is "prompt / skill / workflow
-authoring", and out-of-repo owners are anything else (`backend`, `ios-signing`,
-`ops`, a flutter/android/ios app change, …). Do NOT hardcode a flutter-only
-owner enum: the full platform-relative owner handling is GGC-102; this step only
-needs the coarse `owner_scope` split (in-repo vs out-of-repo) that the matrix
-consumes, computed consistently with how GGC-100 left `owner`.
+**`owner` is platform-relative — the enum is selected by the resolved
+`<platform>` (GGC-102).** Just as the rubric (Step 3.1) is composed from
+`<platform>`, the `owner` enum the judge may emit is **platform-relative** — an
+app repo and a `prompt` repo do not share an owner vocabulary (`backend` /
+`ios-signing` are meaningless in a prompt repo; `prompt` / `other-tooling` are
+meaningless in an app repo). Select the enum by the same resolved `<platform>`,
+no new configuration:
+
+- **app platform** (`flutter` / `android` / `ios`, the default):
+  `flutter | backend | ios-signing | ops | design | unclear`.
+- **`prompt` platform** (gogox-claude itself): `prompt | other-tooling | unclear`
+  — `prompt` is the in-repo owner (prompt / skill body / workflow authoring),
+  `other-tooling` is any other tooling/infra outside this repo, and there is no
+  `backend` / `ios-signing` / `design` owner (those describe an app's work).
+
+`owner_scope` is then derived from the selected enum, **consistently per
+platform** — the in-repo owner maps to `owner_scope: in-repo`, every other
+enum value to `out-of-repo`, and `unclear` to `owner_scope: unclear`:
+
+- app platform: `flutter` (this repo's own platform) ⇒ `in-repo`; `backend` /
+  `ios-signing` / `ops` / `design` ⇒ `out-of-repo`. (On a non-flutter app repo,
+  the repo's own app platform is the in-repo value by the same rule.)
+- `prompt` platform: `prompt` ⇒ `in-repo`; `other-tooling` ⇒ `out-of-repo`.
+
+This is the platform-correct enum the GGC-101 out-of-repo owner-block reads:
+"out-of-repo" now means the *platform-correct* set of foreign owners (e.g. on a
+prompt repo a `backend`/`ios-signing` read is impossible — those values are not
+in the enum — so the block fires on `other-tooling`, never on an app-only owner
+value the judge could otherwise hallucinate against the wrong vocabulary).
 
 **Out-of-repo owner-block — the ONE completeness sub-decision with a 2nd vote
 (GGC-101).** Because flipping a ticket to `need-revision` on owner grounds pulls

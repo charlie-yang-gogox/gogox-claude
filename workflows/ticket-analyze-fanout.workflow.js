@@ -62,9 +62,13 @@ const ANALYZE_SCHEMA = {
     missing: { type: "array", items: { type: "string" } },
     warnings: { type: "array", items: { type: "string" } },
     reasons: { type: "array", items: { type: "string" } },
-    // Step 3.2 owner signal (GGC-101). owner = the real owner of the work,
-    // platform-relative (do NOT hardcode a flutter enum — GGC-102 owns the full
-    // handling). owner_scope = is that owner this repo or another platform/team.
+    // Step 3.2 owner signal (GGC-101). owner = the real owner of the work, drawn
+    // from the PLATFORM-RELATIVE owner enum selected by the resolved <platform>
+    // (GGC-102): app platform → flutter|backend|ios-signing|ops|design|unclear;
+    // prompt platform → prompt|other-tooling|unclear (backend/ios-signing/design
+    // are meaningless there). owner_scope = is that owner this repo or another
+    // platform/team — derived from the enum (the repo's own platform owner ⇒
+    // in-repo, every other value ⇒ out-of-repo, unclear ⇒ unclear).
     // confidence carries the judge's certainty. The owner-block gate (Step 6)
     // downgrades to need-revision ONLY for owner_scope="out-of-repo" AND
     // confidence="high" AND the confirming decorrelated 2nd vote agreed — which
@@ -209,16 +213,27 @@ async function analyzeTicket(item) {
       `  apply Step 3.1 (static rubric + judging principles: fail-safe / bias-to-`,
       `  ready; you cannot see attachments; vagueness is a warning, not a block) +`,
       `  Step 3.2 (per-ticket judge), NOT a per-lane pass/fail checklist (the`,
-      `  per-lane lists are guidance inside the prompt only). The judge emits`,
+      `  per-lane lists are guidance inside the prompt only).`,
+      `  PLATFORM-AWARE (GGC-102): resolve <platform> from the repo profile`,
+      "  (.gogox-claude.yaml `platform:`, else the registry entry — no new config)",
+      `  and SELECT exactly ONE rubric variant by it: <platform>==prompt → the`,
+      `  prompt rubric (Where / What / done-when; build & Figma DROPPED — never`,
+      `  flag a prompt-repo Feature/Bug for missing repro-env / Figma); any app`,
+      `  platform → the build/repro-env/Figma rubric. Do NOT show the judge both.`,
+      `  The judge emits`,
       `  { verdict: ready|needs-revision, lane_fits, owner, owner_scope, missing[],`,
       `  warnings[], confidence } plus the GGC-58 logic-prediction sub-judgment for`,
       `  design bug. MAP to the schema: completeness="complete" when`,
       `  verdict=="ready", "incomplete" when verdict=="needs-revision"; missing[] =`,
       `  the concrete revision asks; warnings[] = the non-blocking flags; reasons[]`,
       `  := missing[] (same content — the write-contract alias). If incomplete for`,
-      `  content reasons set revisionKind:"content-incomplete". Also return owner,`,
-      `  owner_scope (in-repo|out-of-repo|unclear, platform-relative to THIS repo —`,
-      `  do NOT hardcode a flutter enum), and confidence.`,
+      `  content reasons set revisionKind:"content-incomplete". Also return owner`,
+      `  from the PLATFORM-RELATIVE owner enum selected by <platform> (GGC-102):`,
+      `  app platform → flutter|backend|ios-signing|ops|design|unclear; prompt`,
+      `  platform → prompt|other-tooling|unclear (no backend/ios-signing/design`,
+      `  there). owner_scope is derived from that enum: the repo's own platform`,
+      `  owner (flutter on an app repo / prompt on a prompt repo) ⇒ in-repo, every`,
+      `  other enum value ⇒ out-of-repo, unclear ⇒ unclear. Also return confidence.`,
       `- Step 3.2 OUT-OF-REPO OWNER BLOCK (GGC-101) — the ONE completeness sub-`,
       `  decision with a 2nd vote: when the judge returns owner_scope:"out-of-repo"`,
       `  AND confidence:"high", run a CONFIRMING decorrelated 2nd vote — re-judge`,
