@@ -1,6 +1,6 @@
 ---
 name: ui-tweak-fast
-description: "Self-contained, portable variant of /ui-tweak for UI-Designer-safe codebase edits. ONE file runs the whole flow (parse → worktree → apply → iterate → preview → audit → ship) with every step's instructions inlined — an agent never has to read ff/start/apply/preview/audit separately. Given a UI change as free text, a Linear/Jira ticket (ID/URL), and/or a Figma link, it edits ONLY the UI (visual values, layout, structure), confirms it compiles, and is blocked from touching logic by a deferred two-judge audit (kept model-agnostic so it runs under any host's own model). Three things make it 'fast': (1) one read instead of six; (2) device previews build+run from a PERSISTENT per-repo clone (changed files are synced in from the worktree) so .dart_tool/build caches survive across tickets instead of recompiling cold in every fresh worktree, and after the first preview a 'more changes' round HOT-RESTARTS the still-running app (~seconds) instead of cold-rebuilding; (3) the designer can pick a 'Show me on iPhone + Android' card answer to preview on an iOS simulator AND an Android emulator at once (no flag to type). Portable across hosts (no harness-specific tools or pinned models). Use when a designer says 'make the order-page button 5dp bigger', 'change this color', passes a ticket like CAF-1234 describing a UI tweak, or gives a Figma frame to match — and wants the fast, single-file, portable flow."
+description: "Self-contained, portable variant of /ui-tweak for UI-Designer-safe codebase edits. ONE file runs the whole flow (parse → worktree → triage → apply → iterate → preview → audit → ship) with every step's instructions inlined — an agent never has to read ff/start/detect/apply/preview/audit separately. Given a UI change as free text, a Linear/Jira ticket (ID/URL), and/or a Figma link, it edits ONLY the UI (visual values, layout, structure), confirms it compiles, and is blocked from touching logic by a deferred two-judge audit (kept model-agnostic so it runs under any host's own model). Three things make it 'fast': (1) one read instead of six; (2) device previews build+run from a PERSISTENT per-repo clone (changed files are synced in from the worktree) so .dart_tool/build caches survive across tickets instead of recompiling cold in every fresh worktree, and after the first preview a 'more changes' round HOT-RESTARTS the still-running app (~seconds) instead of cold-rebuilding; (3) the designer can pick a 'Show me on iPhone + Android' card answer to preview on an iOS simulator AND an Android emulator at once (no flag to type). Portable across hosts (no harness-specific tools or pinned models). Use when a designer says 'make the order-page button 5dp bigger', 'change this color', passes a ticket like CAF-1234 describing a UI tweak, or gives a Figma frame to match — and wants the fast, single-file, portable flow."
 ---
 
 <!--
@@ -29,7 +29,7 @@ description: "Self-contained, portable variant of /ui-tweak for UI-Designer-safe
 
 `--auto` → unattended, no cards. **There is no device flag** — when the designer asks to see the
 change, the "show me" card offers the device choice (one phone, or **iOS + Android at once**) as an
-answer; designers never type a flag (Step 4).
+answer; designers never type a flag (Step 5).
 
 ## What these instructions mean operationally — read once, applies everywhere below
 
@@ -43,7 +43,7 @@ below to whatever your host environment provides.
 | worktree / preview-clone paths | If your host moves the session into the worktree on `cd`, later relative paths work. If it does NOT, resolve **absolute** paths and pass them to every Read/Write/Edit and `working_directory`, and after creating the worktree tell the designer its path (best UX: open that folder). |
 | fan-out / parallel orchestration | **never used here** — this skill has no fan-out. |
 | an MCP tool (Linear / Notion / Figma) | Use your host's MCP for that service (resolve the ticket MCP via `_ticket-lib.md`). If a referenced MCP is **absent**, take the step's documented degrade (ticket fetch → ask in chat; Figma → DEGRADED; Notion login → fail-silent login wall) — never hard-error. |
-| reasoning model for judges | **never pin a model** — decorrelation is by *lens*, not tier (see Step 6). |
+| reasoning model for judges | **never pin a model** — decorrelation is by *lens*, not tier (see Step 7). |
 
 **Three execution rules that make this file portable:**
 
@@ -54,7 +54,7 @@ below to whatever your host environment provides.
    your host lets you choose models you MAY *optionally* run the two judges on different models for extra
    decorrelation (opt-in only — never required). **Do NOT spawn a preset/named subagent type whose
    definition pins a specific model** — that re-introduces a host-specific model pin this skill promises
-   to avoid. Spawn **generic** read-only subagents and paste the lens prompts inline (Step 6c / 3b already
+   to avoid. Spawn **generic** read-only subagents and paste the lens prompts inline (Step 7c / 4b already
    contain them).
 2. **Shell state does NOT persist between separate command/bash invocations** (true on every host). So
    **every bash block re-derives the vars it needs at its top** — do not assume
@@ -80,11 +80,16 @@ below to whatever your host environment provides.
 ## The guarantee (read this first)
 
 Accepts **any UI-form change** and is built so a designer **cannot ship broken logic**. There is **no
-edit-time hook** — enforcement is deferred to two checks at different times:
+edit-time hook** — a cheap **upfront triage** catches the obvious mis-routes, and hard enforcement is
+deferred to two checks at different times:
 
-- **Build (Phase 1, Step 5).** When the designer asks to see it, the change is built; anything that
+- **Upfront triage (Step 3).** Before any edit, a read-only visual-vs-logic check reads the target
+  widget; an *obvious* needs-logic ask (a tap target / navigation / state change dressed as a design
+  bug) is stopped here with **nothing changed**, so it never burns an apply + build + repair cycle. It
+  leans pure-visual when ambiguous — an early catch, **not** the enforcement; the panel below is.
+- **Build (Phase 1, Step 6).** When the designer asks to see it, the change is built; anything that
   won't compile is reverted and auto-repaired (max 3) before they ever see an "ask an engineer" card.
-- **Model-agnostic 2-judge panel (Phase 2, Step 6).** When the designer ships, a deterministic
+- **Model-agnostic 2-judge panel (Phase 2, Step 7).** When the designer ships, a deterministic
   structural pre-pass runs, then **two independent read-only judges** audit the final cumulative diff
   on **different lenses** — one asks "does this change any program behavior?", the other asks "is every
   change purely visual/layout/structure and does it cover all the targets?". **Both must return
@@ -126,13 +131,14 @@ Re-running with no new argument **resumes** from the markers; re-running with a 
 .dev/ui-tweak-fast/comments.json      # read-only comment-THREAD snapshot (GGC-84; union'd into the requirement, no re-fetch)
 .dev/ui-tweak-fast/flutter-bin        # resolved flutter binary (flutter platform only)
 .dev/ui-tweak-fast/flavor             # line1=flavor, line2=detected|missing
+.dev/ui-tweak-fast/triage-pass        # Step 3 verdict: pure-visual (widget + rationale) — resume/correction skips re-triage
 .dev/ui-tweak-fast/base_ref           # pre-edit SHA (cumulative-diff baseline)
 .dev/ui-tweak-fast/figma-context.md   # structured target checklist (grounding receipt)
 .dev/ui-tweak-fast/.not-deliverable   # written iff any target is NOT-FOUND (quality bar)
-.dev/ui-tweak-fast/preview-requested  # designer picked "show me" / "show me on both" (route to Step 5)
-.dev/ui-tweak-fast/dual-device        # Step-4 "Show me on iPhone + Android" choice (preview on both)
-.dev/ui-tweak-fast/audit-files        # frozen base→HEAD name list that bounds what Step 6 judges
-.dev/ui-tweak-fast/build-pass         # "Status: PASS" after a clean build (Step 5)
+.dev/ui-tweak-fast/preview-requested  # designer picked "show me" / "show me on both" (route to Step 6)
+.dev/ui-tweak-fast/dual-device        # Step-5 "Show me on iPhone + Android" choice (preview on both)
+.dev/ui-tweak-fast/audit-files        # frozen base→HEAD name list that bounds what Step 7 judges
+.dev/ui-tweak-fast/build-pass         # "Status: PASS" after a clean build (Step 6)
 .dev/ui-tweak-fast/preview-shown      # preview launched + (maybe) captured → show C1 looks-good
 .dev/ui-tweak-fast/demo-files         # captured/handed-in screenshot+recording paths
 .dev/ui-tweak-fast/run-<tag>.pid      # live `flutter run` pid (tag=single|ios|android) — enables hot-restart re-preview
@@ -163,7 +169,7 @@ direct headless invocation and parity.)
            /ui-tweak-fast CAF-1234   (a Figma link can go at the end)
   ```
 - **Otherwise** → strip the `--auto` flag from `<source>` (⇒ unattended), then continue to Step 1.
-  (There is no device flag — dual-device is a Step-4 card choice, recorded as the `dual-device` marker.)
+  (There is no device flag — dual-device is a Step-5 card choice, recorded as the `dual-device` marker.)
 
 ## Step 1 — workspace: resolve profile, fetch ticket (read-only), split the worktree
 
@@ -181,15 +187,18 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
   Correction loop). With no new argument, jump by the first marker that matches, in priority order:
   ```bash
   WT=$(git rev-parse --show-toplevel); M="$WT/.dev/ui-tweak-fast"
-  if   [ -f "$M/repair-context" ];                                       then GOTO="Step 3 (repair mode)"
-  elif [ -f "$M/deliver" ] && grep -q '^Status: CLEAR' "$WT/.dev/ui-verify-pass.md" 2>/dev/null; then GOTO="Step 7 (commit/PR — audit already CLEAR)"
-  elif [ -f "$M/deliver" ];                                              then GOTO="Step 6 (audit)"
-  elif [ -f "$M/preview-shown" ];                                        then GOTO="Step 5 tail — render C1 (looks-good)"
-  elif [ -f "$M/preview-requested" ];                                    then GOTO="Step 5 (build the preview)"
-  elif [ -f "$M/base_ref" ];                                             then GOTO="Step 4 — render C1 (show-me)"
-  else                                                                         GOTO="Step 3 (apply)"; fi
+  if   [ -f "$M/repair-context" ];                                       then GOTO="Step 4 (repair mode)"
+  elif [ -f "$M/deliver" ] && grep -q '^Status: CLEAR' "$WT/.dev/ui-verify-pass.md" 2>/dev/null; then GOTO="Step 8 (commit/PR — audit already CLEAR)"
+  elif [ -f "$M/deliver" ];                                              then GOTO="Step 7 (audit)"
+  elif [ -f "$M/preview-shown" ];                                        then GOTO="Step 6 tail — render C1 (looks-good)"
+  elif [ -f "$M/preview-requested" ];                                    then GOTO="Step 6 (build the preview)"
+  elif [ -f "$M/base_ref" ];                                             then GOTO="Step 5 — render C1 (show-me)"
+  elif [ -f "$M/triage-pass" ];                                          then GOTO="Step 4 (apply — triage already pure-visual)"
+  else                                                                         GOTO="Step 3 (triage)"; fi
   ```
   Still run Step 2 (resolve tooling) before any step that needs `$FLUTTER_BIN`. Then go to `$GOTO`.
+  (A needs-logic STOP writes no `triage-pass` and no `base_ref`, so a bare resume re-enters Step 3 and
+  re-triages — idempotent and cheap.)
 - `SPLIT_DONE=0` → parse a work-item id from `<source>` (`[A-Z]+-[0-9]+`, or a
   `linear.app/<org>/issue/<ID>/...` URL; first match).
   - **No id (pure free text)**:
@@ -261,13 +270,13 @@ printf 'ticket=%s\n' "$TICKET_ID" > "$WT/.dev/ui-tweak-fast/worktree-ready"
 (Deps are installed in Step 2 once `$FLUTTER_BIN` is resolved — not here, since the binary is not known
 yet.)
 
-Do **not** call `/_ticket-init` — ticket reads stay read-only (the PR-open transition in Step 7 is the
+Do **not** call `/_ticket-init` — ticket reads stay read-only (the PR-open transition in Step 8 is the
 only lifecycle write).
 
 ## Step 2 — resolve build tooling once (flutter only; skip on android/ios)
 
 Resolve the flutter binary (fvm-aware) and the flavor ONCE so no later step rediscovers them. Define a
-reusable resolver — it is called for the **worktree** here and for the **preview clone** in Step 5.
+reusable resolver — it is called for the **worktree** here and for the **preview clone** in Step 6.
 (Re-derive `WT`/`PLATFORM` at the top of this block if it is a separate invocation — see the Tooling
 map's execution rule 2.)
 
@@ -312,10 +321,18 @@ if [ "$PLATFORM" = flutter ]; then
 fi
 ```
 
-## Step 3 — apply: produce ONE UI diff (no build, no audit)
+## Step 3 — triage: pure-visual vs needs-logic (read-only, BEFORE any edit)
 
-> If `.dev/ui-tweak-fast/repair-context` exists, this is **repair mode** — see "Correction & repair
-> loops" below; fix the edit UI-only and skip the parse/ground re-do.
+> The upfront, read-only visual-vs-logic gate (mirrors `/ui-tweak:detect`, GGC-107). It runs BEFORE any
+> edit, grounding, or build, so a misrouted `design bug` that really needs logic/behaviour changes is
+> caught **here** — not after a whole apply + build + 3× repair cycle ends at the late Step-7 dual-judge
+> BLOCK. Middle tier of a 3-tier cascade, cheap → expensive: an upstream text-only ticket gate → **this**
+> per-ticket read-of-one-widget → the Step-7 dual-judge post-apply backstop (unchanged). It NEVER edits
+> code and NEVER reclassifies the work item itself (`design bug → bug` stays human-owned).
+>
+> Re-derive `WT`/`PLATFORM` at the top if this is a separate invocation (Tooling-map rule 2). If
+> `.dev/ui-tweak-fast/triage-pass` already exists (a prior round triaged pure-visual) or
+> `.dev/ui-tweak-fast/repair-context` exists (repair mode), this step is already done — go to Step 4.
 
 **3a — derive the requirement (union title + description + the FULL comment thread; GGC-84).** Free
 text → use it verbatim. Ticket → derive from the **union** of the cached `ticket.json` title +
@@ -330,27 +347,67 @@ distinct; never collapse them into one.
   `ticket.json` for Jira (per `_ticket-lib.md`) — and refresh the cache.
 - **If comments still cannot be read** (MCP absent / re-fetch failed) → proceed on the **description
   alone** and stamp the grounding provenance `⚠ comments-unavailable` on the receipt
-  (`figma-context.md`), so the no-op verdict in 3d and the audit downstream are not trusted as
+  (`figma-context.md`), so the no-op verdict in 4d and the audit downstream are not trusted as
   comment-aware.
 
-**3a-triage — pure-visual vs needs-logic (read-only, BEFORE any edit).** Before grounding or editing,
-read the requirement (+ any reference image / Figma rows already in hand) and the primary target widget
-and decide whether the change can be satisfied by **look-and-feel alone**:
+**3b — locate + read the primary target widget (read-only, first widget only).** From the requirement
+(+ any Figma node refs, incl. a trailing `[figma-url]`), grep the target screen/component and resolve
+the single primary target widget `<file>[:line]` — the same locate Step 4c does, but read-only and
+stopping at the FIRST widget rather than enumerating every `Ti`. **Read** it (and the immediately-
+relevant collaborators it wires up — its build method, the state/controller it reads, the
+gesture/callback it fires) — enough to judge whether satisfying the request needs behaviour, not a full
+investigation. If no plausible code site is found, do **not** verdict here — let Step 4c's locate gate
+handle the not-found case (it renders card **C6**); record nothing and proceed to Step 4.
+
+**3c — classify, then stop or proceed.** Decide whether the **requested change** (not the widget in
+general) can be satisfied by **look-and-feel alone**:
 - **pure-visual** — token / colour / typography / spacing / sizing / layout / structure. A value, a
-  style, a constraint, a widget arrangement changes; **nothing the screen DOES changes** → continue to 3b.
+  style, a constraint, a widget arrangement changes; **nothing the screen DOES changes**.
 - **needs-logic** — satisfiable **only** by changing gesture / state / control-flow / data / interaction
   wiring: a different tap target or where a tap navigates, a new/altered callback, a state transition,
   conditional rendering, a changed data binding. (Motivating case: a routing bug dressed as a design bug
   — e.g. CAF-884, where "reuse this order" silently redirects to the wrong flow.)
 
-**Bias: when genuinely ambiguous, LEAN pure-visual and proceed** — the Step-6 dual-judge panel is the
+**Bias: when genuinely ambiguous, LEAN pure-visual and proceed** — the Step-7 dual-judge panel is the
 backstop and reverts the whole run on any logic finding, so a false pure-visual is caught later, while a
-false needs-logic wrongly blocks a real design bug from the cheap path. **Only** stop early when the
-logic dependency is CLEAR from the requirement + the target widget you read. On a clear needs-logic
-verdict, STOP before editing and take the **C6** path in 3c below (the "touches how the program runs"
-branch — nothing has changed, recommend handing it to an engineer).
+false needs-logic wrongly blocks a real design bug from the cheap path. **Only** emit needs-logic when
+the logic dependency is CLEAR from the requirement + the widget you just read.
 
-**3b — ground into a structured target checklist** (`figma-context.md`). Figma is **optional**:
+- **pure-visual** → record the verdict (so a resume/correction does not re-triage) and continue to
+  **Step 4 (apply)**, which reuses the widget located in 3b:
+  ```bash
+  WT=$(git rev-parse --show-toplevel); mkdir -p "$WT/.dev/ui-tweak-fast"
+  { echo "Verdict: pure-visual"; echo "Widget: <relative/path>[:line]"; echo "Rationale: <one line>"; } \
+    > "$WT/.dev/ui-tweak-fast/triage-pass"
+  ```
+- **needs-logic** → **STOP before any edit** — nothing has been changed (no worktree edit, no
+  `base_ref`, no `triage-pass`), which is the whole point of triaging upfront. Render card **C6**
+  (header `What next`):
+  > I can't find that place in "<screen>", or it's really about the part of how the program runs (like
+  > what a tap does or which screen it opens) — not just the look. Nothing has changed. I'd suggest
+  > re-filing this as a normal bug so an engineer can pick it up. Or describe it a different way and I'll
+  > take another look? (Or pick **Other**.)
+
+  The recommended choice is to re-file it for an engineer; "Describe it differently" / **Other** re-runs
+  **this triage** on the new wording (it may now read pure-visual). The recommendation is **human-owned**
+  — this skill NEVER changes the work-item's type itself. Under `--auto`, print
+  `UI-TWEAK-FAST NEEDS-ENGINEER: <one-line plain reason> — needs an engineer; recommend re-filing as a normal bug; no change made.`
+  to stderr and exit non-zero (no label is flipped). **C6 is defined here and reused by Step 4c** (its
+  forbidden-file / not-found stop).
+
+## Step 4 — apply: produce ONE UI diff (no build, no audit)
+
+> If `.dev/ui-tweak-fast/repair-context` exists, this is **repair mode** — see "Correction & repair
+> loops" below; fix the edit UI-only and skip the parse/ground re-do.
+
+**4a — reuse the requirement + the located widget from Step 3.** The requirement (Step 3a) and the
+primary target widget (Step 3b) were already resolved by the upfront triage — reuse them; do not
+re-derive or re-locate from scratch. On a fresh-session **resume** that landed here via the
+`triage-pass` marker (Step 3 ran in an earlier session), re-derive the requirement per Step 3a (re-read
+`ticket.json` / `comments.json`, applying the same most-recent-comment-authoritative + state-distinct
+rules) before grounding.
+
+**4b — ground into a structured target checklist** (`figma-context.md`). Figma is **optional**:
 - Figma URL present (trailing `[figma-url]` wins, else one extracted from the ticket) → fetch the design
   context with a **generic** read-only subagent (no model override; do NOT spawn a preset/named subagent
   type that pins a specific model or a host-specific Figma MCP) and enumerate every visual property
@@ -372,27 +429,20 @@ branch — nothing has changed, recommend handing it to an engineer).
   change and which do NOT) — a screenshot often pins zoned/partial scope a sentence loses. Figma pins
   exact values; the screenshot pins scope. Stamp `ref-image: <file>` on the receipt.
 
-**3c — locate + map (+ shared-token blast radius).** For each row `Ti`: grep the target
+**4c — locate + map (+ shared-token blast radius).** For each row `Ti`: grep the target
 screen/component, record `{Ti, file, current, target}`, classify the file UI-eligible vs forbidden.
 - Shared-token check: grep the reference count of each edited token/resource key across the UI surface;
   `>1` → mark the row `SHARED (N refs)` and list the other affected screens (cheapest over-scope
   defense — one `dimens` entry restyling five screens).
 - A `Ti` with no code site → `NOT-FOUND`.
 - A value living **only** in a forbidden file (ViewModel / Repository / build config / a referenced
-  `@+id`/function name), **OR a clear needs-logic verdict from 3a-triage** (the change is fundamentally
-  about how the program runs) → this is **not** a pure-UI change → STOP, render card **C6**
-  (header `What next`): *"I can't find that place in "<screen>", or it's really about the part of how
-  the program runs (like what a tap does or which screen it opens) — not just the look. Nothing has
-  changed. I'd suggest re-filing this as a normal bug so an engineer can pick it up. Or describe it a
-  different way and I'll take another look? (Or pick Other.)"* When the stop is the needs-logic verdict,
-  the recommended choice is to re-file it for an engineer; "Describe it differently" / **Other** re-runs
-  the triage on the new wording (it may now read pure-visual). The recommendation is **human-owned** —
-  this skill NEVER changes the work-item's type itself. Remove any `base_ref` you wrote. Under `--auto`,
-  print the question to stderr and stop; for the needs-logic verdict print
-  `UI-TWEAK-FAST NEEDS-ENGINEER: <one-line plain reason> — needs an engineer; recommend re-filing as a normal bug; no change made.`
-  to stderr and exit non-zero (no label is flipped).
+  `@+id`/function name) → this is **not** a pure-UI change → STOP and render card **C6** (defined in
+  Step 3 — the "can't find that place / it's really about how the program runs" card). Remove any
+  `base_ref` you wrote. Under `--auto`, print the question to stderr and stop. (A *clear needs-logic*
+  verdict is already caught upfront in Step 3 before any worktree edit; this 4c stop is the locate-time
+  forbidden-file / not-found backstop for what slips through to apply.)
 
-**3d — coverage gate (bidirectional) + quality bar.**
+**4d — coverage gate (bidirectional) + quality bar.**
 - Forward: every `Ti` resolves to a planned edit, `ALREADY-MATCHES` (with the matched site), or
   `NOT-FOUND`. No `Ti` silently dropped.
 - Reverse: every planned edit cites a backing `Ti` (free-text runs cite the requirement). An edit with
@@ -408,14 +458,14 @@ screen/component, record `{Ti, file, current, target}`, classify the file UI-eli
   - a comment introduced a **state** the reference image/description did not cover (an `ALREADY-MATCHES`
     against one state, e.g. en-route, says nothing about a later-comment state, e.g. completed).
   On a refused no-op, do **not** earn it — change nothing, and surface it for a human (render card **C6**
-  as in 3c; under `--auto` print the reason to stderr and stop).
+  — defined in Step 3; under `--auto` print the reason to stderr and stop).
 - **Present the plan** (table: `Ti | property | target | code site | current | new | shared? | status`).
   Default mode takes ONE plan confirmation — **except** skip it when exactly ONE target resolved AND its
   source is the ticket (not `⚠ estimated`): the next card's Other field is already the correction escape,
   so a separate confirm is one prompt too many. Keep the confirm for ≥2 targets, any `⚠ estimated`, or
   free-text. `--auto` skips the interactive confirm but records the plan.
 
-**3e — record `base_ref` (clean-trunk-anchored) — guard against a poisoned baseline.** (Full rationale —
+**4e — record `base_ref` (clean-trunk-anchored) — guard against a poisoned baseline.** (Full rationale —
 the CAF-625 cross-worktree contamination case — is in `commands/design/ui-tweak/apply.md` Step 5, GGC-49.)
 
 ```bash
@@ -437,15 +487,15 @@ fi
 (A correction/repair re-run keeps the original `base_ref` — never overwrite it, so preview/audit always
 diff the **cumulative** change.)
 
-**3f — edit, value/UI-only.** Make the change with `Edit`/`Write` (inspect with `Read`/`Grep`/`Glob`).
+**4f — edit, value/UI-only.** Make the change with `Edit`/`Write` (inspect with `Read`/`Grep`/`Glob`).
 Keep the diff to **pure-visual values, layout, and structure — no logic, no build config, no source
-rewrites**. There is no edit-time hook; the Step-6 panel reverts the whole run on any logic finding
+rewrites**. There is no edit-time hook; the Step-7 panel reverts the whole run on any logic finding
 (max 3 agent repairs). Prefer the narrowest change that satisfies the targets. Never route an edit
 through Bash.
 
-Then STOP and render the iteration card (Step 4). (`--auto`: skip the card — go to "Auto path" below.)
+Then STOP and render the iteration card (Step 5). (`--auto`: skip the card — go to "Auto path" below.)
 
-## Step 4 — iteration card C1 (show-me)
+## Step 5 — iteration card C1 (show-me)
 
 Render **C1 (show-me)** (header `Next step`). The build has NOT run — do not claim
 it compiles:
@@ -470,14 +520,14 @@ it compiles:
   a partial), leaving only `I want more changes`, and append: *"⚠ N spot(s) weren't changed — I couldn't
   find them; adjust the wording?"*
 - routing (all writes go under `"$WT/.dev/ui-tweak-fast/"`):
-  - `I'm done — show me` → `: > preview-requested`, then Step 5 (single-device cascade).
-  - `Show me on iPhone + Android` → `: > preview-requested` AND `: > dual-device`, then Step 5 (it reads
+  - `I'm done — show me` → `: > preview-requested`, then Step 6 (single-device cascade).
+  - `Show me on iPhone + Android` → `: > preview-requested` AND `: > dual-device`, then Step 6 (it reads
     `dual-device` and runs the two-clone dual path).
-  - `It already looks right — ship it` → `: > deliver` AND `: > direct-ship`, then Step 5 in **build-only**
-    mode (the hand-build may predate the latest tweak — the compile gate never relaxes), then Step 6.
+  - `It already looks right — ship it` → `: > deliver` AND `: > direct-ship`, then Step 6 in **build-only**
+    mode (the hand-build may predate the latest tweak — the compile gate never relaxes), then Step 7.
   - `I want more changes` / **Other** → Correction loop.
 
-## Step 5 — preview (Phase 1): build from the PERSISTENT clone, on one or both devices
+## Step 6 — preview (Phase 1): build from the PERSISTENT clone, on one or both devices
 
 > Single responsibility: build + launch the change onto a device from a **persistent preview clone**
 > (so caches stay warm across tickets), then navigate to the target screen and capture it FOR the
@@ -486,17 +536,17 @@ it compiles:
 > mode (no device, just compile). On `android`/`ios` platforms there is no `flutter run` — run the
 > build-only `ui_build_cmd` and skip all flutter device steps.
 
-**5a — freeze the audited file set** (the build mutates the tree — codegen, registrants; those
-side-effects must never widen what Step 6 judges):
+**6a — freeze the audited file set** (the build mutates the tree — codegen, registrants; those
+side-effects must never widen what Step 7 judges):
 
 ```bash
 BASE=$(cat "$WT/.dev/ui-tweak-fast/base_ref")
 git -C "$WT" diff "$BASE" --name-only > "$WT/.dev/ui-tweak-fast/audit-files"
 DIRECT_SHIP=0;  [ -f "$WT/.dev/ui-tweak-fast/direct-ship" ] && DIRECT_SHIP=1
-DUAL_DEVICE=0;  [ -f "$WT/.dev/ui-tweak-fast/dual-device" ] && DUAL_DEVICE=1   # set by the Step-4 card choice
+DUAL_DEVICE=0;  [ -f "$WT/.dev/ui-tweak-fast/dual-device" ] && DUAL_DEVICE=1   # set by the Step-5 card choice
 ```
 
-**5b — build a warm preview clone per target** (THE cache-warming core — flutter device path only;
+**6b — build a warm preview clone per target** (THE cache-warming core — flutter device path only;
 skipped in direct-ship build-only mode and on android/ios). Re-derive `WT`/`BASE`/`PLATFORM`/`FLUTTER_BIN`
 first (separate invocation — Tooling-map rule 2). `ensure_clone <path>` creates the persistent worktree
 once (NEVER deleted, so its gitignored `.dart_tool/`+`build/` survive across tickets), realigns it to
@@ -552,7 +602,7 @@ In **direct-ship build-only** mode (`DIRECT_SHIP=1`, no navigate need) or on `an
 clone, `BUILD_DIR="$WT"`, `PREVIEW_FLUTTER="$FLUTTER_BIN"` — a build-only compile gate needs no warm
 clone or live device.
 
-**5c — acquire device(s) and build+launch.** Device LISTING uses `$FLUTTER_BIN` (devices are global, not
+**6c — acquire device(s) and build+launch.** Device LISTING uses `$FLUTTER_BIN` (devices are global, not
 per-clone). `flutter run` runs from each target's clone dir.
 
 > ⛔ macOS has **no `timeout`** — never use it. Use the counter-bounded poll below.
@@ -586,7 +636,7 @@ launch_run() {              # $1=clone-dir $2=flutter $3=device-id $4=tag(single
 # stream. App lines are prefixed `flutter: ` (often containing words like "error"/"Exception" from
 # normal runtime logging); TOOL messages are NOT. So error detection ALWAYS drops `^flutter: ` lines and
 # matches the distinctive Dart compile-error shape `file.dart:line:col: Error:` — never a bare "error".
-gate_launch() {             # $1=tag — poll the run log: 0=launched, 2=compile/build FAIL → 5f, 1=timeout
+gate_launch() {             # $1=tag — poll the run log: 0=launched, 2=compile/build FAIL → 6f, 1=timeout
   tag="$1"; i=0; while [ $i -lt 300 ]; do
     grep -qE "Flutter run key commands|Dart VM Service|Syncing files to|is available at:" "$M/run-$tag.log" 2>/dev/null && return 0
     grep -v '^flutter: ' "$M/run-$tag.log" 2>/dev/null | grep -qE "\.dart:[0-9]+:[0-9]+: Error:|Compiler message:|Build failed|FAILURE:|Could not build" && return 2
@@ -616,12 +666,12 @@ hot_repreview() {           # $1=tag — sync cumulative diff into the live clon
     i=$((i+1)); sleep 1; done; return 1; }
 ```
 
-- **5c.0 — warm re-preview shortcut (hot restart).** In interactive mode (`DIRECT_SHIP=0`), BEFORE
+- **6c.0 — warm re-preview shortcut (hot restart).** In interactive mode (`DIRECT_SHIP=0`), BEFORE
   acquiring a device, check for a live run left by an earlier round of **this same ticket**:
   `TAGS=$(live_tags)`. If non-empty, `hot_repreview "$TAG"` each tag instead of rebuilding:
-  - all live tags return `0` → the new edit is on the device(s) in ~2-5s. **Skip the rest of 5b/5c**
-    (no `ensure_clone`, no device acquisition); go straight to 5e (navigate + capture) then 5f.
-  - any tag returns `2` → a **compile error** in the new edit → treat exactly as a build FAIL (5f
+  - all live tags return `0` → the new edit is on the device(s) in ~2-5s. **Skip the rest of 6b/6c**
+    (no `ensure_clone`, no device acquisition); go straight to 6e (navigate + capture) then 6f.
+  - any tag returns `2` → a **compile error** in the new edit → treat exactly as a build FAIL (6f
     build-fail path: NUL-safe whole-edit revert + `repair-context` `kind: build`).
   - any tag returns `1` → that live run is gone/unusable → `kill_run` **every** tag and fall through to
     the full build+launch below (so a stale run never wedges the round).
@@ -636,7 +686,7 @@ hot_repreview() {           # $1=tag — sync cumulative diff into the live clon
   3. **no device → honest build-only fallback**: run the build-only `ui_build_cmd` in `$WT`, set a
      `no_device` flag, and let C1 say so. Do NOT fail.
   ```bash
-  [ -n "${ZSH_VERSION:-}" ] && setopt sh_word_split   # rule 3 (also: requires the Step-5b/5c helpers in scope)
+  [ -n "${ZSH_VERSION:-}" ] && setopt sh_word_split   # rule 3 (also: requires the Step-6b/6c helpers in scope)
   if [ -z "$DEVICE" ]; then                                    # case 3 — no device → build-only gate in $WT
     ( cd "$WT" && $FLUTTER_BIN build apk --debug --no-pub $FLAVOR_ARG ) ; NO_DEVICE=1   # exit code is the gate (--no-pub: deps already resolved)
   else
@@ -645,7 +695,7 @@ hot_repreview() {           # $1=tag — sync cumulative diff into the live clon
     if ensure_clone "$PREVIEW_DIR"; then BUILD_DIR="$PREVIEW_DIR"; PREVIEW_FLUTTER=$(clone_flutter "$PREVIEW_DIR")
     else echo "WARN: preview clone unavailable/stale — building from the worktree (cold cache)." >&2; BUILD_DIR="$WT"; PREVIEW_FLUTTER="$FLUTTER_BIN"; fi
     launch_run "$BUILD_DIR" "$PREVIEW_FLUTTER" "$DEVICE" single  # long-lived run (FIFO stdin) → next round hot-restarts
-    gate_launch single; GATE=$?                                 # 0=launched, 2=build FAIL → 5f build-fail path, 1=timeout (proceed; capture may no-op)
+    gate_launch single; GATE=$?                                 # 0=launched, 2=build FAIL → 6f build-fail path, 1=timeout (proceed; capture may no-op)
   fi
   ```
   (`build apk` is the Android build-only line; use the profile `ui_build_cmd` for the real platform/iOS.)
@@ -655,7 +705,7 @@ hot_repreview() {           # $1=tag — sync cumulative diff into the live clon
   `flutter run` never contend on a shared `.dart_tool/`/build lock (the single-dir approach races
   precisely on the cold first build):
   ```bash
-  [ -n "${ZSH_VERSION:-}" ] && setopt sh_word_split   # rule 3 (also: requires the Step-5b/5c helpers in scope)
+  [ -n "${ZSH_VERSION:-}" ] && setopt sh_word_split   # rule 3 (also: requires the Step-6b/6c helpers in scope)
   IOS_ID=$(ids_of_kind ios | head -1); AND_ID=$(ids_of_kind android | head -1)
   [ -z "$IOS_ID" ] && [ "$(uname)" = Darwin ] && { u=$(xcrun simctl list devices available 2>/dev/null | grep iPhone | grep -m1 -oiE '[0-9a-f-]{36}'); [ -n "$u" ] && xcrun simctl boot "$u" >/dev/null 2>&1; }
   if [ -z "$AND_ID" ]; then
@@ -676,19 +726,19 @@ hot_repreview() {           # $1=tag — sync cumulative diff into the live clon
     launch_run "$D" "$F" "$AND_ID" android; DEVICES="$DEVICES $AND_ID"; fi
   ```
   If only one kind is available, this previews on that one and notes the other was unavailable (never
-  fails). Capture (5e) runs per launched device in `$DEVICES`.
+  fails). Capture (6e) runs per launched device in `$DEVICES`.
 
 > ### Build gate = exit code / successful launch (never a screenshot)
 > The moment the app is installed + launched, the gate has **passed**. Some flavored flutter builds
 > print a false `Gradle build failed to produce an .apk file` tail yet exit 0 — confirm via the
-> installed app, not log text. A crash-on-launch or a compile failure is the **build-fail path** (5f).
+> installed app, not log text. A crash-on-launch or a compile failure is the **build-fail path** (6f).
 > Because the live run is **detached** (so it survives for hot restart), the first launch is gated by
-> `gate_launch` polling the run log for a launch marker (`GATE=2` → 5f build-fail). The hot-restart
-> shortcut (5c.0) has **no exit code** — it MUST read `Restarted application` / a compile error from the
+> `gate_launch` polling the run log for a launch marker (`GATE=2` → 6f build-fail). The hot-restart
+> shortcut (6c.0) has **no exit code** — it MUST read `Restarted application` / a compile error from the
 > run log. This log-reading is a deliberate, narrowly-scoped exception to the "never a screenshot / never
 > log text" rule above: it gates only the *reload result of an already-launched* run, not the build.
 
-**5d — login gate (only if needed) + navigation policy.** Navigation is **navigation-only**: ONE
+**6d — login gate (only if needed) + navigation policy.** Navigation is **navigation-only**: ONE
 deep-link fire, or a capped sequence of nav taps (tabs, menu, list rows, back). **Never** tap
 confirm/submit/pay/delete, grant permissions, or type — **except** the one sanctioned login gate: if a
 target screen sits behind a login wall and the app is logged out, you MAY type a dedicated **staging QA
@@ -711,7 +761,7 @@ never error.**
   no match, or no `ticket.json` → fallback `hk`**. An explicit `demo_auth.region` always wins over
   inference.
 
-**5e — navigate to the target + capture** (best-effort, fail-silent; per launched device):
+**6e — navigate to the target + capture** (best-effort, fail-silent; per launched device):
 - **Tier 1 (preferred): deep-link.** Derive the `ggv://<host>` target from `ticket.json` + the change
   summary (known CAF hosts: `news, promotions, payment, profile, service-delivery, rate-us, login,
   voucher, order-detail, rate-driver`; repo `deeplink_hosts:` overrides). Fire ONE:
@@ -746,9 +796,9 @@ never error.**
   **fail-silent**: capture nothing, leave `demo-files` empty, continue. Never ask the designer to drive,
   never fail the gate.
 
-**5f — record success / failure.** Builds run in the clone, so `$WT` normally stays clean; in
+**6f — record success / failure.** Builds run in the clone, so `$WT` normally stays clean; in
 build-only/direct-ship mode the build ran in `$WT`, so still quarantine its side-effects. The freeze in
-5a is what actually bounds Step 6's judged set. Restore anything in `$WT` outside the frozen audit set —
+6a is what actually bounds Step 7's judged set. Restore anything in `$WT` outside the frozen audit set —
 **NUL-safe** (a spaced path must still be restored), and never `xargs -r` (not portable to older macOS):
 ```bash
 # restore worktree files touched outside the frozen audit set (NUL-safe; no -r dependency)
@@ -760,9 +810,9 @@ printf 'Status: PASS\n' > "$WT/.dev/ui-tweak-fast/build-pass"
 rm -f "$WT/.dev/ui-tweak-fast/repair-count"                           # clean build resets the repair budget
 ```
 - **build FAIL** (`gate_launch` returned `GATE=2`, a non-zero `ui_build_cmd`/no-device build, or the
-  5c.0 `hot_repreview` returned `2`) → agent repair (NOT a designer error). The whole-edit revert is
+  6c.0 `hot_repreview` returned `2`) → agent repair (NOT a designer error). The whole-edit revert is
   **NUL-safe** so a spaced path is always reverted (this backs the "broken edit is dropped" guarantee).
-  A live run may stay up (it still shows the last good frame); the repair round's 5c.0 re-syncs the
+  A live run may stay up (it still shows the last good frame); the repair round's 6c.0 re-syncs the
   fixed files and hot-restarts it:
   ```bash
   git -C "$WT" diff "$BASE" -z --name-only | xargs -0 git -C "$WT" checkout --
@@ -782,19 +832,19 @@ dual-device choice was picked) if any, else an honest *"I confirmed it compiles 
 
 - options: **`Ship it`** *(recommended)* — "Run the full check + open a draft PR with a link on the
   work item." / **`I want more changes`** — "Tell me what to adjust; I'll redo and re-show it."
-- routing: `Ship it` → write `deliver` → Step 6. `I want more changes` / Other → Correction loop. Other
+- routing: `Ship it` → write `deliver` → Step 7. `I want more changes` / Other → Correction loop. Other
   text that is ONLY an existing local image/video path (dragged in) → append it to `demo-files`, reply
   "Got it — I'll include it.", re-render.
 
-In **direct-ship** mode there is no card — go straight to Step 6.
+In **direct-ship** mode there is no card — go straight to Step 7.
 
-## Step 6 — audit (Phase 2): the deferred, model-agnostic logic gate
+## Step 7 — audit (Phase 2): the deferred, model-agnostic logic gate
 
 > Reached only on the deliver path (`deliver` exists). Phase 1 already proved it compiles; this proves
 > it changes **no logic**, ONCE, on the final cumulative diff, right before commit. Both judges always
-> run **unless the 6b deterministic pre-pass already BLOCKs** — for a diff with ANY text file the pre-pass
+> run **unless the 7b deterministic pre-pass already BLOCKs** — for a diff with ANY text file the pre-pass
 > can only short-circuit to BLOCKED, never to CLEAR, so a text CLEAR always required both judges to actually
-> run and agree (nothing upstream proves the diff is value-only). The ONE exception is **6a.5** below: a
+> run and agree (nothing upstream proves the diff is value-only). The ONE exception is **7a.5** below: a
 > binary-only changeset is CLEAR **by construction** (it cannot carry logic) and is the only path to a CLEAR
 > verdict without both judges. **No model is pinned** — decorrelation is by lens (so
 > it runs under any host's own model).
@@ -806,14 +856,14 @@ grep -q '^Status: PASS' "$WT/.dev/ui-tweak-fast/build-pass" 2>/dev/null || { ech
 BASE=$(cat "$WT/.dev/ui-tweak-fast/base_ref")
 ```
 
-**6a — format first**, then compute the diff ONCE. Run the profile `format_cmd` (e.g.
+**7a — format first**, then compute the diff ONCE. Run the profile `format_cmd` (e.g.
 `/format --skip-commit`, or inline `dart format .`) so the judges see exactly what will ship. Then:
 ```bash
 CHANGED_FILES=$(git -C "$WT" diff "$BASE" --name-only)
 DIFF_TEXT=$(git -C "$WT" diff "$BASE")          # the exact text that ships; fed inline to both judges
 ```
 
-**6a.5 — binary-only changeset → CLEAR by construction.** A changeset whose **every** file is binary
+**7a.5 — binary-only changeset → CLEAR by construction.** A changeset whose **every** file is binary
 (image assets across density buckets, fonts, …) **cannot carry logic**, so the panel — whose only
 question is *UI-only vs behavior* — is trivially CLEAR. Detect via `--numstat` (binary rows report
 their add/remove columns as `-`):
@@ -822,14 +872,14 @@ NUMSTAT=$(git -C "$WT" diff "$BASE" --numstat)
 NON_BINARY=$(printf '%s\n' "$NUMSTAT" | grep -cvE '^-\t-\t')   # rows that are NOT binary
 ```
 - `NUMSTAT` non-empty **and** `NON_BINARY == 0` → **CLEAR by construction**: skip the structural
-  pre-pass (6b) **AND** the two judges (6c) entirely, write `.dev/ui-verify-pass.md` first line
-  `Status: CLEAR`, then go straight to Step 7 (commit). This is **not** a no-op — the binary assets ARE
+  pre-pass (7b) **AND** the two judges (7c) entirely, write `.dev/ui-verify-pass.md` first line
+  `Status: CLEAR`, then go straight to Step 8 (commit). This is **not** a no-op — the binary assets ARE
   the change (e.g. a swapped `pick_up_code.png` shipped at 1x/2x/3x to fix a blurry retina image). It
   closes a false BLOCK: a binary diff has no `+`/`-` hunks, which a judge misreads as "diff incomplete".
-- Any text file in the set (`NON_BINARY > 0`) → fall through to 6b + the panel as usual, so a mixed
+- Any text file in the set (`NON_BINARY > 0`) → fall through to 7b + the panel as usual, so a mixed
   binary+`.dart` diff still gets full scrutiny on its text hunks.
 
-**6b — deterministic structural pre-pass** (grep only, no model call). Short-circuits to BLOCKED ONLY
+**7b — deterministic structural pre-pass** (grep only, no model call). Short-circuits to BLOCKED ONLY
 on added-line signals that are unambiguously runtime behavior. Allow-by-default, deny only unambiguous
 behavior (a false BLOCK reverts a legit UI change; a miss is caught by the panel below). Imports, pure
 layout/structure widgets (`LayoutBuilder`, `ConstrainedBox`, `Row`/`Column`/`Stack`/`Padding`/…), style
@@ -845,10 +895,10 @@ BEHAVIOR_RE='(initState|dispose|didChangeDependencies|didUpdateWidget|deactivate
 STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE "$BEHAVIOR_RE")
 ```
 - `STRUCTURAL_HIT > 0` → **BLOCKED** (record the matched signal as the reason), skip the judges, go to
-  6d. (This never produces an early CLEAR — only an earlier BLOCK.)
-- `STRUCTURAL_HIT == 0` → 6c. (A non-hit is NOT a pass — the panel still runs in full.)
+  7d. (This never produces an early CLEAR — only an earlier BLOCK.)
+- `STRUCTURAL_HIT == 0` → 7c. (A non-hit is NOT a pass — the panel still runs in full.)
 
-**6c — two independent judges, decorrelated by lens (NOT by model).** Spawn TWO read-only **generic**
+**7c — two independent judges, decorrelated by lens (NOT by model).** Spawn TWO read-only **generic**
 subagents, in parallel, each fed the precomputed `$DIFF_TEXT` +
 `$CHANGED_FILES` inline (so git/file IO is paid once for the panel). **Do not pass a model override and
 do NOT spawn a preset/named subagent type whose definition pins a specific model** — a spawn inherits that
@@ -871,12 +921,12 @@ bindings):
 Persist each judge's returned text: Judge A → `.dev/dev-reviewer-pass.md`, Judge B →
 `.dev/ui-verify-pass.md` (first line `Status: CLEAR|BLOCKED`).
 
-**6d — adjudicate (unanimous CLEAR).**
-- Any `BLOCKED` (or a missing file / agent error / the 6b short-circuit) → whole run BLOCKED → 6e.
+**7d — adjudicate (unanimous CLEAR).**
+- Any `BLOCKED` (or a missing file / agent error / the 7b short-circuit) → whole run BLOCKED → 7e.
 - All CLEAR → `rm -f "$WT/.dev/ui-tweak-fast/.not-deliverable"`; ensure `.dev/ui-verify-pass.md` first
-  line is `Status: CLEAR`. Go to Step 7 (commit).
+  line is `Status: CLEAR`. Go to Step 8 (commit).
 
-**6e — BLOCKED → agent repair (max 3; NOT a designer card).** The revert is **NUL-safe** so a logic-
+**7e — BLOCKED → agent repair (max 3; NOT a designer card).** The revert is **NUL-safe** so a logic-
 tainted edit in a spaced path is always dropped (this backs the whole-run-revert guarantee):
 ```bash
 git -C "$WT" diff "$BASE" -z --name-only | xargs -0 git -C "$WT" checkout --   # drop the flagged edit + format pass
@@ -887,15 +937,15 @@ Go to the repair loop. Under `--auto`, audit BLOCKED is **loud-fail with NO repa
 finding is not a mechanical fix): still run the revert, then print
 `UI-TWEAK-FAST BLOCKED (<judge>): <reason> — reverted, no changes kept.` to stderr and exit non-zero.
 
-## Step 7 — ship: commit, draft PR, ticket transition (inline; no `/commit` / `/pull-request` read)
+## Step 8 — ship: commit, draft PR, ticket transition (inline; no `/commit` / `/pull-request` read)
 
 All inlined so this file stays self-contained.
 
-**7a — commit only the covered files** (the Step-3d coverage table; formatter-touched extras go in the
+**8a — commit only the covered files** (the Step-4d coverage table; formatter-touched extras go in the
 PR body's `### Formatter-only changes`). No extra confirm — "Ship it" already authorized the handoff.
 
 > **Externally-visible labelling — tag `ui-tweak`, NEVER `ui-tweak-fast`.** Every artifact an engineer
-> or observer can see — the **commit-message prefix** (7a) and the **PR title** (7b) — is tagged
+> or observer can see — the **commit-message prefix** (8a) and the **PR title** (8b) — is tagged
 > `[ui-tweak]`, so this skill presents itself outwardly as plain `/ui-tweak`; the "fast" variant is
 > never surfaced on the commit, PR, or work item. This is deliberate — **do NOT "correct" the prefix
 > back to `[ui-tweak-fast]`.** (Internal-only references keep the real name on purpose because they are
@@ -909,8 +959,8 @@ git -C "$WT" commit -m "[ui-tweak] <plain component + visual property + old→ne
 git -C "$WT" push -u origin "$(git -C "$WT" branch --show-current)"
 ```
 
-**7b — open a DRAFT PR** with a pre-built, designer-verifiable body. Title prefixed `[ui-tweak]` (NOT
-`[ui-tweak-fast]` — see the labelling note in 7a).
+**8b — open a DRAFT PR** with a pre-built, designer-verifiable body. Title prefixed `[ui-tweak]` (NOT
+`[ui-tweak-fast]` — see the labelling note in 8a).
 Body sections: `## UI Tweak — designer-verifiable summary` (Source / Grounding-provenance / Audit
 verdict / Coverage table with `shared?`), then a marker-wrapped `## Demo`:
 ```
@@ -933,13 +983,13 @@ Demo content, in priority order:
 gh pr create --draft --title "[ui-tweak] <plain summary>" --body-file <body>
 ```
 
-**7c — ticket transition (Linear-only, idempotent, best-effort — never fails the run).** After the
+**8c — ticket transition (Linear-only, idempotent, best-effort — never fails the run).** After the
 draft PR is open and a `🎨 UI tweak ready for engineer review` PR-link comment is posted: set status →
 `In Review` (skip if already there/later) and remove the `ready-to-dev` label, keeping all others (e.g.
 `design bug`) — read current labels first, `save_issue` replaces the whole set. `assignee` is never
 touched. A failure here logs ONE WARN and continues (the PR is the deliverable). Then stop any live
 preview run(s) — `for t in single ios android; do kill_run "$t"; done` — the ticket is shipped, so free
-the device and the detached `flutter run` processes (best-effort; `kill_run` is defined in Step 5c).
+the device and the detached `flutter run` processes (best-effort; `kill_run` is defined in Step 6c).
 
 **Done card C5** (plain text, no choice):
 ```
@@ -955,20 +1005,23 @@ Both keep the original `base_ref` (the diff is always cumulative).
 
 - **Designer correction** ("I want more changes" / any Other free-text at a C1 card): clear all
   downstream markers so the walker drops back to iteration, reset the repair budget + `direct-ship`,
-  then re-run Step 3 with the new requirement:
+  then re-run **Step 4 (apply)** with the new requirement — **unless no `triage-pass` exists yet** (the
+  prior run stopped at a needs-logic triage), in which case re-enter at **Step 3 (triage)** so the
+  re-worded request is re-classified before any edit. `triage-pass` is **kept** (a value tweak stays
+  pure-visual; the Step-7 panel still backstops any logic that sneaks in):
   ```bash
   rm -f "$WT"/.dev/ui-tweak-fast/{build-pass,preview-shown,deliver,direct-ship,dual-device,demo-files,repair-context,repair-count} \
         "$WT"/.dev/ui-verify-pass.md "$WT"/.dev/dev-reviewer-pass.md
   ```
   **Keep the `run-*` markers** — the live preview is deliberately reused: when the designer next picks
-  "show me", 5c.0 hot-restarts it (~2-5s) instead of cold-rebuilding. (`base_ref` is unchanged, so the
+  "show me", 6c.0 hot-restarts it (~2-5s) instead of cold-rebuilding. (`base_ref` is unchanged, so the
   files synced into the live clone stay correct.)
   Post-deliver guard: if a commit already exists beyond `base_ref` (`git merge-base --is-ancestor
   $base_ref HEAD` true AND `HEAD != base_ref`), the previous change was already handed off — say *"that
   was already wrapped up; I'll start a fresh round"*, **kill the live runs first**
   (`for t in single ios android; do kill_run "$t"; done` — the diff base is about to change) and
-  re-baseline (`base_ref` = current HEAD) before Step 3.
-- **Agent repair** (a `repair-context` written by 5f or 6e): in Step 3 repair mode, read
+  re-baseline (`base_ref` = current HEAD) before Step 4.
+- **Agent repair** (a `repair-context` written by 6f or 7e): in Step 4 repair mode, read
   `repair-context` (`kind: build` → fix the value that broke compile; `kind: audit` → redo as pure UI
   without the logic touch), keep `base_ref`, clear
   `build-pass`/`preview-shown`/`deliver`/`direct-ship`/`dual-device` + both judge files, **keep** the
@@ -984,10 +1037,12 @@ Both keep the original `base_ref` (the diff is always cumulative).
 
 ## Auto path (no cards)
 
-Under `--auto`: Step 0 (parse) → Step 1 (worktree; id required) → Step 2 → Step 3 (single apply, no
+Under `--auto`: Step 0 (parse) → Step 1 (worktree; id required) → Step 2 → Step 3 (triage; a clear
+needs-logic verdict loud-fails with `UI-TWEAK-FAST NEEDS-ENGINEER: …` and exits non-zero **before any
+edit**) → Step 4 (single apply, no
 plan confirm) → write `deliver` + `direct-ship` (skip the device preview; if `.not-deliverable` exists,
-fail with `… change is partial …` to stderr) → Step 5 build-only compile gate → Step 6 (both judges,
-loud-fail on BLOCKED, no repair loop) → Step 7 (commit → draft PR → transition). The draft PR an
+fail with `… change is partial …` to stderr) → Step 6 build-only compile gate → Step 7 (both judges,
+loud-fail on BLOCKED, no repair loop) → Step 8 (commit → draft PR → transition). The draft PR an
 engineer reviews is the human gate that replaces the cards. Every failure prints ONE deterministic
 stderr line and exits non-zero.
 
@@ -998,7 +1053,7 @@ stderr line and exits non-zero.
   drop `ready-to-dev`, Linear-only). `assignee` is never touched.
 - The change set is **UI-only** (visual values / layout / structure). Logic, build config
   (`build.gradle`, `pubspec.yaml`, `Info.plist`, `AndroidManifest.xml`), referenced `@+id`/function
-  renames → blocked by the Step-6 panel.
+  renames → blocked by the Step-7 panel.
 - The persistent preview clone is an **optimization, not a requirement** — if it can't be created, fall
   back to building from the worktree with a WARN. Never run `git clean -x` in it (that would wipe the
   warm caches that are the whole point). It is created off trunk and re-aligned to `base_ref` each run;
