@@ -6,6 +6,7 @@
     "name": "Local developer"
   },
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Ui Tweak Fast",
     "shortDescription": "Use Ui Tweak Fast in Codex.",
