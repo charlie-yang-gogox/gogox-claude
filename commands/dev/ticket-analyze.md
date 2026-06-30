@@ -5,7 +5,7 @@ description: >
   "human marks ready" step that feeds `/ggx-dispatcher`. Two invocation
   shapes: pass a ticket id to analyze just that one, or call with no args
   to sweep the active team's **actionable pool** — every ticket in
-  Triage / Backlog / To-Do, **any assignee** (GGC-95: PM/QA tickets land
+  Triage / Backlog / To-Do, **any assignee** (PM/QA tickets land
   unassigned in the pool, so an assigned-to-me-only sweep never saw them).
   Output is always **label-only — the analyzer assigns NOTHING** (pull
   model: a human/teammate assigns to pull; the dispatcher still filters
@@ -22,7 +22,7 @@ description: >
   `analyze-hold` label parks a ticket — the analyzer skips it entirely
   (never re-analyzes, re-labels, or re-comments) until a human removes the
   label, so a manually-parked `need-revision` is no longer silently
-  re-qualified every sweep (GGC-60). Jira runs in
+  re-qualified every sweep. Jira runs in
   degraded mode (comment + `fields.labels` string labels, no workflow
   labels). Supports both trackers via `_ticket-lib.md`. The optional
   `--triage` flag adds a human-confirmed Phase 0 intake pass that classifies
@@ -48,9 +48,9 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 
 - `/ticket-analyze` — **batch mode**. Sweep the active project's team
   **actionable pool** — every Triage / Backlog / To-Do ticket regardless of
-  assignee (GGC-95) — analyze cross-ticket dependencies, and write per-ticket
+  assignee — analyze cross-ticket dependencies, and write per-ticket
   verdicts **label-only (never assign)**. Per-ticket failures do NOT abort the
-  batch. **Execution (GGC-97):** after Step 1.5 discovery + the re-analysis
+  batch. **Execution:** after Step 1.5 discovery + the re-analysis
   filter, batch mode fans the surviving roster out via
   `workflows/ticket-analyze-fanout.workflow.js` — a thin harness that runs the
   per-ticket Step 2.7/3 judgment in parallel, builds the Step-5 dependency graph
@@ -88,8 +88,8 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 | complete | unblocked | ui-tweak (`design bug`) **whose text high-confidence predicts the fix needs logic** | `need-revision` (+ reclassify → `Bug` recommended — see the Design-bug ready-to-dev gate below) |
 | complete | unblocked | **any lane, but the judge reads the real owner as OUT-OF-REPO** (`backend` / `ios-signing` / `ops` / any non-this-repo platform) **at `confidence:high`** | `need-revision` (+ reclassify-style comment — see the Out-of-repo owner gate below) |
 
-The matrix splits a lane/owner **mismatch** by where the real owner lives (the
-GGC-101 rule). An **in-repo lane mismatch** — a `Bug` that is really a feature,
+The matrix splits a lane/owner **mismatch** by where the real owner lives.
+An **in-repo lane mismatch** — a `Bug` that is really a feature,
 a `design bug` that needs logic — is NOT an out-of-repo owner: the redirect
 target is still this repo, so the dispatcher can re-route it within the
 pipeline, and (logic-needing `design bug` aside, which the row above already
@@ -108,14 +108,14 @@ the dispatcher §4.1 swap pattern). `bug`- and `ui-tweak`-lane tickets get
 stays two-label); `/route` derives the bug / ui-tweak pipeline from the
 classification label downstream.
 
-**Design-bug ready-to-dev gate** (GGC-37 + GGC-58 — ONE shared design-bug skip
-hook with two independent inputs): before writing `ready-to-dev` for a
+**Design-bug ready-to-dev gate** (ONE shared design-bug skip hook with two
+independent inputs): before writing `ready-to-dev` for a
 `design bug` (ui-tweak lane) ticket, evaluate two suppression signals. EITHER
 one alone suppresses `ready-to-dev` — re-dispatching a behaviour-needing fix to
 ui-tweak would just BLOCK, since only a logic-capable lane (dev/bug) can
 implement it:
 
-- **(a) reactive — ui-blocked marker present (GGC-37)**: the comments contain
+- **(a) reactive — ui-blocked marker present**: the comments contain
   `<!-- dispatch-triage-ui-blocked -->` (posted by the dispatcher's
   `triageTerminalUiBlock` after a *deterministic* ui-tweak BLOCK) **and the
   ticket is still classified `design bug`** → **HOLD**: do NOT write
@@ -123,7 +123,7 @@ implement it:
   `skipped — ui-tweak-blocked`. Silent on Linear (no re-comment — the
   dispatcher's marker comment already carries the reason / suggested action /
   attempt count). Enforced operationally in Step 8.2b.
-- **(b) predictive — text predicts the fix needs logic (GGC-58)**: the Step 3
+- **(b) predictive — text predicts the fix needs logic**: the Step 3
   logic-prediction sub-judgment found, with HIGH confidence and from the ticket
   TEXT alone (no diff exists yet), that the described fix inherently needs
   behaviour — gesture/tap recognizers, `initState`/`dispose` (lifecycle),
@@ -153,61 +153,61 @@ safety net for whatever the predictive (b) half misses.
 
 | Ticket's current analyzer label | Next run |
 |---|---|
-| `analyze-hold` (human-owned park sentinel, GGC-60) | **skipped entirely — never re-analyzed, re-labeled, or re-commented**, regardless of every other label (this row has TOP precedence; it overrides the `need-revision` re-evaluate rule below, which is exactly the manually-parked case). The analyzer NEVER adds or removes `analyze-hold` — a human adds it to park, removes it to resume. It survives any label write because it is non-analyzer-owned. |
+| `analyze-hold` (human-owned park sentinel) | **skipped entirely — never re-analyzed, re-labeled, or re-commented**, regardless of every other label (this row has TOP precedence; it overrides the `need-revision` re-evaluate rule below, which is exactly the manually-parked case). The analyzer NEVER adds or removes `analyze-hold` — a human adds it to park, removes it to resume. It survives any label write because it is non-analyzer-owned. |
 | none (fresh) | analyzed |
-| `need-revision` | re-analyzed **on content change only (GGC-103)** — completeness is re-judged from current content ONLY when the persisted `ticket-analyze:v2` marker's `content_sha` differs from `sha256(title+desc+lane)` (the author actually revised the ticket); a matching hash → **skipped, not re-judged** (the input is unchanged, so re-running the nondeterministic holistic judge could only flap `ready ↔ needs-revision`). When it does re-judge, it may flip to `ready-to-*` / `need-dependency`. **Backward-compat:** a legacy `ticket-analysis:v1` marker (or any marker with no `content_sha`) reads as "hash absent" → re-judge (the safe default); that first re-judge stamps the v2 hash so subsequent unchanged sweeps skip. EXCEPTION: a `design bug` is held back from `ready-to-dev` by the Design-bug ready-to-dev gate when EITHER it carries the `<!-- dispatch-triage-ui-blocked -->` marker (GGC-37, input a) OR its text still high-confidence predicts a logic-requiring fix (GGC-58, input b) — it stays `need-revision` until reclassified to `bug` (or, for b, until the text no longer reads as logic). |
-| `need-dependency` | re-analyzed — every blocker's live status re-fetched; all blockers Done → flips to `ready-to-*`. This blocker-status path is **deterministic and hash-independent (GGC-103)**: it re-fetches every sweep regardless of the `content_sha` skip, because a blocker closing is a state change the content hash cannot see. |
+| `need-revision` | re-analyzed **on content change only** — completeness is re-judged from current content ONLY when the persisted `ticket-analyze:v2` marker's `content_sha` differs from `sha256(title+desc+lane)` (the author actually revised the ticket); a matching hash → **skipped, not re-judged** (the input is unchanged, so re-running the nondeterministic holistic judge could only flap `ready ↔ needs-revision`). When it does re-judge, it may flip to `ready-to-*` / `need-dependency`. **Backward-compat:** a legacy `ticket-analysis:v1` marker (or any marker with no `content_sha`) reads as "hash absent" → re-judge (the safe default); that first re-judge stamps the v2 hash so subsequent unchanged sweeps skip. EXCEPTION: a `design bug` is held back from `ready-to-dev` by the Design-bug ready-to-dev gate when EITHER it carries the `<!-- dispatch-triage-ui-blocked -->` marker (input a) OR its text still high-confidence predicts a logic-requiring fix (input b) — it stays `need-revision` until reclassified to `bug` (or, for b, until the text no longer reads as logic). |
+| `need-dependency` | re-analyzed — every blocker's live status re-fetched; all blockers Done → flips to `ready-to-*`. This blocker-status path is **deterministic and hash-independent**: it re-fetches every sweep regardless of the `content_sha` skip, because a blocker closing is a state change the content hash cannot see. |
 | `ready-to-port` / `ready-to-dev` | skipped (already actionable; re-analyzing races the dispatcher) |
 | `need-spec-review` / `dispatcher-*-in-flight` | skipped (already inside a pipeline) |
 
-**Classification stickiness (GGC-96, orthogonal to the analyzer-label axis
+**Classification stickiness (orthogonal to the analyzer-label axis
 above).** Step 2.7 may auto-write a *classification* label (`bug` / `design
 bug`) on a 2-vote consensus, leaving a `<!-- ta-class:v1 source=analyzer -->`
 marker. On any later run, if the ticket's current classification differs from
 that marker, a human overrode it → the classification is **human-owned and never
 re-flipped** (same anti-re-flip invariant as `analyze-hold`, applied to
-classification). port / feature are never auto-written (deferred to GGC-98).
+classification). port / feature are never auto-written here.
 
-**Execution order — the gate sequence the holistic judge (GGC-100) slots INTO
-(GGC-105, binding invariant).** The free holistic judge (Step 3) is powerful
+**Execution order — the gate sequence the holistic judge slots INTO (binding
+invariant).** The free holistic judge (Step 3) is powerful
 enough that, run too early, it could re-qualify a human-parked ticket or silently
-undo the GGC-37/58 design-bug hold by deciding `ready-to-dev` on its own. It must
+undo the design-bug hold by deciding `ready-to-dev` on its own. It must
 not. The judge replaces ONLY the **content judgment _inside_ Step 3** — it does
 NOT subsume the deterministic gates that bracket it. Every sweep (single AND
 batch — the fan-out enforces the same order, see Step 1 batch note) runs these in
 this exact order, and **no later stage may re-decide what an earlier one settled**:
 
 ```
-1. analyze-hold guard (Step 2 :~420 / Step 1.5.5 discovery — GGC-60)
+1. analyze-hold guard (Step 2 :~420 / Step 1.5.5 discovery)
      human-parked → DROPPED. The judge NEVER runs on it; no label, no comment.
      TOP precedence — overrides every other label incl. need-revision re-evaluate.
 2. re-analysis precedence table (:~152-161 / Step 1.5.5 — decides who reaches Step 3)
      ready-to-* / need-spec-review / dispatcher-*-in-flight → SKIPPED pre-judge.
      fresh / need-revision / need-dependency → kept (and NOT also analyze-hold).
-2.9 content-hash skip gate (Step 2.9 — GGC-103)
+2.9 content-hash skip gate (Step 2.9)
      content_sha match → SKIP the judge (carry forward the prior verdict). It is
      fine to short-circuit the judge here, but this gate MUST NOT bypass (1) the
      analyze-hold guard [already dropped held tickets before it runs — Step 2.9.5],
      nor (b) the deterministic need-dependency blocker re-fetch [hash-INDEPENDENT;
      Steps 4-5 still run on a hash match so a closed blocker still flips to ready].
-── 3. Step 3: holistic judge LLM call (GGC-100) — the ONLY free-judgment stage ──
+── 3. Step 3: holistic judge LLM call — the ONLY free-judgment stage ──
      decides completeness; its `ready`/`needs-revision` is a CANDIDATE verdict.
 4. Design-bug hold override — deterministic POST-judge override gate
-   (Step 6 + Step 8.2b · GGC-37 reactive ui-blocked marker + GGC-58 predictive
+   (Step 6 + Step 8.2b · reactive ui-blocked marker + predictive
     logic-prediction). A judge `ready` on a `design bug` is STILL downgraded to
     need-revision (or silently held) here. This is NOT a rule folded into the free
     judge — it is a deterministic gate that overrides the judge AFTER it speaks:
-      (a) reactive — `<!-- dispatch-triage-ui-blocked -->` marker present (GGC-37)
+      (a) reactive — `<!-- dispatch-triage-ui-blocked -->` marker present
           → silent HOLD (Step 8.2b). (a) wins if both fire.
       (b) predictive — Step 3 logic-prediction sub-judgment returned needs-logic
-          at HIGH confidence (GGC-58) → downgrade to need-revision + reclassify
+          at HIGH confidence → downgrade to need-revision + reclassify
           comment (Step 6).
-   [The Out-of-repo owner gate (GGC-101) is the other deterministic post-judge
+   [The Out-of-repo owner gate is the other deterministic post-judge
     override here — same slot, separate axis: see the Step 6 owner gate.]
 ```
 
 The analyzer still **NEVER adds or removes `analyze-hold`** (human-owned, §C) and
-never auto-flips a classification (GGC-96 stickiness). The GGC-37/58 gate stays a
+never auto-flips a classification (classification stickiness). The design-bug gate stays a
 deterministic post-judge override — a free judge that read the design bug as
 `ready` does NOT get to ship it past the hold.
 
@@ -236,30 +236,30 @@ timestamp is shared across all tickets in the run.
      resolution block (replicate it — do not assume an upstream caller
      resolved). `unknown` → STOP. Then run **Step 1.4 (single-mode
      `<platform>` resolution)** to resolve `<platform>` from the **ticket's
-     own team**, NOT the cwd repo (GGC-108) — single mode may be run from a
+     own team**, NOT the cwd repo — single mode may be run from a
      repo that does not match the ticket. Skip to Step 2.
    - **Absent** → `<batch-mode> = True`. Proceed to Step 1.5 to populate
      `<queue>`. Do NOT prompt for a ticket id — batch is intentional.
 
-### Step 1.4: Single-mode `<platform>` resolution — from the ticket's team, not the cwd repo (GGC-108)
+### Step 1.4: Single-mode `<platform>` resolution — from the ticket's team, not the cwd repo
 
 Runs in **single mode only** (`<batch-mode> = False`). Batch mode resolves
 `<platform>` from the cwd repo profile at Step 1.5.1 and is **unchanged** —
 batch only ever sweeps the cwd repo's own team, so cwd-repo == ticket-team
 there by construction. Single mode does NOT have that guarantee: `/ticket-analyze
 <id>` can be run from any repo (e.g. a CAF/`flutter` ticket analyzed from the
-gogox-claude/`prompt` repo). Post-GGC-102 both the Step 3 rubric AND the Step 3.2
+gogox-claude/`prompt` repo). Both the Step 3 rubric AND the Step 3.2
 `owner` enum are platform-gated, so resolving `<platform>` from the cwd repo
 applies the wrong lens (and an owner enum the ticket's platform isn't in) → a
-clean flutter bug can be forced to `other-tooling`/out-of-repo → a false GGC-101
+clean flutter bug can be forced to `other-tooling`/out-of-repo → a false
 `need-revision`. Single mode therefore resolves `<platform>` from the **ticket's
 team**, reusing the SAME team_key ↔ branch_prefix ↔ platform mapping batch mode
 relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib.md`):
 
 1. **Get the ticket's team key.** Linear: the team key is the ticket id's prefix
-   (`<ticket-id>` up to the first `-`, e.g. `CAF-887` → `CAF`); `get_issue` also
+   (`<ticket-id>` up to the first `-`, e.g. `TEAM-887` → `TEAM`); `get_issue` also
    returns `.team` / `.teamId` for confirmation. Jira: the project key is likewise
-   the id prefix (e.g. `CET-8362` → `CET`), derived from the project. Call this
+   the id prefix (e.g. `PROJ-8362` → `PROJ`), derived from the project. Call this
    `<ticket-team-key>`.
 
 2. **Map `<ticket-team-key>` → platform via the profile registry** (the reverse of
@@ -272,7 +272,7 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
    - then every `~/.claude/commands/profiles/registry/*.yaml`.
    ```bash
    # <ticket-team-key> e.g. CAF; resolve its platform from the registry by branch_prefix
-   TICKET_TEAM_KEY="${TICKET_ID%%-*}"   # CAF-887 → CAF (Linear team key / Jira project key)
+   TICKET_TEAM_KEY="${TICKET_ID%%-*}"   # TEAM-887 → TEAM (Linear team key / Jira project key)
    TICKET_PLATFORM=""
    for PF in "$(git rev-parse --show-toplevel)/.gogox-claude.yaml" \
              "$HOME"/.claude/commands/profiles/registry/*.yaml; do
@@ -293,7 +293,7 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
    - **Mapped** → set `<platform> = TICKET_PLATFORM`. If it differs from the cwd
      repo's own platform, **say so in the run header** (Step 2 / report), e.g.
      `Resolving platform from the ticket's team CAF → flutter (cwd repo is prompt).`
-     This is the GGC-108 fix: the Step 3 rubric + the Step 3.2 owner enum are now
+     The result: the Step 3 rubric + the Step 3.2 owner enum are now
      selected by the **ticket's** platform, so a clean flutter bug analyzed from
      gogox-claude is judged with the flutter rubric + `flutter | backend |
      ios-signing | ops | design | unclear` owner enum and reaches `ready-to-dev`,
@@ -304,7 +304,7 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
      ```
      Cannot resolve a platform for ticket <ticket-id>'s team (<ticket-team-key>):
      no project profile maps that team key. The completeness rubric and owner enum
-     are platform-relative (GGC-102), so analyzing it under the cwd repo's platform
+     are platform-relative, so analyzing it under the cwd repo's platform
      would judge it with the wrong lens. Add a registry profile for <ticket-team-key>
      (branch_prefix: <ticket-team-key>, platform: <...>), then re-run.
      ```
@@ -339,7 +339,7 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
    and continue. If `ticket_system == unknown` → STOP (never default to
    Linear silently).
 
-3. **Resolve the actionable-pool states** (GGC-95 — do NOT hardcode names):
+3. **Resolve the actionable-pool states** (do NOT hardcode names):
    - Linear: `mcp__claude_ai_Linear__list_issue_statuses` for `<team_key>`;
      the pool = every status whose `type ∈ {triage, backlog, unstarted}`.
      This captures Triage, Backlog, AND the To-Do-named unstarted state(s) —
@@ -348,7 +348,7 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
    - Jira: the pool = `statusCategory = "To Do"` (covers the Backlog / To Do /
      Triage-equivalent column) via the JQL below.
 
-4. **List tickets — team-wide, NO assignee filter** (GGC-95):
+4. **List tickets — team-wide, NO assignee filter**:
    - Linear: run one `mcp__claude_ai_Linear__list_issues` per resolved pool
      state (`team = <team_key>`, `state = <pool state>`, and **OMIT
      `assignee`** so every assignee — and the unassigned pool — is covered);
@@ -366,7 +366,7 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
    - **Skip (highest precedence)**: tickets carrying `analyze-hold`
      (`skipped — human-parked (analyze-hold); remove the label to resume`)
      — checked FIRST, so a `need-revision` ticket a human parked with
-     `analyze-hold` is never re-qualified (GGC-60).
+     `analyze-hold` is never re-qualified.
    - **Keep**: tickets with none of the analyzer labels (fresh), and
      tickets carrying `need-revision` or `need-dependency` (re-evaluate —
      content may have been enriched / blockers may have closed) **and NOT
@@ -395,8 +395,8 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
 
    | # | ticket          | title                        | priority | current label |
    |---|-----------------|------------------------------|----------|---------------|
-   | 1 | [CAF-370](url1) | <truncated title, ≤60 chars> | high     | —             |
-   | 2 | [CAF-401](url2) | <truncated title, ≤60 chars> | medium   | need-revision |
+   | 1 | [TICKET-1](url1) | <truncated title, ≤60 chars> | high     | —             |
+   | 2 | [TICKET-2](url2) | <truncated title, ≤60 chars> | medium   | need-revision |
    ... (one row per ticket through row <N>)
    ```
    Ticket cell is a markdown link (no separate url column — full URLs blow
@@ -411,7 +411,7 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
 
 ### Step 1.6: Triage intake pass (`--triage` only)
 
-> **Superseded by Step 2.7 (GGC-96).** The default sweep now auto-classifies the
+> **Superseded by Step 2.7.** The default sweep now auto-classifies the
 > pool through the Step 2.7 confidence gate (2-vote; strong `bug` / `design bug`
 > auto-labeled, the rest to the human tail) — so the intake-starvation this pass
 > was built to solve is handled automatically, no flag required. `--triage` is
@@ -533,12 +533,12 @@ names from its field-mapping table:
     Only `blocks`/`blocked-by` kinds can ever block; `related`/`duplicate`
     are recorded in the comment but never affect the verdict.
 
-**Universal `analyze-hold` guard (GGC-60)** — the single enforcement point that covers BOTH modes: immediately after `<labels>` is captured, if it contains `analyze-hold`, the ticket is HUMAN-PARKED. Drop it from `<queue>` now — do NOT proceed to Step 3+, write no label, post no comment, record no verdict. Print `[<k>/<N>] skipped <ticket-id> — human-parked (analyze-hold); remove the label to resume`. In **single mode** this is a clean STOP (exit zero); in **batch mode** it just removes the one ticket and the sweep continues. (Batch discovery already filters these out at Step 1.5.5; this guard is the safety net for single mode and for any ticket pulled in by a path that skipped that filter.) The analyzer never writes `analyze-hold` itself — it is human-owned.
+**Universal `analyze-hold` guard** — the single enforcement point that covers BOTH modes: immediately after `<labels>` is captured, if it contains `analyze-hold`, the ticket is HUMAN-PARKED. Drop it from `<queue>` now — do NOT proceed to Step 3+, write no label, post no comment, record no verdict. Print `[<k>/<N>] skipped <ticket-id> — human-parked (analyze-hold); remove the label to resume`. In **single mode** this is a clean STOP (exit zero); in **batch mode** it just removes the one ticket and the sweep continues. (Batch discovery already filters these out at Step 1.5.5; this guard is the safety net for single mode and for any ticket pulled in by a path that skipped that filter.) The analyzer never writes `analyze-hold` itself — it is human-owned.
 
 Print one line per ticket (non-held):
 `[<k>/<N>] Fetched <ticket-id> "<title>" — lane: <lane>, relations: <n>`
 
-### Step 2.7: Auto-classification (GGC-96 — default flow, replaces the `--triage` per-ticket HITL)
+### Step 2.7: Auto-classification (default flow, replaces the `--triage` per-ticket HITL)
 
 Runs for every queued ticket whose Step 2 lane is `unknown` (no single
 classification label among `{bug, port, feature}` and no `design bug`). A
@@ -549,7 +549,7 @@ The analyzer still **assigns nothing** here — it writes at most one classifica
 label (label-only). Relaxes §C's "never write classification labels" behind the
 two gates below (R1).
 
-**Gate 0 — sticky human override (F3, the GGC-60 lesson).** Read the ticket's
+**Gate 0 — sticky human override (F3).** Read the ticket's
 comments for the newest `<!-- ta-class:v1 source=analyzer label=<c> -->` marker
 (the idempotency key this step writes, §A2):
 
@@ -563,7 +563,7 @@ comments for the newest `<!-- ta-class:v1 source=analyzer label=<c> -->` marker
   current classification is a single valid label, use it as `<lane>`; if it is now
   empty/ambiguous, treat the ticket as the human tail (Gate 2 "ungroundable" path)
   — the human deliberately un-classified it. This is the exact re-flip loop
-  GGC-60 fixed for `need-revision`; do not reintroduce it for classification.
+  we avoid for `need-revision`; do not reintroduce it for classification.
 
 **Gate 1 — decorrelated 2-vote (F1).** Propose a class from the ticket TEXT, then
 confirm with a SECOND, different-tier model — mirroring `audit.md`'s
@@ -583,7 +583,7 @@ NOT decidable from text** (the analyzer reads no code) → those route to Gate 1
    return the SAME `strong` class. A port/feature lean (from either vote) →
    Gate 1b. No consensus and no port/feature lean → Gate 2 (human tail).
 
-**Gate 1b — codebase grounding for port vs feature (GGC-98 / P3, LOCAL-RUN
+**Gate 1b — codebase grounding for port vs feature (P3, LOCAL-RUN
 ONLY, fail-closed).** port and feature are distinguished by the codebase, not the
 text: a **port** = the feature exists in the **origin** repo and is absent in the
 **current** repo; a **feature** = net-new. Resolve the origin and scan
@@ -631,7 +631,7 @@ text: a **port** = the feature exists in the **origin** repo and is absent in th
 human confirm in this step (that was the old `--triage` bottleneck). `--dry-run`
 proposes + reports the would-write class but writes no label and posts no marker.
 
-### Step 2.9: Content-hash gate — skip the judge when content is unchanged (GGC-103)
+### Step 2.9: Content-hash gate — skip the judge when content is unchanged
 
 Runs for every queued ticket AFTER Step 2.7 has resolved the final `<lane>` and
 BEFORE the Step 3 judge call. It is the write-stability guard for the holistic
@@ -655,12 +655,12 @@ comment (the analyzer is otherwise stateless — the marker is the only state).
    whitespace/markdown canonicalization beyond the single-`\n` join — with ONE
    required exception, the signed-URL strip below.
 
-   **Signed-URL strip — REQUIRED before hashing (GGC-109).** Linear rotates the
+   **Signed-URL strip — REQUIRED before hashing.** Linear rotates the
    signed `src` of every attachment on each fetch: the URL of a `<linear-embed>`
    (and any inline `![](…)`) carries a `?signature=…` JWT whose `iat`/`exp` change
    on every `get_issue`. Hashing the raw description therefore produces a DIFFERENT
    `content_sha` on every fetch for any ticket with a screenshot/video (most bug
-   tickets), so the match below never fires and GGC-103 is defeated for exactly the
+   tickets), so the match below never fires and the content-hash skip is defeated for exactly the
    attachment-bearing majority. To track real content, not signature rotation,
    **strip the volatile query string from every signed Linear asset URL in the
    canonical string before hashing**: for any URL whose host is `uploads.linear.app`
@@ -677,7 +677,7 @@ comment (the analyzer is otherwise stateless — the marker is the only state).
    likewise stable across fetches and never the signed `src` — pick one and apply
    it identically in both paths; the query-strip is the simpler default.)
 
-   **Parity (binding, GGC-109).** `workflows/ticket-analyze-fanout.workflow.js`
+   **Parity (binding).** `workflows/ticket-analyze-fanout.workflow.js`
    (the batch path) computes this same hash and MUST apply the IDENTICAL strip, or
    a ticket would skip in one path and re-judge in the other. The strip is
    specified once here and mirrored verbatim in that file's Step-2.9 prompt — keep
@@ -702,7 +702,7 @@ comment (the analyzer is otherwise stateless — the marker is the only state).
      have a value, but **make no new label write and post no new comment** for the
      completeness axis (the label already reflects that verdict; re-writing the
      same label is a no-op and re-posting a comment is noise). Record the skip in
-     the report (`reasons: content unchanged — judge skipped (GGC-103)`). Print
+     the report (`reasons: content unchanged — judge skipped`). Print
      `[<k>/<N>] <ticket-id> — content unchanged (sha match); judge skipped`.
    - **Marker present AND `content_sha` differs** → the author revised
      title/description, or the lane changed → **re-judge** (proceed to Step 3).
@@ -719,21 +719,21 @@ comment (the analyzer is otherwise stateless — the marker is the only state).
    flip is driven by deterministic blocker state, not by re-judging content, so it
    does not flap.
 
-5. **`analyze-hold` precedence is unchanged — the hash skip never bypasses it
-   (GGC-105).** The Step 2 universal `analyze-hold` guard has already dropped
+5. **`analyze-hold` precedence is unchanged — the hash skip never bypasses it.**
+   The Step 2 universal `analyze-hold` guard has already dropped
    human-parked tickets BEFORE this step, so this gate never runs on them: the
    content-hash short-circuit can suppress the judge, but it can never re-admit a
    ticket the analyze-hold guard already removed. Likewise it never bypasses the
    deterministic blocker re-fetch (item 4 above) — the two are the only gates the
-   hash skip must defer to. This is the coherent ordering the GGC-105 execution-
-   order invariant (top of file) requires: `analyze-hold → re-analysis precedence
+   hash skip must defer to. This is the coherent ordering the execution-order
+   invariant (top of file) requires: `analyze-hold → re-analysis precedence
    → [2.9 hash skip] → judge → design-bug/owner post-judge override`.
 
 `--dry-run`: still compute the hash and REPORT the skip/re-judge decision (the
 `would-write` column reflects "judge skipped — content unchanged" on a match),
 but write nothing (no comment, no label) regardless — same as today.
 
-### Step 3: Per-ticket completeness analysis — one holistic LLM judge (GGC-100)
+### Step 3: Per-ticket completeness analysis — one holistic LLM judge
 
 For each ticket, completeness is decided by **ONE holistic LLM judge call**
 per ticket — not a per-lane checklist of pass/fail gates. The judge reads the
@@ -744,16 +744,16 @@ fixed per-lane checklists do not vanish; they survive only as **reference
 guidance inside the judge's prompt** — "what a good `<lane>` ticket usually
 has" — never as gates. The mechanical decomposition into field-presence
 checks was itself the disease that produced the "form not actionability" miss:
-a ticket can tick every box and still be unactionable — see GGC-100.)
+a ticket can tick every box and still be unactionable.)
 
 **Single call, no 2-vote.** Completeness is cheap to re-run and reversible
 (`need-revision` is re-analyzed **on content change** — see Re-run semantics and
-the Step 2.9 content-hash gate, GGC-103), so it gets one judge call. Contrast
+the Step 2.9 content-hash gate), so it gets one judge call. Contrast
 classification (Step 2.7), whose write is sticky and therefore spends a
-decorrelated 2-vote (GGC-96). Spend the second vote only on irreversible writes;
+decorrelated 2-vote. Spend the second vote only on irreversible writes;
 completeness is not one.
 
-**Why the judge runs only on content change (GGC-103).** The judge is a *single*
+**Why the judge runs only on content change.** The judge is a *single*
 nondeterministic call, so a borderline ticket can land `ready` one sweep and
 `needs-revision` the next **even though its content never changed** — the input
 is identical, only the sampling differs. Re-judging unchanged content can
@@ -774,9 +774,9 @@ across it). Hoist it **above** the per-ticket text as a prompt-cache breakpoint
 so its tokens are paid once per sweep, not N× (one cache prefix, the per-ticket
 payload appended after it).
 
-**Rubric is composed from the resolved `<platform>` (GGC-102).** `<platform>`
+**Rubric is composed from the resolved `<platform>`.** `<platform>`
 is resolved once per run (Step 1.5.1 in batch mode, from the cwd repo profile;
-single mode resolves it from the **ticket's team** at Step 1.4 — GGC-108, since a
+single mode resolves it from the **ticket's team** at Step 1.4, since a
 single-mode run may target a ticket whose team ≠ the cwd repo) — **no new
 configuration** (both paths read the same registry: batch by `basename`, single by
 `branch_prefix`). Assembling the
@@ -801,9 +801,9 @@ the app rubric and falsely flagged for missing repro-env / Figma.
    *clearly* missing essential — something a dev/port/ui-tweak lane provably
    cannot start without. When the signal is ambiguous, judge `ready`. A false
    `needs-revision` that strands a good ticket is strictly **worse** than the
-   wasted build a false `ready` costs (the governing principle, inherited from
-   GGC-58). This is the acceptance test for the whole judge.
-2. **Owner / lane-fit — block ONLY a high-confidence out-of-repo owner (GGC-101).**
+   wasted build a false `ready` costs (the governing principle). This is the
+   acceptance test for the whole judge.
+2. **Owner / lane-fit — block ONLY a high-confidence out-of-repo owner.**
    Judge two things the matrix needs: does the ticket fit its current `<lane>`
    (`lane_fits`), and who is the real `owner` of the work (`owner`, drawn from
    the **platform-relative owner enum** selected by the resolved `<platform>` —
@@ -820,7 +820,7 @@ the app rubric and falsely flagged for missing repro-env / Figma.
    - **Out-of-repo owner** — the work's real owner is another platform / team
      this repo provably cannot complete (`backend`, `ios-signing`, `ops`, or any
      non-this-repo platform). Emit `verdict: needs-revision` **ONLY when
-     `confidence:high`** (the same high-confidence bar GGC-58 uses to avoid
+     `confidence:high`** (the same high-confidence bar used to avoid
      stranding); the Step 8 comment is reclassify-style: *"owner appears to be
      `<owner>`; not actionable in this repo. Re-assign or re-scope; if it really
      is a `<platform>` change, state which one."* At **med/low confidence** the
@@ -836,7 +836,7 @@ the app rubric and falsely flagged for missing repro-env / Figma.
    near-irreversible (it pulls the ticket out of the dispatch pool until a human
    acts), the high-confidence owner-block sub-decision — and ONLY it — gets a
    confirming decorrelated 2nd vote (Step 3.2); the rest of completeness stays a
-   single judge call (GGC-100).
+   single judge call.
 3. **You cannot see attachments.** This is a text-only judge — a ticket may
    carry its real spec in a screenshot, video, or design file the judge has no
    eyes on. So treat apparent emptiness as *possibly attachment-borne* and bias
@@ -892,7 +892,7 @@ the judge sees ONLY this, never the app build/Figma rubric:
   (Lane derivation is unchanged — `bug` / `feature` still route via `/route`;
   only the *completeness* lens shifts.)
 
-**Logic-prediction sub-judgment (ui-tweak lane only — GGC-58; feeds the
+**Logic-prediction sub-judgment (ui-tweak lane only; feeds the
 Design-bug ready-to-dev gate, input b).** For a `design bug` (ui-tweak lane)
 ticket, the same judge call additionally answers ONE question from the ticket
 TEXT (description + any technical notes — there is no diff at analyze time, so
@@ -912,11 +912,10 @@ the text clearly calls for behaviour such as:
 Pure-visual work is NOT logic and MUST fall through to the normal verdict:
 color / spacing / padding / sizing / typography, swapping to a design-system
 icon or asset, re-ordering or restructuring existing widgets, alignment /
-constraints (`LayoutBuilder` / `ConstrainedBox`). Worked calibration: CAF-540
-(LayoutBuilder/ConstrainedBox empty-state) and CAF-611 (design-system icon
-swap) are visual → NOT flagged (they now pass ui-tweak post-GGC-57); CAF-555
-(tappable T&C link needing `TapGestureRecognizer` + `initState`/`dispose`) IS
-flagged. **Fail-safe rule** (same bias as principle 1): when the signal is
+constraints (`LayoutBuilder` / `ConstrainedBox`). Concretely: a
+LayoutBuilder/ConstrainedBox empty-state, or swapping in a design-system icon,
+is visual → NOT flagged; a tappable T&C link needing `TapGestureRecognizer` +
+`initState`/`dispose` IS flagged. **Fail-safe rule** (same bias as principle 1): when the signal is
 ambiguous, mixed, or clearly visual, judge `visual` (the default). Only an
 unambiguous behaviour signal sets `needs-logic` — a false `needs-logic` strands
 a ticket ui-tweak could have shipped. Record
@@ -954,13 +953,13 @@ the cached prefix and emit:
 { verdict:     ready | needs-revision,
   lane_fits:   bool,                              # does the ticket fit its current lane?
   owner:       <one of the platform-relative owner enum below>,  # who really owns the work (see owner_scope)
-  owner_scope: in-repo | out-of-repo | unclear,   # GGC-101: is `owner` this repo, or another platform/team?
+  owner_scope: in-repo | out-of-repo | unclear,   # is `owner` this repo, or another platform/team?
   missing:     [concrete revision asks],          # phrased as next-step asks, not terse "missing X"
   warnings:    [non-blocking flags],              # lane-fit / owner / vagueness reads that DON'T block
   confidence:  high | med | low }                 # low → needs-revision + "needs human judgment"
 ```
 
-**Malformed-output fail-safe (GGC-104) — applies to every single-ticket judge
+**Malformed-output fail-safe — applies to every single-ticket judge
 call here.** The judge is a free-form LLM call; in a sweep of N tickets some
 calls WILL come back unparseable or schema-invalid. Handle it inline, in this
 exact order, BEFORE mapping the verdict at Step 6:
@@ -968,7 +967,7 @@ exact order, BEFORE mapping the verdict at Step 6:
 1. **Parse + schema-validate.** Take the judge's reply and parse it as a JSON
    object. It is *schema-invalid* (treated identically to an unparseable reply)
    when ANY of the following holds — these are concrete checks against the
-   GGC-100/102 verdict schema above:
+   verdict schema above:
    - the reply is not a single parseable JSON object;
    - a required field is missing (`verdict`, `confidence`, `owner`,
      `owner_scope`);
@@ -998,10 +997,10 @@ exact order, BEFORE mapping the verdict at Step 6:
    could not even speak to. This `ready` then flows through the normal Step 6 →
    Step 8 label-write path exactly like any other `ready` verdict (→
    `ready-to-dev` / `ready-to-port`), and the `warnings[]` entry is rendered as
-   the §A `⚠` Completeness bullet by the existing GGC-100 warnings→comment path
+   the §A `⚠` Completeness bullet by the existing warnings→comment path
    (Step 8.3 / §A) — so the posted `ticket-analysis` comment SAYS the ticket
    auto-passed; it is never a silent auto-pass. (The synthesized
-   `owner_scope: unclear` + `confidence: low` cannot trip the GGC-101
+   `owner_scope: unclear` + `confidence: low` cannot trip the
    out-of-repo owner block, which fires only on `out-of-repo` + `high` — correct:
    a malformed judge gives us no high-confidence owner read to act on.)
 
@@ -1014,7 +1013,7 @@ vague-but-present acceptance signal, and a med/low-confidence out-of-repo read
 all land here as non-blocking flags.
 
 **`owner` is platform-relative — the enum is selected by the resolved
-`<platform>` (GGC-102).** Just as the rubric (Step 3.1) is composed from
+`<platform>`.** Just as the rubric (Step 3.1) is composed from
 `<platform>`, the `owner` enum the judge may emit is **platform-relative** — an
 app repo and a `prompt` repo do not share an owner vocabulary (`backend` /
 `ios-signing` are meaningless in a prompt repo; `prompt` / `other-tooling` are
@@ -1037,14 +1036,14 @@ enum value to `out-of-repo`, and `unclear` to `owner_scope: unclear`:
   the repo's own app platform is the in-repo value by the same rule.)
 - `prompt` platform: `prompt` ⇒ `in-repo`; `other-tooling` ⇒ `out-of-repo`.
 
-This is the platform-correct enum the GGC-101 out-of-repo owner-block reads:
+This is the platform-correct enum the out-of-repo owner-block reads:
 "out-of-repo" now means the *platform-correct* set of foreign owners (e.g. on a
 prompt repo a `backend`/`ios-signing` read is impossible — those values are not
 in the enum — so the block fires on `other-tooling`, never on an app-only owner
 value the judge could otherwise hallucinate against the wrong vocabulary).
 
-**Out-of-repo owner-block — the ONE completeness sub-decision with a 2nd vote
-(GGC-101).** Because flipping a ticket to `need-revision` on owner grounds pulls
+**Out-of-repo owner-block — the ONE completeness sub-decision with a 2nd vote.**
+Because flipping a ticket to `need-revision` on owner grounds pulls
 it off the dispatch queue until a human acts (near-irreversible), the judge does
 NOT block on the first call alone. When the single judge call returns
 `owner_scope: out-of-repo` AND `confidence: high`, run a **confirming
@@ -1056,7 +1055,7 @@ both-must-agree contract). The owner-block fires (verdict downgraded to
 high-confidence; if the 2nd vote disagrees or is not high-confidence, the
 out-of-repo read **demotes to a non-blocking `warnings[]` entry** and the verdict
 stays `ready` (bias-to-ready). Every OTHER part of completeness — and the
-in-repo / med-low cases — stays a single judge call (GGC-100): spend the second
+in-repo / med-low cases — stays a single judge call: spend the second
 vote only on this near-irreversible write.
 
 **Mapping to the decision matrix (top of file).** The matrix's `completeness`
@@ -1072,8 +1071,8 @@ as non-blocking flags.
 
 1. **Inferred edges**: scan each ticket's title + description for
    references to other tickets that read as ordering constraints —
-   `depends on CAF-368`, `blocked by DET-12`, `after CAF-212 ships`,
-   `needs the Edit screen (CAF-368) first`, etc. A bare ticket-id mention
+   `depends on TICKET-1`, `blocked by TICKET-2`, `after TICKET-3 ships`,
+   `needs the Edit screen (TICKET-1) first`, etc. A bare ticket-id mention
    without ordering language is `related`, not blocking. For each hit emit
    `{from, to, kind, source: inferred, evidence: "<quoted phrase>"}`.
 
@@ -1121,23 +1120,23 @@ Build a directed graph over `<queue>` using **blocking edges only**
 Combine Step 3 + Step 5 per ticket through the decision matrix (top of
 file) → `{verdict, target_label, reasons, blockers, order_position}`.
 
-**Both gates below are deterministic POST-judge override gates (GGC-105).** They
+**Both gates below are deterministic POST-judge override gates.** They
 run AFTER the Step 3 holistic judge, on its candidate verdict — they are NOT rules
 folded into the free judge. A judge that returned `ready` does NOT get to write
 `ready-to-dev` past either gate: each can still downgrade (or silently hold) a
 `ready` candidate. This is the execution-order invariant at the top of the file —
 the judge replaces only the content judgment inside Step 3; the design-bug hold
-(GGC-37/58) and the out-of-repo owner block (GGC-101) override it here.
+and the out-of-repo owner block override it here.
 
 The **Design-bug ready-to-dev gate** (contract, top of file) has two inputs,
 both evaluated for a `design bug` (ui-tweak lane) ticket whose `target_label`
 would be `ready-to-dev`:
 
-- **(a) marker present (GGC-37)** — enforced operationally in Step 8.2b (it
+- **(a) marker present** — enforced operationally in Step 8.2b (it
   reuses the comments already re-fetched there): carrying the
   `<!-- dispatch-triage-ui-blocked -->` marker downgrades to a `held` outcome —
   no `ready-to-dev` write, no comment.
-- **(b) text predicts logic (GGC-58)** — from the Step 3 logic-prediction
+- **(b) text predicts logic** — from the Step 3 logic-prediction
   sub-judgment (`logic_prediction == needs-logic`): downgrade `target_label`
   from `ready-to-dev` to `need-revision`, with verdict `incomplete` and a
   reclassify reason (`fix appears to require logic / behaviour (<evidence>) —
@@ -1148,7 +1147,7 @@ would be `ready-to-dev`:
 If BOTH (a) and (b) fire, **(a) wins** — the silent hold (the marker comment
 already explains the situation; suppress the (b) reclassify comment).
 
-The **Out-of-repo owner gate** (GGC-101, contract + matrix row at top of file)
+The **Out-of-repo owner gate** (contract + matrix row at top of file)
 is evaluated for **any** lane whose `target_label` would be `ready-to-port` /
 `ready-to-dev` (i.e. a `complete` + unblocked verdict). It consumes the Step 3.2
 owner-block sub-judgment — `owner_scope` + `confidence`, **already confirmed by
@@ -1199,7 +1198,7 @@ Iterate `<queue>` in order. All writes are read-before-write.
    base for the Step 8.4 rewrite — see below). Decide as follows:
 
    **(i) hard conflict → skip/STOP.** If an analyzer header-marker comment
-   (`ticket-analyze:v2`, or a legacy `ticket-analysis:v1` — GGC-103, accept both)
+   (`ticket-analyze:v2`, or a legacy `ticket-analysis:v1` — accept both)
    by another author is newer than `<batch-start-time>`, OR the ticket now carries
    `dispatcher-*-in-flight` (dispatcher locked it mid-analysis), OR
    `<labels-fresh>` now carries `analyze-hold` (a human parked it mid-run), OR
@@ -1211,7 +1210,7 @@ Iterate `<queue>` in order. All writes are read-before-write.
      `[<k>/<N>] <ticket-id> skipped — concurrent actor (<which signal>).`,
      mark `skipped`, continue.
 
-   **(ii) benign label drift → keep, but rebase the write (GGC-95 / F5).** If
+   **(ii) benign label drift → keep, but rebase the write (F5).** If
    `<labels-fresh>` differs from the Step-2 `<labels>` only in labels that do
    NOT affect the verdict (e.g. a human added a priority/area tag between our
    read and write), do NOT skip — but the Step 8.4 full-set rewrite MUST be
@@ -1221,7 +1220,7 @@ Iterate `<queue>` in order. All writes are read-before-write.
    set makes a benign concurrent label edit safe; the hard-conflict cases above
    are the only ones that skip.
 
-   **2b. Design-bug ready-to-dev gate** (GGC-37 — reuse the comments just
+   **2b. Design-bug ready-to-dev gate** (reuse the comments just
    re-fetched in 8.2, no extra MCP call): if `target_label == ready-to-dev`
    AND `<lane> == ui-tweak` (still classified `design bug`) AND the comments
    contain the literal marker `<!-- dispatch-triage-ui-blocked -->`, then
@@ -1231,12 +1230,12 @@ Iterate `<queue>` in order. All writes are read-before-write.
    and print
    `[<k>/<N>] <ticket-id> skipped — ui-tweak-blocked (reclassify Design bug → Bug to proceed).`,
    continue. (Once reclassified to `bug`, `<lane>` is no longer ui-tweak so this
-   gate does not fire and the ticket analyzes normally. This is the shared gate
-   GGC-58 extended with the (b) predictive branch above — do not add a second
+   gate does not fire and the ticket analyzes normally. This is the shared gate,
+   extended with the (b) predictive branch above — do not add a second
    skip path.)
 
    This 8.2b enforcement is the **reactive (a)** branch ONLY. The **predictive
-   (b)** branch (GGC-58 — text high-confidence predicts a logic-requiring fix)
+   (b)** branch (text high-confidence predicts a logic-requiring fix)
    is NOT handled here: it was already folded into `target_label` at Step 6
    (`need-revision` + reclassify-to-`Bug` reason) and posts its reasoned
    comment + writes `need-revision` through the normal Step 8.3 / 8.4 path
@@ -1246,7 +1245,7 @@ Iterate `<queue>` in order. All writes are read-before-write.
 
 3. **Post comment** via the `_ticket-lib.md` `save_comment` branch using
    the §A schema (the `ticket-analyze:v2` header marker, stamped with the
-   Step-2.9 `content_sha` + `judged` timestamp — GGC-103). Append-only — a fresh
+   Step-2.9 `content_sha` + `judged` timestamp). Append-only — a fresh
    comment each run; the newest analyzer header-marker comment (`ticket-analyze:v2`,
    or a legacy `ticket-analysis:v1`) is authoritative on read. **Not posted on a
    Step-2.9 content-unchanged SKIP** — that path writes no comment, so the prior
@@ -1287,23 +1286,23 @@ Step 7 for dry-run). Two parts:
 Batch analysis — team <KEY>, <N> tickets (<C> ready, <I> need revision, <B> blocked)
 
 Implementation order:
-  1. [CAF-212](url)  ← recommended start
-  2. [CAF-198](url)  (after CAF-212)
+  1. [TICKET-1](url)  ← recommended start
+  2. [TICKET-2](url)  (after TICKET-1)
   ...
 Blocked (excluded from order):
-  [CAF-370](url)  blocked by CAF-368 (open)   [explicit]
-  [CAF-401](url)  blocked by CAF-212 (open)   [inferred-confirmed]
-⚠ CYCLE: CAF-5 ↔ CAF-6   (omit line when none)
+  [TICKET-3](url)  blocked by TICKET-7 (open)   [explicit]
+  [TICKET-4](url)  blocked by TICKET-1 (open)   [inferred-confirmed]
+⚠ CYCLE: TICKET-5 ↔ TICKET-6   (omit line when none)
 
 | # | ticket          | lane    | verdict             | label written   | blockers | reasons                |
 |---|-----------------|---------|---------------------|-----------------|----------|------------------------|
-| 1 | [CAF-212](url)  | feature | complete/unblocked  | ready-to-dev    | —        | —                      |
-| 2 | [CAF-370](url)  | port    | complete/blocked    | need-dependency | CAF-368  | —                      |
-| 3 | [CAF-401](url)  | bug     | incomplete          | need-revision   | —        | missing repro steps    |
+| 1 | [TICKET-1](url) | feature | complete/unblocked  | ready-to-dev    | —        | —                      |
+| 2 | [TICKET-3](url) | port    | complete/blocked    | need-dependency | TICKET-7 | —                      |
+| 3 | [TICKET-4](url) | bug     | incomplete          | need-revision   | —        | missing repro steps    |
 ```
 
 One row per ticket, never truncated. Inferred-unconfirmed edges appear in
-a trailing note (`Unconfirmed (not blocking): CAF-401 → CAF-212 "…"`), not
+a trailing note (`Unconfirmed (not blocking): TICKET-4 → TICKET-1 "…"`), not
 in the blockers column.
 
 ### Step 10: Batch summary (batch mode only)
@@ -1377,8 +1376,8 @@ see `_slack-notify.md` Guardrails); do not add change-detection here.
 
 ### Dependencies
 <!-- ta-dep:v1 to=<ID> kind=<blocks|blocked-by|related> source=<explicit|inferred> confirmed=<true|false> status=<open|done> -->
-- BLOCKING — blocked by CAF-368 (open) · explicit relation
-- INFERRED/UNCONFIRMED — "depends on CAF-212" (description) · not treated as blocking
+- BLOCKING — blocked by TICKET-1 (open) · explicit relation
+- INFERRED/UNCONFIRMED — "depends on TICKET-2" (description) · not treated as blocking
 (omit section when no edges)
 
 ---
@@ -1390,10 +1389,10 @@ not invoke them.
 Schema rules:
 
 - The header marker is the idempotency / concurrency key — copy exactly.
-- **`content_sha` + `judged` (GGC-103) — the write-stability anchor.**
+- **`content_sha` + `judged` — the write-stability anchor.**
   `content_sha = sha256(title+desc+lane)` over the EXACT Step-2.9 canonical
   normalization (the same `title + "\n" + description + "\n" + lane` the judge
-  reads, **with the GGC-109 signed-URL strip applied to the description before
+  reads, **with the signed-URL strip applied to the description before
   hashing** — drop the `?…` query from every `uploads.linear.app` / `signature=`
   URL so attachment signature rotation does not rotate the hash; see Step 2.9
   item 1 for the canonical rule, which both this skill and the fanout workflow
@@ -1404,7 +1403,7 @@ Schema rules:
   re-judge on hash mismatch / first v2 sweep over a legacy ticket). On a Step-2.9
   SKIP (content unchanged) no new comment is posted at all, so the prior marker —
   with its still-correct `content_sha` — simply persists.
-- **Backward-compat / migration (GGC-103).** A legacy `ticket-analysis:v1` header
+- **Backward-compat / migration.** A legacy `ticket-analysis:v1` header
   marker (no `content_sha`) is still a valid prior record: readers MUST accept
   BOTH `ticket-analyze:v2` and the legacy `ticket-analysis:v1` marker name. A
   marker with no `content_sha` reads as "hash absent" → Step 2.9 re-judges (the
@@ -1423,7 +1422,7 @@ Schema rules:
 - Jira: same body; it is the primary record there (string labels are only
   a filterable index).
 
-### §A2 — Auto-classification provenance marker (GGC-96)
+### §A2 — Auto-classification provenance marker
 
 When Step 2.7 auto-writes a classification label, it posts a **standalone**
 one-line marker comment (separate from the `ticket-analyze:v2` body above):
@@ -1440,7 +1439,7 @@ Rules:
   marker is only ever written by this step).
 - This marker is the **sticky-override key** read by Step 2.7 Gate 0: on the next
   sweep, if the ticket's current classification label ≠ this marker's `label`, a
-  human overrode it → never re-classify (the GGC-60 anti-re-flip invariant,
+  human overrode it → never re-classify (the anti-re-flip invariant,
   generalized to classification).
 - Posted ONLY on an actual auto-write — never for the human tail, never in
   `--dry-run`, never when re-affirming an unchanged prior auto-label.
@@ -1455,34 +1454,34 @@ Rules:
 | Ticket already `ready-to-*` | 1.5.5 | Skipped — re-analysis would race the dispatcher |
 | Ticket in pipeline (`need-spec-review`, `dispatcher-*-in-flight`) | 1.5.5 | Skipped |
 | `need-revision` / `need-dependency` ticket | 1.5.5 | Re-analyzed (the revise → ready loop) |
-| Unclassified ticket, 2-vote agrees strong `bug`/`design bug` | 2.7 | Auto-write that classification label (label-only) + `ta-class:v1` marker (GGC-96) |
-| Unclassified ticket, port/feature lean, origin on disk + scan conclusive | 2.7 Gate 1b | Auto-write `port`/`feature` from read-only codebase grounding (GGC-98) |
+| Unclassified ticket, 2-vote agrees strong `bug`/`design bug` | 2.7 | Auto-write that classification label (label-only) + `ta-class:v1` marker |
+| Unclassified ticket, port/feature lean, origin on disk + scan conclusive | 2.7 Gate 1b | Auto-write `port`/`feature` from read-only codebase grounding |
 | Unclassified port/feature lean, origin unresolvable / repo not checked out (cloud) | 2.7 Gate 1b | Fail-closed (F4) → human tail; Gate 1b is a no-op in the cloud routine |
 | Unclassified ticket, votes disagree / ungrounded port-feature / weak | 2.7 | Human tail — no auto-label; `need-revision` comment says "couldn't classify the lane, pick one" + suggested lane (Q3) |
-| `ta-class` marker exists but current classification differs (human override) | 2.7 Gate 0 | Classification is human-owned — never re-flip (GGC-96 / GGC-60 invariant) |
+| `ta-class` marker exists but current classification differs (human override) | 2.7 Gate 0 | Classification is human-owned — never re-flip (sticky-classification invariant) |
 | Missing/multiple classification labels (after Step 2.7 tail) | 3 | Revision reason, not a prompt |
 | Missing classification, strong lane signal in text | 3 | Reason carries a suggested lane + evidence (comment text only, never a label write) |
 | Missing classification, weak/ambiguous signal (esp. port vs feature) | 3 | No suggestion — plain base sentence only |
 | `design bug` text HIGH-confidence predicts a logic-needing fix | 3 / 6 | Design-bug gate (b): `need-revision` + reclassify→`Bug` comment; never `ready-to-dev` |
 | `design bug` ambiguous / clearly-visual fix | 3 | No logic flag — `ready-to-dev` as today; ui-tweak dual-judge panel is the authority |
 | `design bug` with BOTH ui-blocked marker and logic-text signal | 8.2b | Reactive marker branch (a) wins — silent hold, no reclassify comment |
-| Judge reads owner as OUT-OF-REPO at `confidence:high`, 2nd vote confirms | 3.2 / 6 | Out-of-repo owner gate: `need-revision` + reclassify-to-`<owner>` comment; never `ready-to-*` (GGC-101) |
+| Judge reads owner as OUT-OF-REPO at `confidence:high`, 2nd vote confirms | 3.2 / 6 | Out-of-repo owner gate: `need-revision` + reclassify-to-`<owner>` comment; never `ready-to-*` |
 | Out-of-repo owner read but 2nd vote disagrees / not high-confidence | 3.2 | Demotes to non-blocking `warnings[]` ⚠; verdict stays `ready` (bias-to-ready) |
-| In-repo lane mismatch (`Bug` reads as feature, etc.) | 6 | Stays `ready` + warning / reclassify suggestion — dispatcher re-routes within this repo; never an owner block (GGC-101) |
+| In-repo lane mismatch (`Bug` reads as feature, etc.) | 6 | Stays `ready` + warning / reclassify suggestion — dispatcher re-routes within this repo; never an owner block |
 | Out-of-repo owner at med/low confidence | 3.2 / 6 | Non-blocking `warnings[]` ⚠ on a `ready` verdict |
 | Bare ticket-id mention, no ordering language | 4.1 | `related` edge — recorded, never blocking |
 | Inferred edge, `--non-interactive` | 4.2 | Report-only, never blocking |
 | Blocking edge to a Done/canceled ticket | 4.3 | Satisfied — not blocking |
 | Cycle among queue tickets | 5.2 | All members blocked w/ cycle reason; loud warning; no crash |
-| `need-revision`/`need-dependency` ticket, content unchanged since last judge (`content_sha` match) | 2.9 | SKIP the holistic judge — carry forward the marker's verdict; no new comment / label write. Kills the `ready ↔ needs-revision` flap + biggest token saving (GGC-103) |
+| `need-revision`/`need-dependency` ticket, content unchanged since last judge (`content_sha` match) | 2.9 | SKIP the holistic judge — carry forward the marker's verdict; no new comment / label write. Kills the `ready ↔ needs-revision` flap + biggest token saving |
 | `need-revision` ticket, title/desc/lane edited since last judge (`content_sha` differs) | 2.9 / 3 | Re-judge (the revise → re-evaluate loop); re-stamp the `ticket-analyze:v2` marker with the new hash |
-| Legacy `ticket-analysis:v1` marker (no `content_sha`), or no marker at all | 2.9 | "Hash absent" → re-judge (safe default); first v2 sweep stamps the hash so later unchanged sweeps skip (GGC-103 backward-compat) |
-| `need-dependency` ticket, content unchanged but a blocker just closed | 2.9 / 4.3 / 5 | Blocker re-fetch is hash-INDEPENDENT — still flips `need-dependency → ready-to-*`; `content_sha` match suppresses only the nondeterministic completeness judge (GGC-103) |
+| Legacy `ticket-analysis:v1` marker (no `content_sha`), or no marker at all | 2.9 | "Hash absent" → re-judge (safe default); first v2 sweep stamps the hash so later unchanged sweeps skip (backward-compat) |
+| `need-dependency` ticket, content unchanged but a blocker just closed | 2.9 / 4.3 / 5 | Blocker re-fetch is hash-INDEPENDENT — still flips `need-dependency → ready-to-*`; `content_sha` match suppresses only the nondeterministic completeness judge |
 | Dispatcher locks a ticket mid-run | 8.2 | Pre-write re-check skips it |
 | Newer foreign analyzer header-marker comment (`ticket-analyze:v2` or legacy `ticket-analysis:v1`) | 8.2 | Skip (batch) / STOP (single) |
 | Classification label / `analyze-hold` changed since read | 8.2(i) | Hard conflict — skip (batch) / STOP (single); verdict was computed for a stale lane |
 | Benign label added by a human between read and write | 8.2(ii) / 8.4 | Keep; rebase the full-set rewrite on the freshly-fetched labels so the new label is preserved (F5 — no lost update) |
-| Unassigned / other-assignee pool ticket | 1.5.4 | In scope (GGC-95) — analyzed + labeled, never assigned |
+| Unassigned / other-assignee pool ticket | 1.5.4 | In scope — analyzed + labeled, never assigned |
 | `need-revision` label missing on team | 8.1 | Auto-create; on failure post comment + manual hint |
 | Label already at target | 8.4 | No-op write, logged |
 | 5xx on comment or label | 8.5 | Retry once; then errored + continue (batch) / STOP (single) |
@@ -1501,12 +1500,12 @@ Rules:
 - Do NOT invoke `/ggx-work`, `/route`, or any pipeline — labels are the
   only handoff.
 - Classification labels (`bug` / `port` / `feature` / `design bug`):
-  **auto-write is allowed ONLY through the Step 2.7 confidence gate (R1 /
-  GGC-96)** — a decorrelated 2-vote (haiku + sonnet must agree) on a
+  **auto-write is allowed ONLY through the Step 2.7 confidence gate (R1)** —
+  a decorrelated 2-vote (haiku + sonnet must agree) on a
   **strong-signal `bug` / `design bug`**, written label-only with a
   `<!-- ta-class:v1 source=analyzer -->` provenance marker. Outside that gate
   the analyzer never writes a classification label: **port / feature are never
-  auto-written here** (undecidable from text — deferred to P3/GGC-98 codebase
+  auto-written here** (undecidable from text — deferred to P3 codebase
   grounding), and a human's classification is **sticky** — once a human sets or
   changes the label away from our marker, Step 2.7 Gate 0 never re-flips it.
   (Legacy carve-out: the `--triage` Step 1.6 per-ticket-confirm path still
@@ -1525,7 +1524,7 @@ Rules:
   assignee/status writes. No bulk self-assign exists anywhere (pull model —
   PM never assigns; people pull their own tickets).
 - Filesystem: **READ-ONLY scanning is allowed ONLY in Step 2.7 Gate 1b
-  (R2 / GGC-98)** — Grep/Glob/Read over the current repo + the origin repo
+  (R2)** — Grep/Glob/Read over the current repo + the origin repo
   (`originalProjectPath`) to ground a port-vs-feature classification, fail-closed
   to the human tail when either repo is not on disk. **Never write** the
   filesystem or git anywhere; outside Gate 1b the analyzer stays pure
