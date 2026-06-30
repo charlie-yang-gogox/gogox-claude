@@ -1,8 +1,8 @@
-// ── ticket-analyze fan-out (GGC-97 / P2 of the analyzer evolution) ──
+// ── ticket-analyze fan-out (P2 of the analyzer evolution) ──
 //
 // Throughput substrate for /ticket-analyze: the serial single-session sweep
 // (~2.5h) re-shaped as a Workflow fan-out so the analyzer keeps up with PM/QA
-// inflow. Mirrors workflows/dispatch-fanout.workflow.js (the proven GGC-55
+// inflow. Mirrors workflows/dispatch-fanout.workflow.js (the proven
 // Workflow-only fan-out pattern).
 //
 // THIS IS A THIN HARNESS, NOT A RE-IMPLEMENTATION. The per-ticket judgment
@@ -10,17 +10,17 @@
 // Step 8 label-only writes with the F5 fresh-label rebase) lives in
 // commands/dev/ticket-analyze.md and stays the single source of truth — each
 // agent below is told to APPLY those steps, so there is no logic to drift out
-// of sync (the GGC-63 duplication trap). The script owns only: fan-out, the
+// of sync (the duplication trap). The script owns only: fan-out, the
 // cross-item dependency-graph BARRIER (Step 5, pure JS — it needs every
 // ticket's edges at once), and the run-level digest/metrics.
 //
-// GATE ORDER (GGC-105 — must mirror the skill's execution-order invariant):
+// GATE ORDER (must mirror the skill's execution-order invariant):
 //   analyze-hold guard (held:true → DROPPED here, before any write — the judge
 //     never runs on it) → re-analysis precedence (the caller's discovery filter
 //     decides the roster) → Step 2.9 content-hash skip (judgeSkipped, never
 //     bypasses analyze-hold nor the hash-INDEPENDENT blocker re-fetch) → Step 3
 //     judge (CANDIDATE verdict) → deterministic POST-judge override gates
-//     (design-bug GGC-37/58 + out-of-repo owner GGC-101, folded into
+//     (design-bug + out-of-repo owner, folded into
 //     completeness / applied in the write stage — a judge `ready` can still be
 //     downgraded or held). The override gates are NOT folded into the free judge.
 //
@@ -50,11 +50,11 @@ const ANALYZE_SCHEMA = {
   additionalProperties: false,
   properties: {
     ticketId: { type: "string" },
-    // analyze-hold guard (GGC-60): a human-parked ticket is dropped — no write,
+    // analyze-hold guard: a human-parked ticket is dropped — no write,
     // no comment, no verdict.
     held: { type: "boolean" },
-    // Step 2.9 content-hash gate (GGC-103). contentSha = sha256(title+desc+lane)
-    // over the Step-2.9 canonical normalization — WITH the GGC-109 signed-URL strip
+    // Step 2.9 content-hash gate. contentSha = sha256(title+desc+lane)
+    // over the Step-2.9 canonical normalization — WITH the signed-URL strip
     // applied to the description first (drop the ?… query from uploads.linear.app /
     // signature= URLs so rotating attachment signatures don't rotate the hash; same
     // strip in the skill's Step 2.9 item 1 — parity). judgeSkipped=true ⇒ the persisted
@@ -71,14 +71,14 @@ const ANALYZE_SCHEMA = {
     judgeSkipped: { type: "boolean" },
     contentSha: { type: ["string", "null"] },
     lane: { type: "string", enum: ["port", "feature", "bug", "ui-tweak", "unknown"] },
-    // Step 2.7 auto-classification outcome (GGC-96). wroteClass=true ⇒ the write
+    // Step 2.7 auto-classification outcome. wroteClass=true ⇒ the write
     // stage must persist `classLabel` + the ta-class:v1 marker. classSource lets
     // the write stage honor the sticky-override gate (human ⇒ never re-flip).
     wroteClass: { type: "boolean" },
     classLabel: { type: ["string", "null"] },
     classSource: { type: ["string", "null"], enum: ["analyzer", "human", null] },
     // completeness is the verdict→matrix key (Step 6). It is MAPPED from the
-    // holistic judge's verdict (GGC-100): verdict=="ready" ⇒ "complete",
+    // holistic judge's verdict: verdict=="ready" ⇒ "complete",
     // verdict=="needs-revision" ⇒ "incomplete".
     completeness: { type: "string", enum: ["complete", "incomplete"] },
     // missing[] = the judge's concrete revision asks (phrased as next steps);
@@ -89,9 +89,9 @@ const ANALYZE_SCHEMA = {
     missing: { type: "array", items: { type: "string" } },
     warnings: { type: "array", items: { type: "string" } },
     reasons: { type: "array", items: { type: "string" } },
-    // Step 3.2 owner signal (GGC-101). owner = the real owner of the work, drawn
-    // from the PLATFORM-RELATIVE owner enum selected by the resolved <platform>
-    // (GGC-102): app platform → flutter|backend|ios-signing|ops|design|unclear;
+    // Step 3.2 owner signal. owner = the real owner of the work, drawn
+    // from the PLATFORM-RELATIVE owner enum selected by the resolved <platform>:
+    // app platform → flutter|backend|ios-signing|ops|design|unclear;
     // prompt platform → prompt|other-tooling|unclear (backend/ios-signing/design
     // are meaningless there). owner_scope = is that owner this repo or another
     // platform/team — derived from the enum (the repo's own platform owner ⇒
@@ -106,7 +106,7 @@ const ANALYZE_SCHEMA = {
     owner_scope: { type: ["string", "null"], enum: ["in-repo", "out-of-repo", "unclear", null] },
     confidence: { type: ["string", "null"], enum: ["high", "med", "low", null] },
     // human-tail disambiguation (Q3): which need-revision flavor the comment must use.
-    // "owner-out-of-repo" (GGC-101) is the owner-block reclassify flavor.
+    // "owner-out-of-repo" is the owner-block reclassify flavor.
     revisionKind: { type: ["string", "null"], enum: ["content-incomplete", "cannot-classify", "owner-out-of-repo", null] },
     // blocking edges for the Step 5 graph barrier. `open` = target still open.
     blockingEdges: {
@@ -128,7 +128,7 @@ const WRITE_SCHEMA = {
   additionalProperties: false,
   properties: {
     ticketId: { type: "string" },
-    // "judge-skipped" (GGC-103): content unchanged (Step 2.9 sha match) AND no
+    // "judge-skipped": content unchanged (Step 2.9 sha match) AND no
     // deterministic blocker flip — the write stage made no completeness comment /
     // label write; it is a clean no-op, distinct from a concurrency "skipped".
     outcome: { type: "string", enum: ["analyzed", "skipped", "judge-skipped", "errored"] },
@@ -341,7 +341,7 @@ async function analyzeTicket(item) {
       label: `analyze:${id}`,
       phase: "analyze",
       agentType: "general-purpose",
-      // Tiering (GGC-97): per-ticket classify+completeness is judgment over text
+      // Tiering: per-ticket classify+completeness is judgment over text
       // — sonnet, not opus (no implementation happens here). The internal 2-vote
       // decorrelation is emulated within the sonnet pass; a true cross-tier split
       // is a refinement (would be a haiku pre-pass) tracked under measurement.
@@ -351,7 +351,7 @@ async function analyzeTicket(item) {
   );
   // agent() returns null on user-skip / terminal API error, OR when the
   // StructuredOutput schema retries are EXHAUSTED (the judge never produced a
-  // schema-valid ANALYZE_SCHEMA object). The latter is exactly the GGC-104
+  // schema-valid ANALYZE_SCHEMA object). The latter is exactly the
   // malformed-judge case at the OUTER (tool) layer — the in-prompt fail-safe
   // above handles a malformed Step-3 judge that the agent still recovers from;
   // this handles the agent itself failing to emit a valid row. Either way we
@@ -392,7 +392,7 @@ async function writeTicket(row, graphInfo) {
   const id = row.ticketId;
   const g = graphInfo.get(id) || { blocked: false, blockers: [], cycle: false };
   // Step 6 decision matrix → analyzer target label. The Out-of-repo owner gate
-  // (GGC-101) and the GGC-58 design-bug (b) gate were already folded into
+  // and the design-bug (b) gate were already folded into
   // `completeness` by the analyze stage (both downgrade verdict→needs-revision
   // ⇒ completeness:"incomplete"), so the incomplete→need-revision row below
   // carries them; the write agent uses revisionKind to pick the comment wording.
@@ -400,9 +400,9 @@ async function writeTicket(row, graphInfo) {
   if (row.completeness === "incomplete") target = "need-revision";
   else if (g.blocked) target = "need-dependency";
   else target = row.lane === "port" ? "ready-to-port" : "ready-to-dev";
-  // (the design-bug ready-to-dev MARKER gate / GGC-37 8.2b is applied inside the
+  // (the design-bug ready-to-dev MARKER gate / 8.2b is applied inside the
   // agent — pass the lane + reasons so it can hold when required.)
-  // Step 2.9 judge-skip (GGC-103): the completeness judge was NOT re-run because
+  // Step 2.9 judge-skip: the completeness judge was NOT re-run because
   // content is unchanged. The carried-forward verdict already maps to `target`;
   // if the deterministic blocker re-eval did not change which analyzer label is
   // due (target == the label the ticket already carries), the write is a pure
@@ -491,7 +491,7 @@ log(`[analyze-fanout] roster: ${roster.length} ticket(s)`);
 phase("analyze");
 const analyzedRaw = await parallel(roster.map((item) => () => analyzeTicket(item)));
 const analyzed = analyzedRaw.filter(Boolean);
-// analyze-hold tickets are dropped here (GGC-60) — no write, no comment.
+// analyze-hold tickets are dropped here — no write, no comment.
 const held = analyzed.filter((r) => r.held);
 const live = analyzed.filter((r) => !r.held);
 if (held.length) log(`[analyze-fanout] ${held.length} skipped — human-parked (analyze-hold)`);
@@ -518,7 +518,7 @@ const counts = rows.reduce(
   { analyzed: 0, skipped: 0, "judge-skipped": 0, errored: 0 },
 );
 const readyRows = rows.filter((r) => r.targetLabel === "ready-to-dev" || r.targetLabel === "ready-to-port");
-// GGC-103: "judge-skipped" (content unchanged, no blocker flip) is a clean no-op,
+// "judge-skipped" (content unchanged, no blocker flip) is a clean no-op,
 // not a concurrency skip — count it separately so the token saving is visible.
 log(
   `[analyze-fanout] analyzed=${counts.analyzed} skipped=${counts.skipped + held.length} judge-skipped=${counts["judge-skipped"]} errored=${counts.errored} · ready=${readyRows.length}`,
