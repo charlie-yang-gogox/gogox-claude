@@ -25,7 +25,7 @@
 //     downgraded or held). The override gates are NOT folded into the free judge.
 //
 // args: the post-discovery + post-CAP roster — an array of
-//   { ticketId, role?, blockingEdges?, lane?, currentLabel? }
+//   { ticketId, role?, blockingEdges?, lane? }
 // produced by the caller's Step 1.5 discovery + re-analysis filter + Step 1.7
 // full-pool graph + capped judged-set selection (GGC-113). role ∈:
 //   - "judge" (DEFAULT when the field is absent — backward-compatible with the

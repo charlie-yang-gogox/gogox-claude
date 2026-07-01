@@ -62,10 +62,13 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
   is left to repeated invocation (the cron / on-duty loop) — each run's
   writes filter processed tickets out of the next sweep. **Execution:**
   after Step 1.5 discovery + the re-analysis filter + the full-pool graph +
-  the cap selection (Step 1.7), batch mode fans the **capped judged
-  roster** out via `workflows/ticket-analyze-fanout.workflow.js` — a thin
-  harness that runs the per-ticket Step 2.7/3 judgment in parallel, builds
-  the Step-5 dependency graph over the full pool in one barrier, then fans
+  the cap selection (Step 1.7), batch mode fans the roster out via
+  `workflows/ticket-analyze-fanout.workflow.js` — one row per acted-on
+  ticket, each `{ ticketId, role, blockingEdges, lane }` where `role` is
+  `judge` for the capped judged set or `flip` for the `<deterministic-set>`
+  (whose flip rows ride along for the graph + a possible blocker flip) — a
+  thin harness that runs the per-ticket Step 2.7/3 judgment in parallel,
+  builds the Step-5 dependency graph over the full pool in one barrier, then fans
   out the Step-8 writes (haiku/sonnet tiered, no opus). The judgment below
   is the source of truth; the harness only orchestrates.
 - `/ticket-analyze <ticket-id>` — **single mode**. Analyze just this one
@@ -667,7 +670,7 @@ the logical field names from its field-mapping table:
     Only `blocks`/`blocked-by` kinds can ever block; `related`/`duplicate`
     are recorded in the comment but never affect the verdict.
 
-**Universal `analyze-hold` guard** — the single enforcement point that covers BOTH modes: immediately after `<labels>` is captured, if it contains `analyze-hold`, the ticket is HUMAN-PARKED. Drop it from `<queue>` now — do NOT proceed to Step 3+, write no label, post no comment, record no verdict. Print `[<k>/<N>] skipped <ticket-id> — human-parked (analyze-hold); remove the label to resume`. In **single mode** this is a clean STOP (exit zero); in **batch mode** it just removes the one ticket and the sweep continues. (Batch discovery already filters these out at Step 1.5.5; this guard is the safety net for single mode and for any ticket pulled in by a path that skipped that filter.) The analyzer never writes `analyze-hold` itself — it is human-owned.
+**Universal `analyze-hold` guard** — the single enforcement point that covers BOTH modes: immediately after `<labels>` is captured, if it contains `analyze-hold`, the ticket is HUMAN-PARKED. Drop it from the sweep now (from `<queue>` and `<deterministic-set>` in batch, from the single-ticket `<queue>` in single mode) — do NOT proceed to Step 3+, write no label, post no comment, record no verdict. Print `[<k>/<N>] skipped <ticket-id> — human-parked (analyze-hold); remove the label to resume`. In **single mode** this is a clean STOP (exit zero); in **batch mode** it just removes the one ticket and the sweep continues. (Batch discovery already filters these out at Step 1.5.5; this guard is the safety net for single mode and for any ticket pulled in by a path that skipped that filter.) The analyzer never writes `analyze-hold` itself — it is human-owned.
 
 Print one line per ticket (non-held):
 `[<k>/<N>] Fetched <ticket-id> "<title>" — lane: <lane>, relations: <n>`
@@ -1664,11 +1667,11 @@ Rules:
 | `need-revision` label missing on team | 8.1 | Auto-create; on failure post comment + manual hint |
 | Label already at target | 8.4 | No-op write, logged |
 | 5xx on comment or label | 8.5 | Retry once; then errored + continue (batch) / STOP (single) |
-| Zero tickets after filters | 1.5.7 | STOP cleanly, exit zero — unless `--triage` (continue to Step 1.6 with empty base queue) |
+| Zero tickets after filters | 1.5.7 | STOP cleanly, exit zero — unless `--triage` (continue to Step 1.6 with empty base `<pool>`) |
 | `--dry-run` | 7 | Full report, zero writes of any kind |
 | `--triage` + ticket-id, or `--triage` + `--non-interactive` | 1.1 | STOP — triage is a human-confirmed batch pool sweep |
 | `--triage` on a Jira repo | 1.6 | Skip Phase 0 (Linear-only v1), continue to normal sweep |
-| `--triage`, untriaged pool empty | 1.6.1 | Note + continue to Step 2 with the base queue |
+| `--triage`, untriaged pool empty | 1.6.1 | Note + continue to Step 1.7 with the base `<pool>` |
 | `--triage` ambiguous classification (esp. port vs feature) | 1.6.2 | No Recommended default — operator must choose deliberately |
 | `--triage` pull cap reached | 1.6.3 | `Label + Pull` dropped from remaining rows; Label-only / Skip only |
 | `--triage` Label-only choice | 1.6.4 | One classification label written; zero assignee/status writes; stays in pool |
