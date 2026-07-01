@@ -24,10 +24,21 @@
 //     completeness / applied in the write stage — a judge `ready` can still be
 //     downgraded or held). The override gates are NOT folded into the free judge.
 //
-// args: the post-discovery roster — an array of { ticketId } (and optionally
-// url/labels) produced by the caller's Step 1.5 discovery + re-analysis filter
-// (the skill / cloud routine does discovery; the analyzer is label-only and
-// idempotent, so unlike the dispatcher there is no race-lock to own here).
+// args: the post-discovery + post-CAP roster — an array of
+//   { ticketId, role?, blockingEdges?, lane?, currentLabel? }
+// produced by the caller's Step 1.5 discovery + re-analysis filter + Step 1.7
+// full-pool graph + capped judged-set selection (GGC-113). role ∈:
+//   - "judge" (DEFAULT when the field is absent — backward-compatible with the
+//     pre-GGC-113 plain-{ticketId} roster): spend the expensive Step-3 judge and
+//     write the full verdict. These are the top-N (`--max`) unblocked-first
+//     judge-candidates.
+//   - "flip": deterministic-set (GGC-113) — a need-dependency ticket with
+//     UNCHANGED content that did NOT make the cap. NO judge; the caller passes its
+//     `blockingEdges` (already status-resolved) so the graph can tell if every
+//     blocker has since closed. Write is flip-only: need-dependency → ready-to-*
+//     when unblocked, else a pure no-op. Never consumes a judge slot (RF3).
+// The cap itself is enforced UPSTREAM (Step 1.7), not here — this harness trusts
+// the roster it is handed. Deferred pool tickets are simply absent from args.
 //
 // Returns { counts, rows } for the caller's report (Step 9) + digest (Step 10).
 
@@ -205,6 +216,11 @@ function buildGraph(rows) {
       }
     }
   }
+  // NOTE (GGC-113): this bestStart is the RAW topological root (order[0]) and is
+  // kept only for the lib/ticket-analyze-graph.test.sh contract. The orchestration
+  // DELIBERATELY recomputes bestStart restricted to JUDGED rows (a flip/graph-only
+  // root can't carry a dispatchable ready-to-* label), so the two encode different
+  // semantics on purpose — do not assume they agree.
   const bestStart = order[0] || null;
   return { result, order, bestStart, cycleMembers: [...inCycle] };
 }
@@ -476,6 +492,43 @@ async function writeTicket(row, graphInfo) {
   return res;
 }
 
+// ── Stage 3b: deterministic flip-only write (GGC-113 <deterministic-set>). These
+// tickets were NOT judged this run (unchanged need-dependency); their completeness
+// stays the still-valid `complete`. The ONLY possible write is the deterministic
+// blocker flip need-dependency → ready-to-* when the graph now shows every blocker
+// closed. No judge, no design-bug / owner gate, no completeness comment. This is
+// what keeps cheap flips from consuming a judge cap slot (RF3 anti-starvation).
+async function writeFlip(row, graphInfo) {
+  const id = row.ticketId;
+  const g = graphInfo.get(id) || { blocked: true, blockers: [], cycle: false };
+  // Still blocked → nothing changed → pure no-op, no MCP write at all.
+  if (g.blocked) {
+    return { ticketId: id, outcome: "judge-skipped", targetLabel: "need-dependency", detail: "still blocked — no-op" };
+  }
+  const target = row.lane === "port" ? "ready-to-port" : "ready-to-dev";
+  const res = await agent(
+    [
+      `Deterministic blocker-flip for ${id} (GGC-113 flip-only path) by applying`,
+      `ticket-analyze.md Step 8 for the <deterministic-set> case. This ticket was`,
+      `NOT judged this run — do NOT run any completeness judge, design-bug gate, or`,
+      `owner gate. Its blockers have all closed per the dependency graph, so:`,
+      `1. Step 8.2 pre-write check: re-fetch fresh labels. If it no longer carries`,
+      `   need-dependency (a concurrent writer changed it), or analyze-hold /`,
+      `   dispatcher-*-in-flight appeared → outcome="skipped", write nothing.`,
+      `2. Otherwise rewrite the analyzer label = fresh_labels −`,
+      `   {ready-to-port,ready-to-dev,need-revision,need-dependency} + ${target}`,
+      `   (full-set rebase; preserve every non-analyzer label). Leave the existing`,
+      `   ticket-analyze:v2 marker + its content_sha in place (content is unchanged).`,
+      `3. Post a short comment: "blocker(s) closed → ${target}" (no completeness`,
+      `   section — completeness was not re-judged). NEVER write an assignee.`,
+      `Return WRITE_SCHEMA: outcome analyzed|skipped, targetLabel=${target}, detail.`,
+    ].join("\n"),
+    { label: `flip:${id}`, phase: "write", agentType: "general-purpose", model: "haiku", schema: WRITE_SCHEMA },
+  );
+  if (!res) return { ticketId: id, outcome: "errored", targetLabel: target, detail: "flip-agent-null" };
+  return res;
+}
+
 // ════════════════════════════════ orchestration ════════════════════════════
 
 const roster = Array.isArray(args) ? args.filter((x) => x && x.ticketId) : [];
@@ -483,29 +536,62 @@ if (!roster.length) {
   log("[analyze-fanout] empty roster — nothing to analyze");
   return { counts: { analyzed: 0, skipped: 0, errored: 0 }, rows: [] };
 }
-log(`[analyze-fanout] roster: ${roster.length} ticket(s)`);
+// Split by role (GGC-113). Absent role ⇒ "judge" (backward-compat with the
+// pre-cap plain-{ticketId} roster). "flip" = deterministic-set: no judge, graph
+// participation only + a possible blocker-flip write.
+const judgeItems = roster.filter((x) => (x.role || "judge") === "judge");
+const flipItems = roster.filter((x) => x.role === "flip");
+log(`[analyze-fanout] roster: ${roster.length} (judge ${judgeItems.length}, flip ${flipItems.length})`);
 
-// Phase 1 — analyze, BARRIER. The graph stage needs every ticket's edges at
-// once (Step 5), so this is one of the rare legitimate barriers: collect all
-// analyses before building the graph. A thrown thunk resolves to null → filtered.
+// Phase 1 — analyze, BARRIER. Only the judged set spends a judge call. The graph
+// stage needs every ticket's edges at once (Step 5), so this is one of the rare
+// legitimate barriers. A thrown thunk resolves to null → filtered.
 phase("analyze");
-const analyzedRaw = await parallel(roster.map((item) => () => analyzeTicket(item)));
+const analyzedRaw = await parallel(judgeItems.map((item) => () => analyzeTicket(item)));
 const analyzed = analyzedRaw.filter(Boolean);
 // analyze-hold tickets are dropped here — no write, no comment.
 const held = analyzed.filter((r) => r.held);
-const live = analyzed.filter((r) => !r.held);
+const judgedLive = analyzed.filter((r) => !r.held);
 if (held.length) log(`[analyze-fanout] ${held.length} skipped — human-parked (analyze-hold)`);
 
-// Phase 2 — dependency graph (pure JS, no agents). The BARRIER's payoff.
+// Synthesize flip rows (no agent): they carry only the caller's pre-resolved
+// edges + lane, so the graph can decide blocked/unblocked. These NEVER get a
+// completeness verdict — their write is flip-only.
+const flipRows = flipItems.map((x) => ({
+  ticketId: x.ticketId,
+  held: false,
+  lane: x.lane || "feature",
+  completeness: "complete",
+  blockingEdges: x.blockingEdges || [],
+  role: "flip",
+}));
+
+// Phase 2 — dependency graph (pure JS, no agents). Built over judged ∪ flip, so
+// a flip ticket's blockers (and any external open target, resolved per-edge) are
+// all present — best-start / blocked are correct over the whole acted-on set.
 phase("graph");
-const { result: graphInfo, order, bestStart, cycleMembers } = buildGraph(live);
+const graphRows = [...judgedLive, ...flipRows];
+const { result: graphInfo, order, cycleMembers } = buildGraph(graphRows);
+// best-start must range over JUDGED rows only — only a judged + written ticket
+// gets a ready-to-* label the dispatcher can act on. It is still chosen against
+// the whole-set topological order (so it is the true root of the dispatchable
+// frontier, not a cap artifact). If the order's root is a flip/deferred ticket,
+// no best-start is emitted this run.
+const judgedIds = new Set(judgedLive.map((r) => r.ticketId));
+const bestStart =
+  order.find((id) => judgedIds.has(id) && !graphInfo.get(id).blocked) || null;
 if (cycleMembers.length) log(`[analyze-fanout] ⚠ CYCLE among: ${cycleMembers.join(" ↔ ")}`);
-log(`[analyze-fanout] order: ${order.join(" → ") || "(none unblocked)"}${bestStart ? ` · start=${bestStart}` : ""}`);
+log(`[analyze-fanout] order: ${order.join(" → ") || "(none unblocked)"}${bestStart ? ` · start=${bestStart}` : " · start=(root deferred)"}`);
 
 // Phase 3 — writes, fan out. Independent per ticket (label-only; F5 makes the
-// full-set rewrite safe against concurrent human label edits).
+// full-set rewrite safe against concurrent human label edits). Judged rows get
+// the full verdict write; flip rows get the deterministic flip-only write.
 phase("write");
-const written = (await parallel(live.map((row) => () => writeTicket(row, graphInfo)))).filter(Boolean);
+// Keep judged and flip results separate so the digest can bucket them (a flip
+// that lands ready-to-* is NOT judged throughput — Step 10 `flipped` bucket).
+const judgedWritten = (await parallel(judgedLive.map((row) => () => writeTicket(row, graphInfo)))).filter(Boolean);
+const flipWritten = (await parallel(flipRows.map((row) => () => writeFlip(row, graphInfo)))).filter(Boolean);
+const written = [...judgedWritten, ...flipWritten];
 
 // Phase 4 — digest + F2 metrics. unclaimedReady = tickets we just made
 // ready-to-* that carry no assignee (the "looks done but does nothing" risk the
@@ -513,15 +599,19 @@ const written = (await parallel(live.map((row) => () => writeTicket(row, graphIn
 // the caller from Linear history; the digest just names the candidates.
 phase("digest");
 const rows = written;
-const counts = rows.reduce(
+// `analyzed`/`skipped`/`judge-skipped`/`errored` count JUDGED writes; `flipped`
+// counts deterministic-set blocker flips that actually landed a ready-to-* label
+// (a still-blocked flip returns outcome="judge-skipped" and is a clean no-op).
+const counts = judgedWritten.reduce(
   (a, r) => ((a[r.outcome] = (a[r.outcome] || 0) + 1), a),
   { analyzed: 0, skipped: 0, "judge-skipped": 0, errored: 0 },
 );
+counts.flipped = flipWritten.filter((r) => r.outcome === "analyzed").length;
 const readyRows = rows.filter((r) => r.targetLabel === "ready-to-dev" || r.targetLabel === "ready-to-port");
 // "judge-skipped" (content unchanged, no blocker flip) is a clean no-op,
 // not a concurrency skip — count it separately so the token saving is visible.
 log(
-  `[analyze-fanout] analyzed=${counts.analyzed} skipped=${counts.skipped + held.length} judge-skipped=${counts["judge-skipped"]} errored=${counts.errored} · ready=${readyRows.length}`,
+  `[analyze-fanout] analyzed=${counts.analyzed} flipped=${counts.flipped} skipped=${counts.skipped + held.length} judge-skipped=${counts["judge-skipped"]} errored=${counts.errored} · ready=${readyRows.length}`,
 );
 log(`[analyze-fanout] F2 unclaimed-ready (need a human to pull): ${readyRows.map((r) => r.ticketId).join(", ") || "none"}`);
 

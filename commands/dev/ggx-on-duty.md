@@ -144,7 +144,7 @@ Wake cycles are SERIAL: the recurring prompt is never re-entrant; completion not
 #### Leg 1a — analyze tick (when `now >= analyze.next_due`, ~every 2-3h; skipped under `--no-analyze` or `--no-dispatch`)
 
 - `analyze.running` → an analyze pass is in flight; **skip starting a new one.** On its completion notification: set `analyze.running=false`, `analyze.next_due = now + 2.5h`, and **pull the next dispatch forward** by setting `dispatch.next_due = now` (so the tickets this pass just classified get swept on the next Leg-1b tick).
-- Else **spawn analyze (headless):** a background headless `claude -p` session running ONLY `/ticket-analyze --non-interactive [--team:<KEY>]` — this keeps the analyzer's per-ticket sweep context OUT of the on-duty session. Set `analyze.running=true`, store `task_id`.
+- Else **spawn analyze (headless):** a background headless `claude -p` session running ONLY `/ticket-analyze --batch --non-interactive [--team:<KEY>]` — this keeps the analyzer's per-ticket sweep context OUT of the on-duty session. The explicit `--batch` is REQUIRED as of GGC-113 (a no-arg invocation now STOPs with a usage error + non-zero exit); the batch judges + writes only the top-N unblocked-first tickets per tick (`--max`, default 3), which suits the on-duty cadence — the loop's repeated ticks drain the pool. Set `analyze.running=true`, store `task_id`.
 - analyze has no `Workflow` journal — a dead analyze is simply reset on RECONCILE (never resumed) and re-runs on its next tick.
 
 #### Leg 1b — dispatch tick (when `now >= dispatch.next_due`, ~every 1h; unless `--no-dispatch`)

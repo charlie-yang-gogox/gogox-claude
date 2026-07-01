@@ -3,10 +3,16 @@ name: ticket-analyze
 description: >
   Upstream ticket analyzer — the automated replacement for the manual
   "human marks ready" step that feeds `/ggx-dispatcher`. Two invocation
-  shapes: pass a ticket id to analyze just that one, or call with no args
+  shapes: pass a ticket id to analyze just that one, or pass `--batch`
   to sweep the active team's **actionable pool** — every ticket in
   Triage / Backlog / To-Do, **any assignee** (PM/QA tickets land
   unassigned in the pool, so an assigned-to-me-only sweep never saw them).
+  Batch is opt-in — passing NEITHER a ticket id NOR `--batch` STOPs with a
+  usage error (non-zero), so a caller that forgets the flag fails loudly
+  instead of silently sweeping the whole team. Batch judges + writes only
+  the top-N highest-priority *startable* tickets per run (`--max:<N>`,
+  default 3) while building the dependency graph over the WHOLE pool, and
+  leaves the rest of the pool to the next run.
   Output is always **label-only — the analyzer assigns NOTHING** (pull
   model: a human/teammate assigns to pull; the dispatcher still filters
   `assignee = me`).
@@ -36,7 +42,7 @@ Prerequisite: >
     `list_issues` can be derived.
 ---
 
-# `/ticket-analyze [ticket-id]`
+# `/ticket-analyze [ticket-id] [--batch] [--max:N]`
 
 Analyze the team's actionable-pool tickets for **pipeline readiness**: is the
 content sufficient for the port / feature / bug / ui-tweak workflow, and is
@@ -46,20 +52,39 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 
 **Usage**:
 
-- `/ticket-analyze` — **batch mode**. Sweep the active project's team
-  **actionable pool** — every Triage / Backlog / To-Do ticket regardless of
-  assignee — analyze cross-ticket dependencies, and write per-ticket
-  verdicts **label-only (never assign)**. Per-ticket failures do NOT abort the
-  batch. **Execution:** after Step 1.5 discovery + the re-analysis
-  filter, batch mode fans the surviving roster out via
-  `workflows/ticket-analyze-fanout.workflow.js` — a thin harness that runs the
-  per-ticket Step 2.7/3 judgment in parallel, builds the Step-5 dependency graph
-  in one barrier, then fans out the Step-8 writes (haiku/sonnet tiered, no opus).
-  The judgment below is the source of truth; the harness only orchestrates.
+- `/ticket-analyze --batch` — **batch mode** (requires the explicit
+  `--batch` flag). Sweep the active project's team **actionable pool** —
+  every Triage / Backlog / To-Do ticket regardless of assignee — build the
+  cross-ticket dependency graph over the **whole** pool, then **judge +
+  write only the top-N** highest-priority *startable* tickets
+  (`--max:<N>`, default 3); output is **label-only (never assign)**.
+  Per-ticket failures do NOT abort the batch. Draining the rest of the pool
+  is left to repeated invocation (the cron / on-duty loop) — each run's
+  writes filter processed tickets out of the next sweep. **Execution:**
+  after Step 1.5 discovery + the re-analysis filter + the full-pool graph +
+  the cap selection (Step 1.7), batch mode fans the **capped judged
+  roster** out via `workflows/ticket-analyze-fanout.workflow.js` — a thin
+  harness that runs the per-ticket Step 2.7/3 judgment in parallel, builds
+  the Step-5 dependency graph over the full pool in one barrier, then fans
+  out the Step-8 writes (haiku/sonnet tiered, no opus). The judgment below
+  is the source of truth; the harness only orchestrates.
 - `/ticket-analyze <ticket-id>` — **single mode**. Analyze just this one
   ticket. Dependency edges to other tickets are still detected and
   resolved against their live status, but no batch-wide ordering is
   computed.
+- **No arguments** (`/ticket-analyze` with neither a ticket-id nor
+  `--batch`) → **STOP with the usage block and a non-zero exit.** Batch is
+  no longer implied by an empty argument list — it must be opted into with
+  `--batch`, so an unattended caller that forgot the flag fails loudly
+  instead of silently sweeping the whole team.
+- `--max:<N>` — batch mode only. Cap the number of tickets that spend an
+  expensive Step-3 completeness judge + receive a label/comment write this
+  run, highest-priority *startable*-first (default **3**). The dependency
+  graph and best-start are still computed over the **whole** pool; the cap
+  limits only the judged/written set. Unchanged re-analysis tickets
+  (content-hash match) do NOT consume a cap slot — their deterministic
+  blocker re-fetch/flip still runs (Step 1.7). `<N>` must be a positive
+  integer; invalid → STOP with the usage block.
 - `--dry-run` — full analysis + report with a `would-write` column; no
   comments, no label writes.
 - `--non-interactive` — never prompt. Confirm gates are skipped; inferred
@@ -68,7 +93,7 @@ structured comment so the existing dispatcher flow (`/ggx-dispatcher` →
 - `--team:<KEY>` — batch mode only; required when the repo's
   `branch_prefix` is `auto` (validated against `org.yaml`, same contract
   as `/ggx-dispatcher` Step 0).
-- `--triage` — batch mode only. Run a **Phase 0 intake pass** (Step 1.6)
+- `--triage` — batch mode only (implies `--batch`). Run a **Phase 0 intake pass** (Step 1.6)
   BEFORE the normal sweep: classify untriaged pool tickets (no
   classification label → invisible to `/route` and every sweep) with
   per-ticket **human confirmation**, optionally pulling chosen ones into
@@ -223,23 +248,36 @@ timestamp is shared across all tickets in the run.
 
 ### Step 1: Parse input — single vs batch mode
 
-1. Strip flags from `$ARGUMENTS` first: `--dry-run`, `--non-interactive`,
-   `--team:<KEY>`, `--triage`. Unknown flags → STOP with the usage block.
-   - `--triage` is **batch-only and interactive-only**: if a `<ticket-id>`
-     remains after stripping, OR `--non-interactive` is also set → STOP with
-     the usage block (`--triage` is a human-confirmed pool sweep, not a
-     single-ticket or unattended path). These two STOPs are also what keep
-     the cloud routine safe — it invokes with no args, so never `--triage`.
-2. Extract `<ticket-id>` from what remains. Two paths:
-   - **Present** → `<batch-mode> = False`. `<queue> = [<ticket-id>]`.
+1. Strip flags from `$ARGUMENTS` first: `--batch`, `--max:<N>`, `--dry-run`,
+   `--non-interactive`, `--team:<KEY>`, `--triage`. Unknown flags → STOP with
+   the usage block. Record `<batch-flag>` (present/absent), `<max-cap>` (the
+   integer from `--max:<N>`, **default 3** when the flag is absent; a
+   non-positive or non-integer value → STOP with the usage block).
+   - `--batch` and `--max:<N>` are **batch-only**: if a `<ticket-id>` remains
+     after stripping and either is present → STOP with the usage block (they
+     are meaningless in single mode).
+   - `--triage` is **batch-only and interactive-only** and **implies `--batch`**:
+     if a `<ticket-id>` remains after stripping, OR `--non-interactive` is also
+     set → STOP with the usage block (`--triage` is a human-confirmed pool
+     sweep, not a single-ticket or unattended path). `--triage` present with no
+     ticket-id satisfies the batch opt-in below even without an explicit
+     `--batch`.
+2. Extract `<ticket-id>` from what remains. Three paths:
+   - **Ticket-id present** → `<batch-mode> = False`. `<queue> = [<ticket-id>]`.
      Resolve `ticket_system` for this id per the `_ticket-lib.md`
      resolution block (replicate it — do not assume an upstream caller
      resolved). `unknown` → STOP. Then run **Step 1.4 (single-mode
      `<platform>` resolution)** to resolve `<platform>` from the **ticket's
      own team**, NOT the cwd repo — single mode may be run from a
      repo that does not match the ticket. Skip to Step 2.
-   - **Absent** → `<batch-mode> = True`. Proceed to Step 1.5 to populate
-     `<queue>`. Do NOT prompt for a ticket id — batch is intentional.
+   - **No ticket-id AND (`--batch` OR `--triage`) present** →
+     `<batch-mode> = True`. Proceed to Step 1.5 to populate `<pool>` and select
+     the capped `<queue>`. Do NOT prompt for a ticket id — batch is intentional.
+   - **No ticket-id AND no `--batch`/`--triage`** → **STOP with the usage block
+     and a NON-ZERO exit.** Batch is no longer implied by an empty argument
+     list; a caller (human or cron) that meant to sweep must pass `--batch`.
+     The non-zero exit is deliberate — it turns a forgotten flag into a visible
+     Failure for the cloud routine rather than a silent, green no-op.
 
 ### Step 1.4: Single-mode `<platform>` resolution — from the ticket's team, not the cwd repo
 
@@ -385,11 +423,14 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
 7. **Empty case**: print
    `No analyzable actionable-pool tickets on team <team_key>.` and
    STOP cleanly (exit zero) — **UNLESS `--triage` is set**, in which case
-   continue to Step 1.6 with an empty base `<queue>` (the triage pass may
+   continue to Step 1.6 with an empty base `<pool>` (the triage pass may
    pull pool tickets into it; a triage run with no pool backlog is normal).
 
-8. **Print queue overview** — ONE row per surviving ticket (the template
-   below is a format, not an output cap; never truncate the table):
+8. **Print pool overview** — ONE row per surviving ticket (the template
+   below is a format, not an output cap; never truncate the table). This is
+   the **full discovered pool** — the dependency graph (Step 1.7) is built
+   over ALL of it; the per-run cap (`--max`) is applied later, in Step 1.7,
+   and only limits which of these get judged + written:
    ```
    Found <N> actionable-pool tickets on team <team_key> (<F> fresh, <R> re-analysis):
 
@@ -402,12 +443,11 @@ relies on (`branch_prefix` is the team key — see `_SCHEMA.md` and `_ticket-lib
    Ticket cell is a markdown link (no separate url column — full URLs blow
    out row width in narrow terminals).
 
-9. **Confirm gate** (skipped when `--non-interactive` — proceed without
-   prompting): `AskUserQuestion` with options
-   `Analyze all <N>` (Recommended) / `Abort`. On `Abort` → STOP with no
-   side effects.
-
-10. Set `<queue>` = ordered ticket-id list.
+9. Set `<pool>` = the sorted, filtered ticket list (the **graph set** — every
+   ticket here contributes edges + a live status to the Step 1.7 graph). The
+   **confirm gate and the capped judged-set selection** are deferred to
+   Step 1.7 (they need the graph to order tickets `unblocked-first`). Proceed
+   to Step 1.6 (if `--triage`) then Step 1.7.
 
 ### Step 1.6: Triage intake pass (`--triage` only)
 
@@ -443,7 +483,7 @@ Step 2 unchanged (do NOT STOP — triage is additive).
    These are the genuinely untriaged tickets. Sort priority
    `urgent > high > medium > low > none`, then `createdAt` asc.
    - Empty → print `No untriaged pool tickets on team <team_key>.` and
-     continue to Step 2 with the base `<queue>` unchanged.
+     continue to Step 1.7 with the base `<pool>` unchanged.
 
 2. **Propose a classification per ticket** using the Step 3 lane-signal
    logic (LLM judgment over title + description). Record
@@ -499,18 +539,112 @@ Step 2 unchanged (do NOT STOP — triage is additive).
      pulled tickets; Label-only tickets get their analysis on a later sweep
      once someone pulls them.
 
-5. **Merge pulled tickets into `<queue>`.** Union every `Label + Pull`
-   ticket-id into `<queue>` (dedup against the Step 1.5 set; pulled tickets
+5. **Merge pulled tickets into `<pool>`.** Union every `Label + Pull`
+   ticket-id into `<pool>` (dedup against the Step 1.5 set; pulled tickets
    are now To-Do + assigned-to-me and satisfy the same criteria). Print
-   `Triage: <L> labeled, <P> pulled, <S> skipped · +<P> into the analyze queue (now <total> total).`
-   `Label-only` and `Skip` tickets do NOT enter `<queue>` — they stay in the
-   pool. Proceed to Step 2 with the merged queue.
+   `Triage: <L> labeled, <P> pulled, <S> skipped · +<P> into the analyze pool (now <total> total).`
+   `Label-only` and `Skip` tickets do NOT enter `<pool>` — they stay in the
+   pool untouched. Proceed to Step 1.7 with the merged pool. (Pulled tickets
+   compete for the `--max` judged slots there like any other pool ticket.)
+
+### Step 1.7: Full-pool dependency graph + capped judged-set selection (batch mode only)
+
+Single mode skips this step entirely (`<batch-mode> == False`; `<queue>` is the
+one ticket, no pool, no cap, no ordering).
+
+The cap (`--max`) must limit only the **expensive** work — the Step-3
+completeness judge and the label/comment writes — **without** shrinking the
+dependency graph. If the graph were built over just the capped set, best-start /
+blocked would be computed on a fragment: a dependency root that sorts below the
+cap would never be recommended, and a whole batch could come back with zero
+`ready-to-*`. So the graph is built over the **whole `<pool>`**; the cap is
+applied afterward, on top of a correct global picture.
+
+1. **Fetch relations + live status for the WHOLE pool** (cheap — no judge,
+   no writes). For every ticket in `<pool>`, fetch via the `_ticket-lib.md`
+   `get_ticket` branch with relations included (Linear
+   `get_issue --includeRelations`; Jira `.fields.issuelinks`). Capture
+   `<status_type>`, `<labels>`, `<priority>`, `<createdAt>`, and the normalized
+   blocking edges (same edge record shape as Step 2 / Step 4). **Cache this
+   fetch** — Step 2 reuses it for the judged set and MUST NOT re-fetch.
+   The universal `analyze-hold` guard (Step 2) still applies per ticket: a
+   `<pool>` ticket carrying `analyze-hold` is dropped here too (it slipped past
+   the Step-1.5.5 filter only if pulled by triage).
+
+2. **Build the full-pool blocking graph** using the Step 4 + Step 5 rules
+   applied over `<pool>` (plus any external blocking targets, resolved live per
+   Step 4.3). This graph is **authoritative** — Step 5 reuses it verbatim rather
+   than rebuilding over `<queue>`. From it, mark every pool ticket
+   `blocked` / `unblocked` (`blocked` = ≥1 inbound blocking edge from an open
+   ticket, in-pool or external) and compute the topological order + cycle set.
+   Inferred (content-derived) edges are NOT computed here — this step uses only
+   the cheap **explicit** relations; inferred edges (Step 4.2) are still added in
+   the judged pass and can only *add* blocks, never unblock, so they never
+   promote a ticket into the judged set incorrectly.
+
+3. **Determine judge-candidates** (the only tickets that spend a Step-3 judge):
+   - **fresh** (no analyzer label) → always a judge-candidate.
+   - **`need-revision` / `need-dependency`** → a judge-candidate ONLY if its
+     content changed: compute the Step 2.9 `content_sha` (with the REQUIRED
+     signed-URL strip) and compare to the persisted `ticket-analyze:v2` marker.
+     `content_sha` differs (or no v2 marker) → judge-candidate; matches → NOT a
+     judge-candidate (its completeness is unchanged — re-judging could only flap).
+   A ticket that is not a judge-candidate never consumes a cap slot.
+
+4. **Select the capped judged set `<queue>`** = the first `<max-cap>`
+   judge-candidates ordered by **(B) unblocked-first, then priority
+   `urgent>high>medium>low>none`, then `createdAt` asc**. Unblocked-first is the
+   load-bearing rule: it spends the scarce judge slots on tickets that can
+   actually become dispatchable `ready-to-*` this run (a blocked ticket can only
+   ever earn `need-dependency`), and it naturally surfaces dependency roots
+   before their dependents. Ties within a blocked/unblocked class fall back to
+   priority then age, preserving the "highest-priority first" intent.
+
+5. **Define the deterministic no-judge set `<deterministic-set>`** = every
+   `need-dependency` pool ticket with an UNCHANGED `content_sha` that did **not**
+   make `<queue>`. These carry a still-valid `complete` completeness verdict, so
+   they need no judge — only the **deterministic blocker re-fetch** (Steps 4.3 /
+   5): if every blocker has since closed they flip `need-dependency → ready-to-*`
+   (a cheap label write, no judge). This set is **uncapped** — the flip is free
+   and must never be starved by the cap (RF3 anti-starvation). All OTHER
+   non-`<queue>` pool tickets (judge-candidates beyond the cap, and unchanged
+   `need-revision`) are **deferred**: no judge and no write this run; the next
+   invocation re-picks them (the cron / on-duty loop is the drain).
+
+6. **Print the selection** (never truncate):
+   ```
+   Pool <N> · judged this run <k>/<max-cap> (unblocked-first), deterministic flips <d>, deferred <r>.
+
+   Judged (will be re-analyzed + written):
+   | # | ticket | priority | blocked? | current label |
+   ...
+   Deferred to next run: <ids or "none">
+   ```
+   `--dry-run` prints the same selection with a `would-write` column and stops
+   at Step 7 as today.
+
+7. **Confirm gate** (skipped when `--non-interactive` — proceed without
+   prompting): `AskUserQuestion` with options
+   `Judge <k> (of <N> pool), flip <d> deterministically` (Recommended) /
+   `Abort`. On `Abort` → STOP with no side effects.
+
+8. Hand off to Step 2 with `<queue>` (judged) and `<deterministic-set>`
+   (flip-only) set. Step 2 fetches full data for their union from the Step-1.7
+   cache (no re-fetch); Step 2.7 / 2.9 / Step 3 run on `<queue>` only; Step 8
+   writes verdict labels for `<queue>` and blocker flips for `<deterministic-set>`.
 
 ### Step 2: Fetch full ticket data + explicit relations
 
-For every ticket in `<queue>` (single mode: the one ticket), fetch via the
-`_ticket-lib.md` `get_ticket` branch and capture using the logical field
-names from its field-mapping table:
+**Scope (batch mode):** iterate `<queue> ∪ <deterministic-set>`, **reusing the
+Step-1.7 cache** — do NOT re-fetch a ticket already fetched there. Single mode:
+the one ticket (no Step 1.7 ran, so this is a fresh fetch). The
+`<deterministic-set>` tickets are carried only so Step 8 can flip them on a
+closed blocker; the classification / hash / judge sub-steps below
+(Step 2.7 / 2.9 / Step 3) run on `<queue>` ONLY.
+
+For every ticket in scope (single mode: the one ticket), fetch (or read from the
+Step-1.7 cache) via the `_ticket-lib.md` `get_ticket` branch and capture using
+the logical field names from its field-mapping table:
 
 - `<title>`, `<description>`, `<url>`, `<status_name>`, `<labels>`,
   `<priority>`, `<createdAt>`
@@ -1089,31 +1223,47 @@ as non-blocking flags.
      `need-dependency`; the comment still surfaces it for a human.
 
 3. **External-target resolution**: for every blocking edge (explicit or
-   inferred-confirmed) whose target is outside `<queue>`, fetch the
-   target's live status via the `_ticket-lib.md` `get_ticket` branch:
+   inferred-confirmed) whose target is outside `<pool>` (batch) / `<queue>`
+   (single), fetch the target's live status via the `_ticket-lib.md`
+   `get_ticket` branch:
    - target `statusType ∈ {completed, canceled}` (Jira: status category
      Done) → edge **satisfied**, not blocking.
    - target open → edge **blocking**.
-   Cache per target id — fetch once per run.
+   Cache per target id — fetch once per run (batch mode: this reuses the
+   Step-1.7 status cache for in-pool targets; only genuinely external ids are
+   fetched here).
 
 ### Step 5: Graph, order, best starting ticket
 
-Build a directed graph over `<queue>` using **blocking edges only**
-(explicit + inferred-confirmed, with open targets).
+**Batch mode reuses the full-pool graph built in Step 1.7** (built over
+`<pool>`, not `<queue>`) — do NOT rebuild it over the capped `<queue>`, which
+would fragment ordering / best-start (RF2). This step only *adds* the judged
+pass's inferred-confirmed edges (Step 4.2) on top of that graph and reads the
+result. Single mode builds a one-ticket graph inline (no pool). Blocking edges
+only (explicit + inferred-confirmed, with open targets).
 
 1. **Blocked** = a ticket with ≥ 1 inbound blocking edge from an open
-   ticket (in-queue or external).
-2. **Cycle detection**: a cycle among queue tickets → every member is
+   ticket (in-pool or external). Computed for the whole pool in Step 1.7;
+   inferred-confirmed edges may add (never remove) blocks here.
+2. **Cycle detection**: a cycle among pool tickets → every member is
    flagged blocked with reason `circular dependency: <id ↔ id>`, the
    cycle is excluded from the order, and a prominent `⚠ CYCLE` warning is
    printed. Do not crash, do not pick an arbitrary winner — humans break
    cycles.
 3. **Implementation order**: topological sort of the unblocked-reachable
-   subgraph; ties broken by priority then `createdAt` asc.
-4. **Best starting ticket** = first `complete` ticket in the order with
-   zero inbound blocking edges. Marked in the report and in its own
-   comment (`Recommended starting point for this batch`). Single mode:
-   skip ordering; blocked-or-not is still computed.
+   subgraph **over the whole pool**; ties broken by priority then
+   `createdAt` asc.
+4. **Best starting ticket** = the first ticket in that whole-pool order that is
+   `complete` (judged this run), unblocked, and **is a `<queue>` member** (only
+   a judged + written ticket carries a `ready-to-*` label the dispatcher can
+   act on, so best-start must range over what we actually labeled — but it is
+   selected against the correct whole-pool ordering, so it is the true root of
+   the dispatchable frontier, not an artifact of the cap). If the whole-pool
+   root is a deferred (non-`<queue>`) ticket, no best-start is emitted this run
+   and the report says so (`root <id> deferred by cap — no best-start this
+   run`), which is the honest signal that the next run should pick that root up.
+   Marked in the report and in its own comment (`Recommended starting point for
+   this batch`). Single mode: skip ordering; blocked-or-not is still computed.
 
 ### Step 6: Verdict
 
@@ -1177,11 +1327,29 @@ every owner-block posts its own reclassify comment.
 
 If `--dry-run`: print the full Step 9 report with a `would-write` column
 in place of `label written`, then STOP. No comments, no label writes, no
-label creation.
+label creation. **This covers BOTH sets**: the `<queue>` verdict labels AND
+the `<deterministic-set>` blocker flips (`need-dependency → ready-to-*`) are
+**reported as would-writes, never executed** — a `--dry-run` batch performs
+zero Linear mutations of any kind. The flip's would-write row shows the
+target it *would* flip to (or "no-op — still blocked").
 
 ### Step 8: Write state per ticket
 
-Iterate `<queue>` in order. All writes are read-before-write.
+Iterate `<queue>` in order, then `<deterministic-set>`. All writes are
+read-before-write.
+
+- **`<queue>` (judged)** — write the full Step-6 verdict: the mutually-exclusive
+  analyzer label (`ready-to-*` / `need-revision` / `need-dependency`) + the
+  structured comment, exactly as below.
+- **`<deterministic-set>` (flip-only, batch mode)** — these were NOT judged this
+  run; their completeness verdict is the still-valid `complete` carried from
+  their marker. Do the deterministic blocker resolution ONLY: if Step 5 found
+  every blocker now closed, rewrite `need-dependency → ready-to-*` (the same
+  full-set label swap) and post a short `blocker(s) closed → ready` comment;
+  if still blocked, make **no write** (the `need-dependency` label already
+  reflects reality — re-writing it is noise). Never run the Step-3 judge or
+  the design-bug / owner gates on these — they had no judge candidate verdict.
+  Deferred pool tickets (neither set) get no write at all this run.
 
 1. **Ensure labels exist** (Linear, once per run, before the first
    write): `mcp__claude_ai_Linear__list_issue_labels` for the team; if
@@ -1280,7 +1448,14 @@ Iterate `<queue>` in order. All writes are read-before-write.
 ### Step 9: Report
 
 Always printed (the human-facing deliverable), after the write loop (or at
-Step 7 for dry-run). Two parts:
+Step 7 for dry-run). **Scope (batch mode):** one row per ticket acted on this
+run — i.e. `<queue> ∪ <deterministic-set>`, NOT `<queue>` alone. A
+`<deterministic-set>` ticket that flipped `need-dependency → ready-to-*` is a
+real Linear write and MUST appear (mark its verdict cell `flip (unchanged)` and
+its label cell the new `ready-to-*`); a still-blocked flip no-op appears with
+`no-op` in the label cell. Also print a trailing `Deferred to next run: <ids>`
+line for pool tickets that were neither judged nor flipped (cap overflow), so
+the report accounts for the whole pool. Two parts:
 
 ```
 Batch analysis — team <KEY>, <N> tickets (<C> ready, <I> need revision, <B> blocked)
@@ -1307,16 +1482,20 @@ in the blockers column.
 
 ### Step 10: Batch summary (batch mode only)
 
-Bucket each ticket as exactly one of `analyzed` (comment + label landed) /
-`skipped` (concurrent actor, or excluded at Step 1.5) / `errored` (write
-failure). Print the fixed-text trailing line, easy to grep:
+Bucket each ticket in `<queue> ∪ <deterministic-set>` as exactly one of
+`analyzed` (judged this run — comment + label landed) / `flipped`
+(deterministic-set `need-dependency → ready-to-*`, no judge) / `skipped`
+(concurrent actor, or excluded at Step 1.5) / `errored` (write failure).
+Also carry `<deferred>` = pool judge-candidates that did not make the `--max`
+cap this run. Print the fixed-text trailing line, easy to grep:
 
 ```
-Summary: <X> analyzed, <Y> skipped, <Z> errored.
+Summary: <X> analyzed, <F> flipped, <Y> skipped, <Z> errored · <D> deferred to next run (pool <N>, cap <max>).
 ```
 
 Exit zero even when `<Z> > 0` — errored tickets carry their own recovery
-hints; the batch itself did not fail.
+hints; the batch itself did not fail. `<D> deferred` is normal, not an
+error — it is the cap doing its job; the next run picks them up.
 
 #### Step 10.1: Slack digest (best-effort, opt-in)
 
