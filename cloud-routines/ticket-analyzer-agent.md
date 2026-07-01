@@ -1,7 +1,7 @@
 ---
 name: ticket-analyzer-agent
 description: >
-  Cloud routine template that runs `/ticket-analyze --non-interactive` in
+  Cloud routine template that runs `/ticket-analyze --batch --non-interactive` in
   batch mode, judging the team's **actionable pool** (Triage/Backlog/To-Do,
   any assignee — GGC-95) for pipeline readiness, auto-classifying strong
   signals (GGC-96), and writing the verdict labels
@@ -42,7 +42,7 @@ An unattended cloud run of `/ticket-analyze` batch mode
    routine never assigns (pull model).
 2. Bootstraps gogox-claude (install.sh ONLY — no Flutter, no openspec,
    no gh; the analyzer never builds or pushes).
-3. Follows `/ticket-analyze --non-interactive` from the target repo's
+3. Follows `/ticket-analyze --batch --non-interactive` from the target repo's
    cwd (profile resolution needs it).
 4. Emits a structured outcome report.
 
@@ -107,9 +107,14 @@ Swap these placeholders in `ticket-analyzer-agent.routine.json`:
 | `<LINEAR_CONNECTOR_UUID>` | per-user | your own claude.ai Linear connector |
 | cron | `30 3,9 * * *` (UTC) = TW 11:30 / 17:30 | keep the 30-min offset before your dev-agent slots (`0 4,10` = TW 12:00 / 18:00) |
 
-"assignee=me" resolves through the Linear connector's OAuth identity, so
-each colleague's routine analyzes their own queue automatically — no
-hardcoded user ids.
+Discovery is **team-wide, any assignee** (the actionable pool — GGC-95;
+matched by the routine's Phase 1 pre-gate as of GGC-113), so a single
+routine covers the whole team's pool regardless of who (if anyone) owns
+each ticket. The Linear connector's OAuth identity is used only for the
+label/comment writes and MCP auth — no hardcoded user ids. If several
+colleagues each run this routine, the analyzer's idempotent label writes
++ Step-8 concurrent-writer check make the overlap safe (they converge on
+the same verdicts rather than racing).
 
 Live instance (Charlie): `trig_01VxjNnJXw3F3y9qe3fgmYAj`, created
 2026-06-04, model `claude-opus-4-8`.
@@ -144,7 +149,7 @@ still lives in `commands/dev/ticket-analyze.md` (the harness only orchestrates),
 so there is no logic to keep in sync. Model tiering: classify+completeness on
 sonnet, writes on haiku, **no opus** — the analyzer judges, it never implements.
 
-**Execution path:** the routine runs `/ticket-analyze --non-interactive`, which
+**Execution path:** the routine runs `/ticket-analyze --batch --non-interactive`, which
 does discovery + the re-analysis filter (its Step 1.5) and then drives the
 fan-out workflow over the surviving roster. Per-ticket failure resolves to an
 `errored` row and never aborts the batch (the barrier filters nulls).
