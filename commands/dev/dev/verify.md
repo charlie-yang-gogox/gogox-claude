@@ -196,6 +196,16 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
   authenticated `claude` binary — the headless path targets the local
   dispatcher lane.
 
+  **Invocation — REQUIRED.** Run this block with the Bash tool's **maximum**
+  `timeout: 600000` (600s). The watchdog below is synchronous — it runs inside
+  a single Bash tool call — so at the default 120s tool timeout the harness
+  kills the whole process group long before the wall-clock bound elapses,
+  leaving `.dev/verify-pass.md` unwritten. An absent report forces a
+  Workflow-spawned worker to return before a terminal condition, so it cannot
+  emit the `[ggx-work-result]` machine line. `R4_MAX_SECS` MUST stay below this
+  600s ceiling — keep the two in lock-step (the watchdog bound is unreachable
+  if it meets or exceeds the tool timeout that bounds the call it runs in).
+
   ```bash
   # --- R4 headless auditor — code platforms only --------------------
   # Contract file: installed flat by install.sh; repo-local fallback covers
@@ -248,7 +258,14 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
 
   # 3. Counter-bounded watchdog — no `timeout` (absent on stock macOS; the
   #    F1 rule). Bound = R4_MAX_SECS wall clock, then hard-kill.
-  R4_MAX_SECS=900
+  #    R4_MAX_SECS MUST stay < the Bash tool timeout this block is invoked with
+  #    (600000ms — see the "Invocation — REQUIRED" note above). The watchdog is
+  #    synchronous (one Bash tool call), so a bound at/above the tool ceiling is
+  #    structurally unreachable: the harness kills the process group at the
+  #    ceiling and verify-pass.md is never written. 570s leaves ~30s margin for
+  #    the auditor's final parse + report write; keep it in lock-step with the
+  #    timeout note above.
+  R4_MAX_SECS=570
   R4_TIMED_OUT=0
   i=0
   while kill -0 "$R4_PID" 2>/dev/null; do
