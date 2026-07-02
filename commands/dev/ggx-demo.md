@@ -49,6 +49,12 @@ description: >
 
 - `/ggx-demo <TICKET>` — e.g. `/ggx-demo CAF-541`. Resolves the ticket's open PR.
 - `/ggx-demo <PR>` — a PR number (`#610` / `610`) or full URL.
+- `/ggx-demo <TICKET|PR> --force` — **replace mode (GGC-115 E14)**: re-record and REPLACE an existing
+  demo on the same commit. Without `--force`, the Step-4 dedup SKIPs any ticket that already carries a
+  `ui-tweak-demo-<sha>` attachment for the current sha — correct for idempotent re-runs, wrong when the
+  existing demo is bad (wrong flow / expired clip) and needs replacing. With `--force`, Step 4 runs the
+  attach contract's REPLACE path (delete the old attachment → upload the new capture → rewrite the
+  PR-body link; the `assetUrl` changes on re-upload). Single-ticket mode only; batch never forces.
 - `/ggx-demo --batch` — **no argument**: self-discover every open PR of mine that still lacks a demo and
   capture them serially on one device. See **Batch mode** below.
 
@@ -69,7 +75,10 @@ Steps 1–5 (batch loops them).
 ## Step 1 — resolve the PR + ticket id
 
 ```bash
-ARG="<TICKET|PR>"
+# GGC-115 E14: --force = replace mode (Step 4 takes the attach contract's REPLACE path on a same-title
+# match instead of SKIP). Parse + strip it before the TICKET|PR resolution below. Single mode only.
+FORCE=0; printf '%s' "$ARGUMENTS" | grep -q -- '--force' && FORCE=1
+ARG="<TICKET|PR, --force stripped>"
 # PR form: a bare number, #NNN, or a github URL → resolve directly.
 # TICKET form (CAF-/DAF-): find the open PR whose branch carries the ticket id.
 if printf '%s' "$ARG" | grep -qE '^#?[0-9]+$|github\.com/.*/pull/[0-9]+'; then
@@ -189,6 +198,10 @@ Run the **Idempotent attach** contract documented in `commands/design/ui-tweak/f
 1. **Linear attachment dedupe** by deterministic title `ui-tweak-demo-<sha>` (`<sha> = git -C "$WT"
    rev-parse --short HEAD`). List the ticket's existing attachments; skip the upload (reuse the existing
    `assetUrl`) when that title already exists, so re-running `/ggx-demo` never adds a second inline video.
+   **With `--force` (GGC-115 E14), same-title detection takes the contract's REPLACE path instead of
+   SKIP**: `delete_attachment` the old one → upload the new capture → rewrite the PR-body link with the
+   NEW `assetUrl` (re-upload always mints a fresh URL — the old link is dead once the attachment is
+   deleted, so the PR-body rewrite is mandatory, not cosmetic).
 2. **PR body `## Demo` region** wrapped in `<!-- ui-tweak-demo -->` / `<!-- /ui-tweak-demo -->`:
    read the current body, **replace between the markers** (or replace an existing unmarked `## Demo`
    section, else append a marked block), then `gh pr edit "$PR" --body <new>`. Never blind-append.
@@ -292,19 +305,41 @@ DIFF=$(gh pr diff "$PR" 2>/dev/null | head -c 60000)
 Then **you (the LLM executing this skill) classify** each PR as RECORDABLE or SKIP, from the diff +
 title + body:
 
-- **RECORDABLE** — the diff plausibly produces a **user-visible UI change** (widget / layout / style /
-  copy / asset / screen changes in app UI code) AND the affected screen looks **navigable** (a known
-  route, a `ggv://` deep-link, or a screen reachable by tap-through). Add the PR to `RECORDABLE`.
+- **RECORDABLE** — the diff plausibly produces a **user-visible change** AND the app can be **driven to
+  the state that shows it**. Two shapes qualify (GGC-115 C9 loosened the rubric — the first batch
+  recorded 1/12 and skipped obviously-recordable PRs):
+  1. **Static UI change** — widget / layout / style / copy / asset / screen changes in app UI code,
+     with the affected screen navigable (a known route, a `ggv://` deep-link, or tap-through).
+  2. **Behavioural / error / state change** — the diff alters what the user SEES when a flow runs
+     (an error message, a pre-fill, a redirect, a validation) and the flow can be DRIVEN to that
+     state on staging. "No pixel diff in a static shot" / "nav-only taps can't select it" do NOT
+     make a PR unrecordable — recording the flow is the demo.
+     **Auth-error demos are explicitly RECORDABLE (GGC-115 C10)**: staging accepts the SMS request,
+     reaches the code screen, and a deliberately wrong code (e.g. `1234`) returns a real 401 → the
+     specific message renders. Wrong-code / wrong-password / verification-failure PRs need no real
+     OTP and belong in `RECORDABLE`.
 - **SKIP (record the reason, no device)** — when the diff shows none of the above:
-  1. No user-visible UI surface — pure logic / backend / state / config / build / test / analytics /
-     dependency-only diff.
-  2. UI change present but the screen is not navigable (no deep-link and no plausible tap-through).
+  1. No user-visible surface at all — pure backend / config / build / test / analytics /
+     dependency-only diff whose effect cannot be seen on any screen.
+  2. Visible change present but the state is not reachable (no route AND no plausible tap-through,
+     or the flow requires state we cannot create on staging — e.g. a real payment).
   Append the PR number + a one-phrase reason to a `DIFF_SKIPPED` list; do NOT open a device for it.
+
+For each RECORDABLE PR, also emit a one-line **capture plan** (consumed by B3 / Step 2.5's scoping —
+GGC-115 B6/B7/D11):
+
+- **`trigger:`** the control the recording must START on, for reuse / re-order / button-triggered
+  behaviours (B6) — or `none` for static screens.
+- **`source-data:`** what complete state to pick/seed first (B7) — e.g. "a fully-populated past
+  order" — or `none`.
+- **`auth-mutating: yes|no`** (D11) — does the demo log out, sign up, or switch accounts? These
+  contaminate the shared device's login state and are ORDERED LAST in B3.
 
 Build `RECORDABLE` (the subset that advances to B2/B3) and `DIFF_SKIPPED` (PR# + reason, surfaced in B4).
 This judgment is intentionally LLM-driven — no regex reliably separates "visible UI change" from "a
-refactor that happens to touch a widget file". **Bias toward SKIP when an ambiguous diff is purely
-structural**: a wasted build is only fail-soft cost, but the rubric exists to avoid it.
+refactor that happens to touch a widget file". **Bias toward SKIP only when an ambiguous diff is purely
+structural** (a refactor touching widget files with no visible effect); do NOT skip merely because the
+change is behavioural rather than pixel-static — that was the C9 over-conservatism this rubric replaces.
 
 If `RECORDABLE` is empty → print the B4 summary form (all candidates diff-skipped) and **exit 0 without
 acquiring a device** (the whole point of judging before B2).
@@ -325,9 +360,25 @@ one, and pin it as `$DEV` for the whole pass (no lock because there is only one 
 
 ### B3 — serial loop (one ticket at a time on `$DEV`)
 
-Run the per-ticket procedure (Steps 1–5 above) for each `RECORDABLE` PR (B1.5), in order. Catch each loud
-failure fail-soft and count it; on a `login wall` failure **short-circuit** the rest (one shared device =
-one shared login state, so it recurs identically):
+Run the per-ticket procedure (Steps 1–5 above) for each `RECORDABLE` PR (B1.5) — **ordered with every
+`auth-mutating: yes` PR LAST (GGC-115 D11)**. An auth-mutating demo (logout → signup, account switch)
+leaves the shared device in a different login state, and the login-wall short-circuit below never fires
+for it (that guard catches *failures*, not a self-inflicted logout) — so a logged-in demo scheduled
+after it silently captures the wrong state. Sort `RECORDABLE`: `auth-mutating: no` first, `yes` last.
+**After each auth-mutating demo, restore the login state** by re-running the Step 2.4 login gate
+(auto-resolve + login) before the next ticket — belt-and-braces even with the LAST ordering, since a
+batch can contain more than one auth-mutating demo.
+
+**Per-ticket state re-confirmation (GGC-115 D13).** Login/session across a reinstall is unpredictable —
+a reinstall can come back logged into a *different* stored account (stale fixtures, old orders). At the
+START of each ticket (after its build+install, before capture), take one read-only screenshot and
+confirm the logged-in account / fixtures match what the capture plan needs; mismatch → run the Step 2.4
+gate (or re-seed source data per the plan) before recording. The per-ticket rebuild itself is correct
+and required (D12 confirmed: each diff must be in the binary) — do NOT "optimize" it away by reusing a
+prior ticket's build.
+
+Catch each loud failure fail-soft and count it; on a `login wall` failure **short-circuit** the rest
+(one shared device = one shared login state, so it recurs identically):
 
 ```bash
 CAPTURED=0; SKIPPED=0; REASONS=""; LOGIN_WALL=0

@@ -476,20 +476,65 @@ confirm/submit/pay/delete, never grant permissions, never type, never log in).
    looping / `MAX_TAPS` / `idb` absent → **could-not-reach** (→ fail-silent below, or fail-LOUD under
    `--capture-only`, Step 0c).
 
-### Capture (pure output)
+### Capture scoping — decide WHAT the clip must span BEFORE recording (GGC-115)
 
-On reaching the target, capture a screenshot + a short (~6s) recording into `.dev/ui-tweak/demo`:
-- **iOS**: `xcrun simctl io "$DEVICE" screenshot .../after.png`; recording via `xcrun simctl io
-  "$DEVICE" recordVideo --codec h264 .../after.mp4` backgrounded ~6s then SIGINT.
-- **Android**: `adb -s "$DEVICE" exec-out screencap -p > .../after.png`; then record with an explicit
-  `--size`. **GGC-59: `screenrecord` with NO size flag throws codec error -22 on large native
-  resolutions** (e.g. 1280×2856 on a tall device) — the recording silently produces a 0-byte/unplayable
-  file. Try a size ladder, stopping at the first rung that yields a non-empty, playable file:
-  `--size 720x1280` → `--size 540x1140` → no `--size` (device-native, last resort):
-  `adb -s "$DEVICE" shell screenrecord --size 720x1280 --time-limit 6 /sdcard/uitw.mp4` then
-  `adb -s "$DEVICE" pull /sdcard/uitw.mp4 .../after.mp4`. If EVERY rung fails to produce a playable
-  file, that is a capture failure — **fail-silent** in the forward pipeline, **fail-LOUD** under
+The recording must contain the **crux** — the behaviour the diff changes — not merely the destination
+screen. Dogfood evidence (GGC-115, 2026-07-02): CAF-934's first take started mid-flow and looked like
+a plain normal order (rejected by the operator); CAF-805's first take expired before the decisive tap.
+Plan the span before starting:
+
+- **B6 — anchor the START on the TRIGGER control.** For reuse / re-order / button-triggered
+  behaviours, the recording MUST begin with the trigger visible and then tapped (e.g. "Reuse details
+  in new order") — a clip that starts after the trigger is ambiguous evidence of the wrong flow.
+- **B7 — pick a source state with COMPLETE data.** When the demo starts from existing app data (an
+  order to reuse, a saved profile), choose/seed a fully-populated source so the fixed behaviour shows
+  through cleanly — incomplete data forces re-entry steps that obscure the point.
+- **A3 — span until the crux UI has actually RENDERED.** Navigation-complete ≠ crux-rendered:
+  async-loaded content (quotations, network results) can sit on a loading/placeholder state for 10s+
+  before the decisive UI appears. Keep recording through the wait; confirm the crux is on screen via a
+  read-only screenshot BEFORE stopping.
+- **B8 — screenshot-verify the crux is the POST-FIX state** (the specific error message, the fixed
+  pre-fill, the empty radios) before finalizing/uploading. A confident capture of the pre-fix
+  behaviour is worse than no capture.
+
+### Capture (pure output) — start → act → SIGINT-stop (GGC-115)
+
+On reaching the target (or, for B6-anchored behaviours, just BEFORE tapping the trigger), capture a
+screenshot + a recording into `.dev/ui-tweak/demo`:
+
+- **A1 — the recording MUST be a backgrounded SHELL `adb` job — NEVER the MCP `adb_shell` tool.**
+  `mcp__android-adb__adb_shell` has no `run_in_background` parameter in its schema (unknown args are
+  silently ignored), so a `screenrecord` fired through it returns immediately and the file is never
+  produced. MCP adb stays fine for screenshots/taps; recording goes through the Bash tool:
+  `adb -s "$DEVICE" shell screenrecord --size 720x1280 --time-limit 180 /sdcard/uitw.mp4 &`
+- **A2 — never key the clip on a fixed `--time-limit`; the cap is a safety net only.** A fixed short
+  window expires before a multi-step crux (type → submit → result) completes. Start the recording
+  with a GENEROUS cap (~180s), drive the actions (the trigger tap, the Tier-2 steps, the A3 wait),
+  then stop with `adb -s "$DEVICE" shell pkill -INT screenrecord` — **SIGINT makes `screenrecord`
+  flush a valid mp4** — yielding a variable-length clip that always contains the crux. Then
+  `adb -s "$DEVICE" pull /sdcard/uitw.mp4 .../after.mp4`.
+- Screenshot: `adb -s "$DEVICE" exec-out screencap -p > .../after.png`.
+- **GGC-59 size ladder (unchanged): `screenrecord` with NO size flag throws codec error -22 on large
+  native resolutions** (e.g. 1280×2856 on a tall device) — the recording silently produces a
+  0-byte/unplayable file. Try `--size 720x1280` → `--size 540x1140` → no `--size` (device-native,
+  last resort), stopping at the first rung that yields a non-empty, playable file. If EVERY rung
+  fails, that is a capture failure — **fail-silent** in the forward pipeline, **fail-LOUD** under
   `--capture-only` (Step 0c: `screenrecord ladder exhausted`).
+- **iOS**: `xcrun simctl io "$DEVICE" screenshot .../after.png`; recording via `xcrun simctl io
+  "$DEVICE" recordVideo --codec h264 .../after.mp4` backgrounded, stopped with SIGINT after the A3
+  crux render (same start → act → SIGINT-stop model; `recordVideo` also flushes on SIGINT).
+
+### Post-process + verify the clip (A4/A5 — GGC-115)
+
+- **A4 — normalize VFR → CFR before ANY trim.** `screenrecord` output is variable-frame-rate;
+  `ffmpeg -t N` directly on the VFR source corrupts duration metadata (a 20s clip reporting 29s) and
+  breaks seek/last-frame extraction. Re-encode in one pass:
+  `ffmpeg -i in.mp4 [-t N] -r 15 -vsync cfr -c:v libx264 -pix_fmt yuv420p -movflags +faststart out.mp4`.
+- **A5 — verify the final clip's LAST FRAME is the crux before upload.** Extract the tail frame
+  (`ffmpeg -sseof -1 -i out.mp4 -frames:v 1 last.png`) and inspect it — a naive trim ends on the
+  loading state, not the crux. Wrong tail → re-trim longer (or re-record).
+- `ffmpeg` absent → skip post-processing with a one-line note (best-effort, like the pixel-verify
+  sampler) and upload the raw SIGINT-flushed clip — it is valid, just untrimmed.
 
 Append the output paths to `.dev/ui-tweak/demo-files`. The screenshot is the C1 review surface; both
 screenshot + recording are embedded by `pr`.

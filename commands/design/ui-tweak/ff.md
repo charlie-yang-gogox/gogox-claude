@@ -578,14 +578,25 @@ Both the `pr` stage here and the post-hoc `/ggx-demo` operator skill upload + em
 upload is **not** filename-idempotent and a blind body append stacks `## Demo` sections, so BOTH callers
 MUST follow this contract verbatim (single source of truth — do not re-derive in `/ggx-demo`):
 
-- **Linear attachment dedupe — deterministic title.** Title each uploaded attachment
-  `ui-tweak-demo-<sha>` where `<sha>` is the short HEAD of the demoed commit (`git rev-parse --short HEAD`).
-  Before `create_attachment_from_upload`, list the ticket's existing attachments (`get_issue` →
-  `.attachments[]`) and **skip the upload if an attachment with that exact title already exists** —
+- **Linear attachment dedupe — deterministic title, SKIP or REPLACE (GGC-115 E14).** Title each
+  uploaded attachment `ui-tweak-demo-<sha>` where `<sha>` is the short HEAD of the demoed commit
+  (`git rev-parse --short HEAD`). Before `create_attachment_from_upload`, list the ticket's existing
+  attachments (`get_issue` → `.attachments[]`) and check for that exact title —
   `create_attachment_from_upload` is NOT idempotent on filename, so two runs would otherwise attach two
-  inline videos. Reuse the existing attachment's `assetUrl` when skipping.
-- **PR body — marker-delimited region, replace-between (never append).** Wrap the demo region in
-  HTML-comment delimiters:
+  inline videos. On a title match:
+  - **Default — SKIP** the upload and reuse the existing attachment's `assetUrl` (idempotent re-run).
+  - **Replace mode** (caller passed `--force`, e.g. `/ggx-demo <id> --force` after a bad first
+    recording): `delete_attachment` the old attachment → upload the new capture under the same title →
+    use the NEW `assetUrl`. **The `assetUrl` changes on re-upload**, so the PR-body region write below
+    is mandatory in this mode (the old link dies with the deleted attachment). Never delete-then-upload
+    without `--force` — a plain re-run must stay a no-op.
+- **Upload mechanics (GGC-115 F19).** The `prepare_attachment_upload` → `curl` PUT handoff is strict:
+  send EVERY header the prepare call returns, verbatim (`content-type`, `cache-control`,
+  `x-goog-content-length-range`, `Content-Disposition`) — a missing header is a signed-URL signature
+  mismatch (403). The signed URL expires in ~60s: prepare and PUT in the same breath, never prepare
+  early and upload after the capture.
+- **PR body — marker-delimited region, replace-between (never append, never to-EOF).** Wrap the demo
+  region in HTML-comment delimiters:
   ```
   <!-- ui-tweak-demo -->
   ## Demo
@@ -593,13 +604,19 @@ MUST follow this contract verbatim (single source of truth — do not re-derive 
   <!-- /ui-tweak-demo -->
   ```
   To write it: read the current PR body (`gh pr view <pr> --json body -q .body`); if the marker pair is
-  present, **replace only the text between the markers**; else if an UNMARKED `## Demo` section exists,
-  replace that whole section with a marked block; else append a marked block. Then `gh pr edit <pr>
-  --body <new>`. This is a surgical read-modify-write of one region — it preserves any reviewer edits
-  elsewhere in the body, unlike a blind `gh pr edit --body` overwrite, and it guarantees re-runs never
-  stack a second `## Demo`. The `pr` stage emits the markers at PR-open so post-hoc `/ggx-demo` finds
-  them; if the PR shipped before this landed (no markers), `/ggx-demo`'s replace-or-append still produces
-  exactly one marked block.
+  present, **replace only the text between the markers** (marker-to-marker — the closing
+  `<!-- /ui-tweak-demo -->` is the hard boundary); else if an UNMARKED `## Demo` section exists,
+  replace that section with a marked block, **bounded at the next `## ` heading or end-of-body —
+  NEVER a replace-to-EOF (GGC-115 E15)**: a mid-body `## Demo` with sections after it would otherwise
+  have its siblings silently eaten (the bug only stays invisible while Demo happens to be the last
+  section); else append a marked block. Then `gh pr edit <pr> --body <new>`. This is a surgical
+  read-modify-write of one region — it preserves any reviewer edits elsewhere in the body, unlike a
+  blind `gh pr edit --body` overwrite, and it guarantees re-runs never stack a second `## Demo`. The
+  `pr` stage emits the markers at PR-open so post-hoc `/ggx-demo` finds them; if the PR shipped before
+  this landed (no markers), `/ggx-demo`'s replace-or-append still produces exactly one marked block.
+  **Run `gh pr edit` from inside the repo directory with an absolute `--body-file` path (GGC-115
+  F17)** — the Bash tool's cwd resets between calls (often to a non-repo scratchpad), and `gh` needs a
+  repo cwd to resolve the PR.
 - **PR link form.** Inside the marked block, a Linear `assetUrl` is ALWAYS a plain link (bullet 3's
   deterministic-401 rule). The inline render is on the Linear ticket only.
 
