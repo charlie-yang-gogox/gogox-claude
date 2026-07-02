@@ -89,6 +89,17 @@ Set up the worktree, OpenSpec change, and `.port/` working directory for a Linea
    - Worktree exists AND HITL AND not `<recreate>` → `AskUserQuestion`: `reuse / recreate`. On `reuse`, proceed to step 10 (skip the create + scaffold phases). On `recreate`, remove first.
    - Invoke `/add-worktree <ticket-id> --type feat`. After it completes, the session is inside `../<ticket-id>`.
 
+8a. **Seed the worktree's `.claude/port-settings.json`.**
+   - A fresh git worktree does NOT inherit gitignored files, and `.claude/port-settings.json` (which carries `originalProjectPath` for the port lane) is gitignored — so without this, the just-created worktree has no port-settings, and `/port:explore` either STOPs (`--auto`) or has to re-prompt for the origin path (HITL).
+   - Right after `/add-worktree` returns (cwd is now the worktree), copy the main checkout's port-settings into the worktree when present. Idempotent (skips when the worktree already has one) and a no-op when the main checkout has none (non-port repos are unaffected):
+     ```bash
+     if [ -f "<repo-root>/.claude/port-settings.json" ] && [ ! -f ".claude/port-settings.json" ]; then
+       mkdir -p ".claude"
+       cp "<repo-root>/.claude/port-settings.json" ".claude/port-settings.json"
+     fi
+     ```
+   - `<repo-root>` is the main checkout where step 3 resolved the origin; the worktree is the current directory after step 8.
+
 9. **OpenSpec scaffold + `.port/` subdir.**
    - From inside the worktree:
      ```bash
