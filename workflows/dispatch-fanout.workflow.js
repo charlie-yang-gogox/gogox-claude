@@ -193,6 +193,35 @@ async function runWork(item, trunkSha) {
       `<!-- ggx-work-error --> Linear comment before exiting; you do NOT need to`,
       `post anything.)`,
       ``,
+      // GGC-112 — honest AND visible outcome when the run is forced to return
+      // BEFORE a terminal condition (e.g. /dev:verify's R4 headless auditor
+      // killed by the Bash tool ceiling, so verify-pass.md and the
+      // [ggx-work-result] line are never written). Without this the worker
+      // improvised outcome="port-paused" — a port-lane-only value — on a
+      // dev/bug lane; the evidence guard then demoted it to failed AND (via
+      // evidenceDemoted) still posted a Linear comment, so at least it was
+      // visible. Returning "failed" directly is more honest but bypasses
+      // verifyEvidence (done/port-paused only) and cannot set a new flag
+      // (WORK_SCHEMA is additionalProperties:false), so triageUnknownFallback —
+      // which assumes a comment already exists — would post nothing, leaving
+      // the stuck ticket silent. So the worker must post the comment ITSELF
+      // here (the Step 4.3 branch of /ggx-work that normally posts it is the
+      // same one that prints the machine line — which never ran).
+      `If NO \`[ggx-work-result]\` line was printed (the pipeline was forced to`,
+      `return before reaching a terminal condition — e.g. an audit or build was`,
+      `cut off mid-stage), do BOTH of the following before returning:`,
+      `  1. Post the failure comment YOURSELF on ${item.ticketId} via the`,
+      `     ticket's tracker MCP (Linear or Jira, whichever /ggx-work just used),`,
+      `     mirroring /ggx-work Step 4.3 — an issue comment whose body begins with`,
+      "     marker `<!-- ggx-work-error -->` and names the stuck stage + a",
+      `     one-line reason. First list the issue's comments and SKIP the post if`,
+      `     that marker is already present (idempotent). This is REQUIRED: since`,
+      `     the machine line never printed, /ggx-work did NOT post it, and the`,
+      `     dispatcher's downstream fallback assumes a comment already exists.`,
+      `  2. Return outcome="failed" with error naming the stuck stage.`,
+      `NEVER return outcome="port-paused" unless the lane is "port" (that value`,
+      `is invalid on any other lane); this ticket's lane is "${item.lane}".`,
+      ``,
       `Return the structured object: ticketId="${item.ticketId}", outcome (from`,
       `the machine line), prUrl (the draft PR url if one was opened, else null),`,
       `stage (the final infer_*_stage value, else null), error (one-line reason`,
