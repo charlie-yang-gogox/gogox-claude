@@ -24,6 +24,10 @@ description: >
   `/ui-tweak:ff` / `infer_ui_stage`), so it cannot mis-route a later
   `/ui-tweak` resume. Linear-only / flutter-only v1. NOT designer-facing —
   `/ui-tweak` is the designer entry; this is the operator/pipeline action.
+  GGC-116: the B1.5 capture plan carries resettable/reset/replayable lines and
+  `preview --capture-only` does two-pass rehearse→record replay internally for
+  Tier-2 / long-async flows (kills LLM-latency dead air); `--force` may reuse a
+  persisted replay-script when sha + wm-size match.
 ---
 
 <!-- RULE: command content is English. -->
@@ -55,6 +59,9 @@ description: >
   existing demo is bad (wrong flow / expired clip) and needs replacing. With `--force`, Step 4 runs the
   attach contract's REPLACE path (delete the old attachment → upload the new capture → rewrite the
   PR-body link; the `assetUrl` changes on re-upload). Single-ticket mode only; batch never forces.
+  On a reused `../<ID>` worktree, `--force` also lets `preview` skip the rehearsal and replay a
+  persisted `.dev/ui-tweak/replay-script` when its sha AND device `wm size` both still match (GGC-116
+  A6 fast-path); any mismatch rehearses fresh.
 - `/ggx-demo --batch` — **no argument**: self-discover every open PR of mine that still lacks a demo and
   capture them serially on one device. See **Batch mode** below.
 
@@ -326,7 +333,7 @@ title + body:
   Append the PR number + a one-phrase reason to a `DIFF_SKIPPED` list; do NOT open a device for it.
 
 For each RECORDABLE PR, also emit a one-line **capture plan** (consumed by B3 / Step 2.5's scoping —
-GGC-115 B6/B7/D11):
+GGC-115 B6/B7/D11 + GGC-116 B9/B10):
 
 - **`trigger:`** the control the recording must START on, for reuse / re-order / button-triggered
   behaviours (B6) — or `none` for static screens.
@@ -334,6 +341,16 @@ GGC-115 B6/B7/D11):
   order" — or `none`.
 - **`auth-mutating: yes|no`** (D11) — does the demo log out, sign up, or switch accounts? These
   contaminate the shared device's login state and are ORDERED LAST in B3.
+- **`resettable: yes|no`** (GGC-116 B10) — can the flow be reset to the recording start point (in-flow
+  undo → pop-home + re-nav → force-stop + relaunch)? `no` for one-shot / consumable-fixture flows
+  (force-stop clears process state only; persisted client state survives).
+- **`reset:`** the reset method to use — `in-flow undo` / `pop home + re-nav` / `force-stop + relaunch`
+  / `n/a`.
+- **`replayable: yes|no`** (GGC-116 B9/B10) — eligible for the two-pass rehearse→record replay: `yes`
+  iff the flow is **Tier-2 / long-async** (the B9 trigger) AND **resettable** AND **not** one of the
+  four single-pass classes (non-resettable / consumable crux / transient crux / auth-mutating). Tier-1
+  single-action and pixel-verify colour tickets are always `no` (never rehearse — AC7). `preview
+  --capture-only` re-derives this itself; the plan line just makes the batch's intent legible.
 
 Build `RECORDABLE` (the subset that advances to B2/B3) and `DIFF_SKIPPED` (PR# + reason, surfaced in B4).
 This judgment is intentionally LLM-driven — no regex reliably separates "visible UI change" from "a
@@ -376,6 +393,14 @@ confirm the logged-in account / fixtures match what the capture plan needs; mism
 gate (or re-seed source data per the plan) before recording. The per-ticket rebuild itself is correct
 and required (D12 confirmed: each diff must be in the binary) — do NOT "optimize" it away by reusing a
 prior ticket's build.
+
+**Two-pass replay is internal to `preview` (GGC-116).** For a `replayable: yes` PR, `preview
+--capture-only` rehearses (no recording) → resets → records ONE smooth scripted replay, killing the
+LLM-latency dead air that inflated CAF-882's clip to 124s. The batch does NOT orchestrate the two
+passes — it only carries the `replayable` / `reset` plan lines (B1.5) so the intent is legible. The
+D13 re-confirmation above still holds, and `preview` repeats it **after its reset, before the replay**
+(the reset is one more state transition since the last verify). Auth-mutating demos are a
+non-replayable class, so they stay single-pass AND keep their LAST ordering + re-login here.
 
 Catch each loud failure fail-soft and count it; on a `login wall` failure **short-circuit** the rest
 (one shared device = one shared login state, so it recurs identically):
