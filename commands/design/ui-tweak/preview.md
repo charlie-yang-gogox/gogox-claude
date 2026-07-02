@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, and never logs in EXCEPT the sanctioned GGC-65 Step 2.4 staging-QA login gate (always active — auto-resolves a staging account from Notion so login-gated screens can be captured; the repo's demo_auth block only OVERRIDES which account, it is not required). If it can't reach the screen (no route / unpassable login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (GGC-59, Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs the Step 2.4 login gate + Step 2.5 navigate+capture slice on an already-running device (path (a) only, no cold-boot; Step 2.4 auto-resolves + logs in with a Notion staging QA account, no demo_auth config required, GGC-65), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too."
+description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then (GGC-14) navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, and never logs in EXCEPT the sanctioned GGC-65 Step 2.4 staging-QA login gate (always active — auto-resolves a staging account from Notion so login-gated screens can be captured; the repo's demo_auth block only OVERRIDES which account, it is not required). If it can't reach the screen (no route / unpassable login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set (GGC-14), where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (GGC-59, Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs the Step 2.4 login gate + Step 2.5 navigate+capture slice on an already-running device (path (a) only, no cold-boot; Step 2.4 auto-resolves + logs in with a Notion staging QA account, no demo_auth config required, GGC-65), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too. GGC-116 adds two-pass capture for Tier-2 / long-async flows: rehearse the interaction with no recording (verifying the B8 crux and building a typed event script), reset, then record ONE smooth scripted replay with zero LLM round-trips in the recording window — Tier-1 single-action and pixel-verify colour tickets are exempt (single-pass); non-resettable / consumable-crux / transient-crux / auth-mutating flows fall back to single-pass."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -497,6 +497,119 @@ Plan the span before starting:
   pre-fill, the empty radios) before finalizing/uploading. A confident capture of the pre-fix
   behaviour is worse than no capture.
 
+### Two-pass capture — rehearse, then record one smooth replay (GGC-116)
+
+Single-pass capture drives the app (screenshot → judge → tap) **while** `screenrecord` runs, so every
+LLM observe→decide round-trip (30–60s each) is recorded as **dead air** — CAF-882's delivered clip ran
+124s for ~30s of real interaction — and B8 (crux is the post-fix state) is only confirmable *after* a
+full record+upload cycle. The fix: **rehearse first (no recording), then record ONE smooth scripted
+replay** with zero LLM round-trips inside the recording window. This section decides between the
+two-pass replay and the existing single-pass path, and owns the rehearsal / reset / replay; the
+"Capture (pure output)" section below is both the single-pass path AND the replay's fallback.
+
+#### B9 — rehearse first (dry-run pass, no recording)
+
+**Trigger (scope guard) — rehearse ONLY when** the navigation above used **Tier-2 tap-through**, OR the
+flow contains a **measured async wait > ~5s** (an A3-style quotation / network render). **Exempt — go
+straight to single-pass, no rehearsal (AC7):**
+- **Tier-1 single-action captures** (deep-link → settle → shoot) — no dead-air problem; a rehearsal is
+  pure added device time.
+- **pixel-verify colour tickets** (the GGC-62 trigger below fires) — the stale-build guard's
+  fresh-relaunch re-capture is explicitly a **fresh live single-pass** (a reinstall can reset one-time
+  UI / list order, invalidating a rehearsal). Never rehearse these.
+
+The trigger is about **flow shape, not mode** — it applies to every recording path that reaches here
+(interactive preview, direct-ship navigate, `--auto`, `--capture-only`).
+
+When the trigger fires, run the Tier-1/Tier-2 observe→tap loop above **WITHOUT `screenrecord`** as a dry
+run, and as you go **record every action into a typed event script** (below) with the **measured settle
+time per step** (how long that step actually took to render). This moves the **B8 crux verification
+BEFORE any recording**: at the end of the rehearsal, screenshot-verify the crux is the POST-FIX state
+(B8). If the rehearsal **cannot reach the crux** or **sees the pre-fix state**, dispose per mode —
+**fail-silent** (forward) / **fail-LOUD** (`--capture-only`) — **without recording a single second**
+(bad takes are killed pre-record; retakes are nearly free). (AC2, first half.)
+
+#### Typed event script — the rehearsal artifact
+
+NOT a bare "tap + sleep" list — an ordered event table. Each step:
+
+```
+{ type: tap | text | swipe | key | wait | assert,
+  coords: <DEVICE-DISPLAY space, already GGC-59-scaled>,     # tap / swipe start
+  payload: <text to type | key code | swipe end-coords | assert gist>,
+  measured-settle: <seconds this step took to render, from the rehearsal>,
+  expected-screen: <one-phrase gist of the screen after this step>,
+  async: <true iff this step waits on a network / async render> }
+```
+
+- **`text` is a REQUIRED type** — auth-error demos are an explicitly RECORDABLE class (GGC-115 C10) and
+  their **wrong-OTP / wrong-password typing IS the crux, inside the recording window** (the Step 2.4
+  login gate stays *pre*-recording). A tap-only script would silently drop the keystrokes and record a
+  blank field.
+- **`swipe`** covers scroll-to-crux flows; **`key`** covers hardware / back keys; **`wait`** is an
+  explicit settle with no input; **`assert`** is a read-only expected-screen checkpoint used only during
+  the rehearsal — it is compiled OUT of the replay (never issues an action).
+- **Any interaction the schema cannot express** (a custom gesture, a long-press-drag, a system dialog) →
+  that flow **falls back to single-pass** (record during the exploratory drive, current behaviour); the
+  script is abandoned, not force-fit (AC6).
+
+Persist the script to **`.dev/ui-tweak/replay-script`** — a single fixed path, **overwritten** per
+rehearsal, git-ignored (`.dev/` already is), **NOT a walker marker** (it never routes a resume), and it
+dies with a throwaway worktree — so no file proliferation by construction (AC5). Write a header line
+recording the rehearsal's **PR head sha** and the **device `wm size`** (coords are device-display space;
+a different resolution lands every tap wrong).
+
+#### B10 — resettability judgment + reset plan
+
+The rehearsal also judges whether the flow can be **reset to the recording start point**. Reset ladder,
+cheapest first:
+- **(a) in-flow undo** — `back` / unselect / clear the field.
+- **(b) pop to home + re-navigate** — return to `/home` and replay the nav prefix.
+- **(c) `am force-stop` + relaunch + re-navigate** — clears **process state only**; **persisted client
+  state survives — only a reinstall resets it.**
+
+The following classes are **NOT replayable — go straight to single-pass** (record during the exploratory
+drive; any consuming action then happens ONLY in that one recorded pass), with the reason logged (AC3):
+1. **Non-resettable** flows — one-shot state, consumable fixtures.
+2. **Consumable / one-time crux** — onboarding, coach-marks, "new" badges, staging backend state
+   transitions: a rehearsal would consume the crux and nobody could record it afterwards.
+3. **Transient crux** — toasts / snackbars / auto-dismissing UI: a blind replay's fixed sleeps can miss
+   the whole window, and the A5/A7 tail-frame check cannot see it either.
+4. **Auth-mutating** demos — logout / signup / account switch: reset cost too high; D11 ordering
+   (auth-mutating LAST + re-login after) is unchanged.
+
+#### Replay eligibility → pick the path
+
+**Replay-eligible** iff **all** hold: the B9 trigger fired, the flow is **resettable** (the ladder
+yields a start point), it is **not** one of the four B10 single-pass classes, and the script is **fully
+expressible** (AC6). Otherwise → **single-pass**: fall through to "Capture (pure output)" below and
+drive + record together exactly as today (log the single-pass reason).
+
+#### A6 — the replay: zero LLM round-trips inside the recording window
+
+When replay-eligible, after the rehearsal:
+1. **Reset** to the start point via the B10 ladder.
+2. **D13 re-confirm** the logged-in account / fixtures match the plan — the reset is one more state
+   transition since the last verify (GGC-115 D13, moved here). Mismatch → re-run the Step 2.4 gate /
+   re-seed the source data before replaying.
+3. **Start recording** (A1/A2 mechanics: a backgrounded SHELL `adb screenrecord` with the size ladder,
+   or `simctl recordVideo` on iOS), then **execute the typed event script as ONE Bash script,
+   uninterrupted** — taps / text / swipes / keys interleaved with `sleep`s, where **`sleep` =
+   measured-settle × 1.5 (floor 1s)** and **`async` steps get × 2 + 3s**. `assert` steps are compiled
+   out (no action). **No screenshots and no LLM calls inside the recording window** — the window
+   executes exactly one script (AC1; inspectable from the session transcript).
+4. **SIGINT-stop** (`pkill -INT screenrecord` / SIGINT to `recordVideo`) right after the last step, then
+   pull. A1/A2/A4 recording mechanics are otherwise unchanged.
+
+**`--force` reuse fast-path (AC5).** When a persisted `.dev/ui-tweak/replay-script` is already present
+and its header **sha AND `wm size` both match** the current PR head and device (the `/ggx-demo --force`
+re-record case on a reused `../<ID>` worktree), the rehearsal **MAY be skipped** and the persisted script
+replayed directly. Any mismatch (different sha, different resolution) → discard it and rehearse fresh.
+
+**iOS is a separate verification target.** Scripted `idb ui tap` sequences + `simctl recordVideo` SIGINT
+flush have **not** been exercised under a scripted driver — do NOT assume Android parity; verify iOS
+independently before trusting the replay path there (until then, iOS may stay single-pass).
+
 ### Capture (pure output) — start → act → SIGINT-stop (GGC-115)
 
 On reaching the target (or, for B6-anchored behaviours, just BEFORE tapping the trigger), capture a
@@ -530,9 +643,15 @@ screenshot + a recording into `.dev/ui-tweak/demo`:
   `ffmpeg -t N` directly on the VFR source corrupts duration metadata (a 20s clip reporting 29s) and
   breaks seek/last-frame extraction. Re-encode in one pass:
   `ffmpeg -i in.mp4 [-t N] -r 15 -vsync cfr -c:v libx264 -pix_fmt yuv420p -movflags +faststart out.mp4`.
-- **A5 — verify the final clip's LAST FRAME is the crux before upload.** Extract the tail frame
-  (`ffmpeg -sseof -1 -i out.mp4 -frames:v 1 last.png`) and inspect it — a naive trim ends on the
-  loading state, not the crux. Wrong tail → re-trim longer (or re-record).
+- **A5 / A7 — verify the final clip's crux frame with the full B8 semantic check (GGC-116).** Extract
+  the tail / crux frame (`ffmpeg -sseof -1 -i out.mp4 -frames:v 1 last.png`) and **re-run the B8
+  post-fix check on it** — not merely "tail ≠ loading state", but the specific post-fix assertion (the
+  error message / fixed pre-fill / empty radios). The replay executed a *different* run than the
+  rehearsal that verified B8, so the replay must prove itself on its own clip (AC2, second half).
+  - **On the replay path**, a failure triggers **exactly one** reset + replay retry with the `async`
+    sleeps **doubled**; still failing → **fall back to single-pass** (slow-paced but guaranteed
+    deliverable), logging the reason (AC4).
+  - **On the single-pass path**, a wrong crux / tail frame re-trims longer (or re-records) as before.
 - `ffmpeg` absent → skip post-processing with a one-line note (best-effort, like the pixel-verify
   sampler) and upload the raw SIGINT-flushed clip — it is valid, just untrimmed.
 
