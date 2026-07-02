@@ -62,14 +62,14 @@ Prerequisite: >
 
 **Usage**:
 
-- `/ggx-bundle DAF-501 DAF-502 DAF-503` — interactive. First id = **lead** (owns the
+- `/ggx-bundle <DAF-a> <DAF-b> <DAF-c>` — interactive. First id = **lead** (owns the
   `feat/<lead>` branch + the PR); the rest = **siblings** in **dependency order**
   (left = implemented earliest). Verifies preconditions, consolidates the PRD,
   shows it, and asks you to confirm before any mutation.
-- `/ggx-bundle DAF-501 DAF-502 DAF-503 --auto` — skip the Step 2 confirmation gate
+- `/ggx-bundle <DAF-a> <DAF-b> <DAF-c> --auto` — skip the Step 2 confirmation gate
   and run the port/dev stages unattended. The `/spec-review` gate (Step 4d) still
   PAUSES — `--auto` never skips human review of an LLM-synthesized spec.
-- `/ggx-bundle DAF-501 DAF-502 DAF-503 --dry-run` — consolidate + print the PRD and
+- `/ggx-bundle <DAF-a> <DAF-b> <DAF-c> --dry-run` — consolidate + print the PRD and
   plan, then STOP. **No Linear / git mutation.**
 
 Notes:
@@ -287,25 +287,25 @@ Exit 0.
 ## Worked example
 
 ```
-# Fresh: DAF-501/502/503 are assigned to me, labeled port + ready-to-port.
-/ggx-bundle DAF-501 DAF-502 DAF-503
-  Step 1/1.5 : phase FRESH (no feat/DAF-501 branch, lead is ready-to-port)
+# Fresh: <DAF-a>/<DAF-b>/<DAF-c> are assigned to me, labeled port + ready-to-port.
+/ggx-bundle <DAF-a> <DAF-b> <DAF-c>
+  Step 1/1.5 : phase FRESH (no feat/<DAF-a> branch, lead is ready-to-port)
   Step 2     : read all 3 descriptions → one consolidated PRD, each requirement
-               tagged `Source: DAF-50x`; show PRD → you confirm
-  Step 3     : assign me + drop ready-to-port on all 3; 502/503 relatedTo 501 +
-               claim comments; 501 roster comment
-  Step 4a/b  : /port:start --prd-file → /port:ff DAF-501 → ONE change → need-spec-review
-  Step 4c    : coverage gate — DAF-501/502/503 all found in specs/**/spec.md ✓
-  Step 4d    : PAUSE → run /spec-review DAF-501. exit 0.
+               tagged `Source: <DAF-n>`; show PRD → you confirm
+  Step 3     : assign me + drop ready-to-port on all 3; <DAF-b>/<DAF-c> relatedTo <DAF-a> +
+               claim comments; <DAF-a> roster comment
+  Step 4a/b  : /port:start --prd-file → /port:ff <DAF-a> → ONE change → need-spec-review
+  Step 4c    : coverage gate — <DAF-a>/<DAF-b>/<DAF-c> all found in specs/**/spec.md ✓
+  Step 4d    : PAUSE → run /spec-review <DAF-a>. exit 0.
 
-  (human) /spec-review DAF-501  → flips to ready-to-dev
+  (human) /spec-review <DAF-a>  → flips to ready-to-dev
 
-/ggx-bundle DAF-501 DAF-502 DAF-503
+/ggx-bundle <DAF-a> <DAF-b> <DAF-c>
   Step 1.5   : phase DEV (lead ready-to-dev)
-  Step 4e    : /dev:ff DAF-501 → apply → verify → review → /dev:ship
-               (one archive) → ONE draft PR on feat/DAF-501 → DAF-501 In Review
-  Step 5     : PR body lists DAF-501/502/503; 502/503 → In Review + ship comments
-  Step 6     : coverage table written. Bundle DAF-501 +2 complete. exit 0.
+  Step 4e    : /dev:ff <DAF-a> → apply → verify → review → /dev:ship
+               (one archive) → ONE draft PR on feat/<DAF-a> → <DAF-a> In Review
+  Step 5     : PR body lists <DAF-a>/<DAF-b>/<DAF-c>; <DAF-b>/<DAF-c> → In Review + ship comments
+  Step 6     : coverage table written. Bundle <DAF-a> +2 complete. exit 0.
 ```
 
 ---

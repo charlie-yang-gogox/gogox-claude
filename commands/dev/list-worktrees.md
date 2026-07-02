@@ -28,7 +28,7 @@ No arguments.
 
 For each secondary worktree, collect the following. Run all worktree enrichments **in parallel** (not sequentially) to minimize latency:
 
-1. **Ticket ID**: extract `[A-Z]+-\d+` pattern from the branch name (e.g. `CAF-123` from `feat/CAF-123`).
+1. **Ticket ID**: extract `[A-Z]+-\d+` pattern from the branch name (e.g. `CAF-<n>` from `feat/CAF-<n>`).
 2. **Linear link**: if ticket ID found, format as `https://linear.app/gogox/issue/<ticket-id>`.
 3. **PR link and review status**: run `gh pr list --head "<branch>" --state all --json url,number,state,reviewDecision --limit 1`.
    - `--state all` is mandatory — `gh pr list` defaults to `--state open`, so a merged or closed PR returns an empty array and gets misreported as "No PR".

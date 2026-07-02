@@ -28,8 +28,8 @@ This agent operates in two modes depending on whether a PR number is provided in
 
 **Local mode:**
 1. Get the current git branch name.
-2. Extract the Linear ticket identifier by matching the pattern `[A-Z]+-\d+` (e.g. `CAF-139`) anywhere in the branch name.
-    - e.g. `feat/CAF-139` → `CAF-139`, `charlieyang/caf-29-ai-code-review` → `CAF-29` (case-insensitive match, then uppercase).
+2. Extract the Linear ticket identifier by matching the pattern `[A-Z]+-\d+` (e.g. `<PREFIX>-<n>`) anywhere in the branch name.
+    - e.g. `feat/<PREFIX>-<n>` → `<PREFIX>-<n>`, `charlieyang/<prefix>-<n>-ai-code-review` → `<PREFIX>-<n>` (case-insensitive match, then uppercase).
     - Stop if no match is found.
 
 **Remote mode:**

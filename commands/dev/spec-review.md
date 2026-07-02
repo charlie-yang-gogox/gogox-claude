@@ -46,7 +46,7 @@ treats as authoritative override.
 
 Notes:
 
-- `<ticket-id>` — Linear ticket ID (e.g. `CAF-370`). Optional; absent → batch.
+- `<ticket-id>` — Linear ticket ID (e.g. `<PREFIX>-<n>`). Optional; absent → batch.
 - No `--auto` mode. This skill is fundamentally HITL — auto-accepting auto-accepts
   defeats its purpose. Batch mode still asks every HITL question per ticket.
 
@@ -141,15 +141,15 @@ the single ticket id passed by the user.
 
    | # | ticket          | title                       | priority |
    |---|-----------------|-----------------------------|----------|
-   | 1 | [CAF-370](url1) | <truncated title, ≤60 chars>| high     |
-   | 2 | [CAF-401](url2) | <truncated title, ≤60 chars>| medium   |
+   | 1 | [<ticket-a>](url1) | <truncated title, ≤60 chars>| high     |
+   | 2 | [<ticket-b>](url2) | <truncated title, ≤60 chars>| medium   |
    ... (one row per ticket through row <N>)
    ```
 
    Columns:
    - `#` — 1-based row index matching position in `<queue>`.
    - `ticket` — markdown link `[<ticket-id>](<linear-url>)`. Claude Code
-     renders markdown, so the user sees `CAF-370` as a clickable link
+     renders markdown, so the user sees `<ticket-id>` as a clickable link
      without a separate url column blowing out the row width. Use the
      `url` field returned by `list_issues` for the link target.
    - `title` — Linear title, hard-truncated to 60 chars with `…` appended if
@@ -189,7 +189,7 @@ attribute (never fuzzy-matching prose)**.
 | Auto-accept (v1) — legacy | `<!-- ac:v1 sev=X -->**[AUTO-ACCEPTED]** ...` | `<!-- ac:v1 sev=medium -->**[AUTO-ACCEPTED]** medium — Risk R-1 ...` | explicit from marker; review |
 | Auto-accept (legacy) | `**[AUTO-ACCEPTED] X**` | `- **[AUTO-ACCEPTED] medium** — Risk R-1 ...` | explicit from marker; review |
 | Assumption | `**A-N**` / `**AR-N**` / `**AD/AP/AG/AU-N**` under an Assumptions / `### Needs review` heading | `- **AD-1** — provider is already populated ...` | `low` (unless marker); review |
-| Risk | `**R-N**` under `### Risks` | `- **R-1**: CAF-368 not yet built — Edit screen depends on ...` | `medium`; review |
+| Risk | `**R-N**` under `### Risks` | `- **R-1**: <ticket-id> not yet built — Edit screen depends on ...` | `medium`; review |
 
 #### Steps
 
@@ -352,7 +352,7 @@ truth and is available locally, yet without this phase the Step 4 loop asks
 the human to accept/reject/defer every `verify=unconfirmed` empirical claim
 with no tooling to settle it. Worse, items were decided in a fixed sorted
 order on the spot, so an investigation triggered while walking item N could
-refute an item already accepted earlier in the same run (the CAF-233
+refute an item already accepted earlier in the same run (the
 AP-3/AG-4 provenance re-open failure). This phase moves all origin
 investigation **before** the decision loop, so every Step 4 decision runs
 against frozen, code-verified ground truth — no later read can contradict an
@@ -465,11 +465,11 @@ normally.
 > worktree. The findings live in session memory only, consumed by Step 4 and
 > recorded in the Step 5 comment. See §C.
 
-### Step 3.6: Cluster proposal (presentation/decision layer — GGC-32)
+### Step 3.6: Cluster proposal (presentation/decision layer)
 
 The skill dedups review items **by `id`** (Step 2.7), so near-duplicate items
 that represent the *same underlying decision* from different lenses are walked
-and prompted separately (CAF-233: AP-1≈AG-2, AP-3≈AG-4, AP-4≈AG-3 — 10 items,
+and prompted separately (e.g. AP-1≈AG-2, AP-3≈AG-4, AP-4≈AG-3 — 10 items,
 ~6 distinct decisions). This step lets ONE decision fan out to a set of linked
 IDs. It is a **presentation/decision layer only** — it never changes the
 join-by-`id` schema (Step 2.7) or the §A comment format.
@@ -557,7 +557,7 @@ investigation (AC-3):
   `Investigate origin` option available (step 2 below) for any item that is
   still `verify == "unconfirmed"` and empirical.
 
-**Clustered decisions (Step 3.6, GGC-32).** When the next unit in the queue is a
+**Clustered decisions (Step 3.6).** When the next unit in the queue is a
 confirmed `<cluster>` (member items grouped in Step 3.6.3), run the steps below
 ONCE for the cluster, against its shared one-line premise, then fan the result
 out to every member:
@@ -567,7 +567,7 @@ out to every member:
 - **Severity** of the cluster = `max(member severities)`; the high-severity
   REVIEWED gate (step 3) fires if ANY member is high.
 - The chosen verdict + `directive` / `note` apply to ALL members. Run the
-  Reject-path directive grounding (step 4, GGC-33) ONCE on the shared directive;
+  Reject-path directive grounding (step 4) ONCE on the shared directive;
   the validated directive then fans out.
 - In `<decisions>`, append ONE entry **per member** —
   `{item_index, verdict, directive?, note?, source_hash}` — each member keeps
@@ -636,7 +636,7 @@ part of a confirmed cluster handled above):
    - On `I'll write it now` → user enters the directive in the free-text input.
      Empty / whitespace-only / "TBD" / "later" → loop back as Defer with note.
    - Never proceed with an empty directive.
-   - **Directive grounding (port lane only — GGC-33).** Before appending the
+   - **Directive grounding (port lane only).** Before appending the
      directive to `<decisions>` (step 7), validate any concrete code claim it
      makes against the origin codebase. This catches a directive that cites
      symbols / file:line that don't exist (e.g. copied from a subagent report
@@ -686,7 +686,7 @@ part of a confirmed cluster handled above):
    - Options: `Confirm` / `Edit directive` / `Switch to Defer instead`
    - Never silently bucket Other.
    - On `Confirm` → apply the same **directive grounding** check as the Reject
-     path (step 4, GGC-33) before recording (a confirmed Other directive is a
+     path (step 4) before recording (a confirmed Other directive is a
      Reject directive).
 
 7. Append decision to `<decisions>: [{item_index, verdict, directive?, note?, source_hash}]`.
@@ -807,10 +807,10 @@ Print:
 ```
 Batch complete (<N>/<N> processed):
 
-  ✅ [CAF-370](url) — 5 confirmed, 1 revised, 0 deferred → ready-to-dev
-  ⏭  [CAF-401](url) — skipped (concurrent reviewer at 2026-05-12T14:23:11Z)
-  ⚠  [CAF-398](url) — errored (label flip failed; manual recovery needed)
-  ✅ [CAF-412](url) — 0 confirmed, 0 revised, 0 deferred → ready-to-dev (lite mode)
+  ✅ [<ticket-a>](url) — 5 confirmed, 1 revised, 0 deferred → ready-to-dev
+  ⏭  [<ticket-b>](url) — skipped (concurrent reviewer at 2026-05-12T14:23:11Z)
+  ⚠  [<ticket-c>](url) — errored (label flip failed; manual recovery needed)
+  ✅ [<ticket-d>](url) — 0 confirmed, 0 revised, 0 deferred → ready-to-dev (lite mode)
 
 Summary: <X> confirmed, <Y> skipped, <Z> errored.
 ```
@@ -986,7 +986,7 @@ hashing.
 ## §C — Non-goals (do not extend)
 
 - Do NOT read or modify any file under the ticket's worktree. (The Step 3.5
-  investigate-first phase AND the Step 4 directive-grounding check (GGC-33) both
+  investigate-first phase AND the Step 4 directive-grounding check both
   read the **origin** codebase at `originalProjectPath`, never the ticket
   worktree, and write nothing — read-only investigation whose findings live in
   session memory only. A directive that cites a target-repo symbol cannot be

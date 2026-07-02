@@ -20,7 +20,7 @@ Single-PR mode:
 - `/code-review` — review the current git branch
 - `/code-review 228` — review PR #228 remotely without checkout
 - `/code-review https://github.com/gogovan/.../pull/228` — same, extracted from URL
-- `/code-review feat/CAF-100` — review by branch name (looks up the PR)
+- `/code-review feat/<PREFIX>-<n>` — review by branch name (looks up the PR)
 - `/code-review --auto` — review the current branch inline (no `Agent` spawn). Required when this command runs inside a `/ggx-dispatcher`-spawned `general-purpose` subagent, where nested-Agent spawns are officially unsupported (see `ARCHITECTURE.md` "Nested-spawn constraint"). `/dev:review` passes `--auto` automatically. Can be combined with a PR number / branch name.
 
 Batch mode (auto-scans all open PRs of the cwd repo, mirrors the `ca/da-flutter-code-review` claude.ai routines):
@@ -222,13 +222,13 @@ Mode: <force? / limit=N? / dry-run? / exclude-user=<value>? / exclude-draft? —
 
 | PR | Title | Ticket | CI | Status | Critical | Report |
 | --- | --- | --- | --- | --- | --- | --- |
-| 228 | feat: ...  | CAF-139 | green   | reviewed | 2 | [PR-228.md](PR-228.md) |
-| 229 | fix: ...   | CAF-141 | pending | reviewed | 0 | [PR-229.md](PR-229.md) |
+| 228 | feat: ...  | <PREFIX>-<n> | green   | reviewed | 2 | [PR-228.md](PR-228.md) |
+| 229 | fix: ...   | <PREFIX>-<n> | pending | reviewed | 0 | [PR-229.md](PR-229.md) |
 | 231 | chore: ... | —       | red     | skipped (ci-red)        | — | — |
-| 232 | feat: ...  | DAF-22  | green   | skipped (already reviewed) | — | — |
+| 232 | feat: ...  | <PREFIX>-<n>  | green   | skipped (already reviewed) | — | — |
 | 240 | bump deps  | —       | green   | skipped (bot author)       | — | — |
-| 241 | feat: ...  | CAF-150 | green   | skipped (excluded-user)    | — | — |
-| 242 | wip: ...   | CAF-151 | green   | skipped (excluded-draft)   | — | — |
+| 241 | feat: ...  | <PREFIX>-<n> | green   | skipped (excluded-user)    | — | — |
+| 242 | wip: ...   | <PREFIX>-<n> | green   | skipped (excluded-draft)   | — | — |
 ```
 
 Ticket column: extract `[A-Z]+-\d+` from the PR title or `headRefName`; `—` if no match.

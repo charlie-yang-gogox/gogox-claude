@@ -38,7 +38,7 @@ PIPELINE_IN_FLIGHT="no"
 ```
 
 - If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "no"`: invoke `/dev:start <ticket-id> [--auto] [--no-figma] [--bug] [--no-ticket-init]`, then continue with `infer_dev_stage`. Pass `--no-ticket-init` through verbatim when `NO_TICKET_INIT_FLAG == 1`.
-- If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "yes"` AND `PORT_HANDOFF == 1`: **adopt the port handoff** (GGC-56). The in-flight signal here is a committed `openspec/changes/<name>` produced by `/port:ship`, NOT a dev-pipeline marker — `/dev:start` must run so spec-review `[REVISED]` directives are captured before apply. Invoke `/dev:start <ticket-id> --port-handoff` (pass `--auto` and/or `--no-ticket-init` through verbatim when their flags are set; never pass `--bug`), then continue with `infer_dev_stage`. This branch has HIGHER priority than the no-flag refuse below.
+- If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "yes"` AND `PORT_HANDOFF == 1`: **adopt the port handoff**. The in-flight signal here is a committed `openspec/changes/<name>` produced by `/port:ship`, NOT a dev-pipeline marker — `/dev:start` must run so spec-review `[REVISED]` directives are captured before apply. Invoke `/dev:start <ticket-id> --port-handoff` (pass `--auto` and/or `--no-ticket-init` through verbatim when their flags are set; never pass `--bug`), then continue with `infer_dev_stage`. This branch has HIGHER priority than the no-flag refuse below.
 - If `$TICKET_FROM_ARGS` is non-empty AND `PIPELINE_IN_FLIGHT == "yes"` (and `PORT_HANDOFF == 0`): refuse (use `/dev:start`'s re-entry rules — do not silently overwrite).
 - If `$TICKET_FROM_ARGS` is empty AND `PIPELINE_IN_FLIGHT == "yes"`: resume — but first distinguish a genuine in-flight dev pipeline from an **un-started port handoff** (a committed openspec change with no dev markers yet):
   - If `.dev/figma-context.md` exists OR `.dev/` contains any marker file → genuine in-flight dev pipeline → resume via walker (unchanged behavior).
@@ -51,7 +51,7 @@ PIPELINE_IN_FLIGHT="no"
 - `--from <stage>` flag: delete markers (Step 0a) before dispatching.
 - `--auto` flag is per-invocation. There is no persisted mode; passing `--auto` on resume simply runs the rest of the pipeline in auto mode.
 - `--bug` flag is **persisted via `.dev/mode.md`** (written by `/dev:start --bug`). Resume invocations do not need to re-pass `--bug`; the walker reads `.dev/mode.md` to branch into bug-mode logic automatically. Passing `--bug` on resume when `.dev/mode.md` is absent is a no-op (the walker would still take the feature path).
-- `feature-direct` mode (GGC-17) has **no flag** — `pipe_mode` detects it dynamically (worktree has no `openspec/` dir → the repo doesn't use OpenSpec, e.g. the `prompt` platform). As of GGC-76 `/dev:start` writes a `feature-direct`-valued `.dev/mode.md` marker so the direct-mode walker's `start→apply` gate fires (it requires `.dev/mode.md` to exist); `pipe_mode` still resolves the mode dynamically (the marker value is not a `bug`/`port-handoff` match), so legacy/unmarked worktrees are unaffected. It shares the bug-mode walker and direct-edit apply branch but keeps feature semantics (`feat:` commits). OpenSpec repos always have `openspec/` committed, so they never misdetect.
+- `feature-direct` mode has **no flag** — `pipe_mode` detects it dynamically (worktree has no `openspec/` dir → the repo doesn't use OpenSpec, e.g. the `prompt` platform). `/dev:start` now writes a `feature-direct`-valued `.dev/mode.md` marker so the direct-mode walker's `start→apply` gate fires (it requires `.dev/mode.md` to exist); `pipe_mode` still resolves the mode dynamically (the marker value is not a `bug`/`port-handoff` match), so legacy/unmarked worktrees are unaffected. It shares the bug-mode walker and direct-edit apply branch but keeps feature semantics (`feat:` commits). OpenSpec repos always have `openspec/` committed, so they never misdetect.
 
 ### Step 0a: --from handling
 
@@ -106,8 +106,8 @@ infer_dev_stage() {
 
   # Mode dispatch: direct (bug / feature-direct) vs feature. Resolved by
   # pipe_mode (lib/dev-mode.sh); .dev/mode.md is written by /dev:start for
-  # --bug, --port-handoff, AND feature-direct (GGC-76). feature-direct is still
-  # resolved dynamically by pipe_mode (no openspec/ dir — GGC-17); its marker
+  # --bug, --port-handoff, AND feature-direct. feature-direct is still
+  # resolved dynamically by pipe_mode (no openspec/ dir); its marker
   # only feeds the start→apply gate below.
   # Both direct modes share the direct walker: same stage chain, no OpenSpec.
   mode=$(pipe_mode "$wt")
@@ -188,8 +188,8 @@ infer_dev_stage() {
 }
 
 # Direct-mode walker — used when pipe_mode says `bug` (mode.md=bug marker) or
-# `feature-direct` (no openspec/ dir — GGC-17; /dev:start writes a
-# mode.md=feature-direct marker so the start→apply gate below fires — GGC-76).
+# `feature-direct` (no openspec/ dir; /dev:start writes a
+# mode.md=feature-direct marker so the start→apply gate below fires).
 # Skips figma / detect / align entirely. /dev:apply still runs but takes its
 # direct-edit branch (Step 0-bug in commands/dev/dev/apply.md): the agent
 # investigates, hypothesizes, writes the change, and commits autonomously.
@@ -321,7 +321,7 @@ while CURRENT != "done":
 
 The dispatch loop above is pseudocode that **you (the agent invoking `/dev:ff`)** must execute by hand: real Bash cannot dispatch slash commands or spawn subagents. This makes loop fidelity entirely a discipline problem, not a runtime guarantee.
 
-CAF-370 (2026-05-11 second-run) failure mode: the `/ggx-dispatcher`-spawned subagent ran `/dev:start` → `/dev:figma` → `/dev:align` → `/dev:apply`, saw "Apply complete." in apply's terminal message, and stopped — never re-ran `infer_dev_stage`, never dispatched `/dev:verify`. Apply finished cleanly (27/27 tasks, tests green), but no commit, no PR, no Linear flip.
+A previously observed failure mode: the `/ggx-dispatcher`-spawned subagent ran `/dev:start` → `/dev:figma` → `/dev:align` → `/dev:apply`, saw "Apply complete." in apply's terminal message, and stopped — never re-ran `infer_dev_stage`, never dispatched `/dev:verify`. Apply finished cleanly (27/27 tasks, tests green), but no commit, no PR, no Linear flip.
 
 Hard rules when you execute this loop:
 

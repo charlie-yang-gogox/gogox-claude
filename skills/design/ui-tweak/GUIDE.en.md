@@ -73,7 +73,7 @@ Command format:
 **B. Linear / Jira ticket (ID or URL)** — usually the richest source, because a ticket often already
 names the screen, the component, the target value, and may attach a Figma link.
 ```
-/ui-tweak CAF-1234
+/ui-tweak <ticket-id>
 ```
 > The ticket is **read-only**: the skill only *reads* it — it never changes status, assigns, or
 > comments. The exceptions: after you choose to ship, it posts a **draft-PR link** on the ticket, and
@@ -89,7 +89,7 @@ The trailing `[figma-url]` is optional: add it when you want the skill to read e
 Figma; omit it for plain text, or when the ticket already contains the right Figma link.
 
 > **A work-item number is always required.** Forms A and C still work, but if your input doesn't carry
-> a number (like `CAF-1234`) the skill asks for one up-front before it starts — every change is tracked
+> a number (like `<ticket-id>`) the skill asks for one up-front before it starts — every change is tracked
 > under a work item and handed to an engineer that way. The quickest path is form B (start from the
 > ticket), or include the number in your text.
 
@@ -103,7 +103,7 @@ scenes there are two phases:
 **Set up (automatic, silent)**
 0. Before touching anything, it puts your change in **its own private space**, separate from everyone
    else's work, so nothing you do here disturbs the team's current code. If your request already names
-   a work-item number (like `CAF-1234`) it uses that automatically; if you started from plain text with
+   a work-item number (like `<ticket-id>`) it uses that automatically; if you started from plain text with
    no number, it asks once up-front: *"what's the work-item number for this?"* — **a number is
    required** (every change is tracked under a work item, so it can later be handed to an engineer). If
    you don't have one, create it first or ask your PM/engineer, then run `/ui-tweak` again with it. You

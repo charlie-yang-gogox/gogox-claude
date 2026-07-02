@@ -12,7 +12,7 @@ Create a worktree for parallel ticket development. Use `/list-worktrees` to see 
 
 **Usage**: `/add-worktree <ticket-id> [--type feat|fix|chore|test|ci]`
 
-- `<ticket-id>` — Ticket ID (e.g. `CAF-123`, `CET-272`, `DET-89`). Ask if omitted.
+- `<ticket-id>` — Ticket ID (e.g. `<PREFIX>-<n>` — a CAF / CET / DET key). Ask if omitted.
 - `--type` — Branch prefix. Inferred from ticket nature when omitted (default `feat`).
 
 Parse `$ARGUMENTS` to extract the ticket ID and optional `--type` flag.
@@ -39,7 +39,7 @@ Hold these values in memory for use in later steps where you see `{deps_install}
 ## Step 1: Parse arguments and infer branch type
 
 - Extract ticket ID from `$ARGUMENTS`. Ask the user if not provided.
-- Validate the ticket ID matches the pattern `[A-Z]+-\d+` (e.g. `CAF-123`). If invalid, show error and stop.
+- Validate the ticket ID matches the pattern `[A-Z]+-\d+` (e.g. `<PREFIX>-<n>`). If invalid, show error and stop.
 - If `--type` is provided, use that value directly.
 - If `--type` is omitted, infer from the ticket's nature:
   - Bug fix / defect → `fix`
@@ -49,8 +49,8 @@ Hold these values in memory for use in later steps where you see `{deps_install}
   - Other → `chore`
   - When uncertain, default to `feat`
 - Derive:
-  - `BRANCH` = `<type>/<ticket-id>` (e.g. `feat/CAF-123`)
-  - `WORKTREE_PATH` = `../<ticket-id>` (e.g. `../CAF-123`), resolved to absolute path
+  - `BRANCH` = `<type>/<ticket-id>` (e.g. `feat/<PREFIX>-<n>`)
+  - `WORKTREE_PATH` = `../<ticket-id>` (e.g. `../<PREFIX>-<n>`), resolved to absolute path
 
 ## Step 2: Pre-flight checks
 
@@ -82,10 +82,10 @@ Hold these values in memory for use in later steps where you see `{deps_install}
    - Default (new branch): `FRESH_BRANCH=1; git worktree add -b "$BRANCH" "$WORKTREE_PATH" "origin/$DEFAULT_BRANCH"`.
    - If Step 2 chose to reuse an existing local branch: `FRESH_BRANCH=0; git worktree add "$WORKTREE_PATH" "$BRANCH"` (without `-b`).
    - If Step 2 chose to track a remote branch: `FRESH_BRANCH=0; git worktree add --track -b "$BRANCH" "$WORKTREE_PATH" "origin/$BRANCH"`.
-3. **Assert the new worktree is based on clean trunk** (GGC-49 — worktree/branch isolation). Under a
+3. **Assert the new worktree is based on clean trunk** (worktree/branch isolation). Under a
    parallel fan-out, a per-ticket worktree's HEAD can leak to a *sibling* ticket's commit instead of the
    freshly-fetched default-branch tip; a contaminated base silently poisons every downstream diff baseline
-   (e.g. `/ui-tweak`'s `base_ref`), which is exactly how CAF-625 was falsely closed as a no-op. For the
+   (e.g. `/ui-tweak`'s `base_ref`), which is exactly how a ticket can be falsely closed as a no-op. For the
    fresh-branch case, verify the resulting HEAD equals the tip we just fetched and STOP loudly on
    mismatch — never proceed on a contaminated base:
    ```bash
@@ -95,7 +95,7 @@ Hold these values in memory for use in later steps where you see `{deps_install}
      ACTUAL_HEAD=$(git -C "$WORKTREE_PATH" rev-parse HEAD)
      if [ "$ACTUAL_HEAD" != "$EXPECTED_TIP" ]; then
        echo "FAIL: worktree $WORKTREE_PATH HEAD ($ACTUAL_HEAD) != fresh origin/$DEFAULT_BRANCH tip ($EXPECTED_TIP)." >&2
-       echo "Cross-worktree branch contamination (GGC-49) — refusing to proceed on a non-trunk base." >&2
+       echo "Cross-worktree branch contamination — refusing to proceed on a non-trunk base." >&2
        echo "Remove the worktree (git worktree remove --force $WORKTREE_PATH), re-fetch, and retry." >&2
        exit 1
      fi

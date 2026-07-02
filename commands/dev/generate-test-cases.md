@@ -40,8 +40,8 @@ This skill:
 
 Accept any of these formats:
 
-- Jira: `CET-123`, `https://<org>.atlassian.net/browse/CET-123`
-- Linear: `CAF-123`, `https://linear.app/<team>/issue/CAF-123`
+- Jira: `<PREFIX>-<n>` (a `CET` / `DET` key), `https://<org>.atlassian.net/browse/<PREFIX>-<n>`
+- Linear: `<PREFIX>-<n>` (a `CAF` / `DAF` key), `https://linear.app/<team>/issue/<PREFIX>-<n>`
 - Just the number if project/team is known from context
 
 Detect the system based on the ID prefix or URL domain. Both use the format `[A-Z]+-\d+`; Jira lives at `*.atlassian.net`, Linear at `linear.app`.
@@ -51,12 +51,12 @@ Detect the system based on the ID prefix or URL domain. Both use the format `[A-
 If no ticket is mentioned, look through the session for:
 
 - Any Jira or Linear ticket IDs or URLs referenced
-- Branch names like `feat/CET-123-some-feature` or `feat/CAF-123-feature`
+- Branch names like `feat/<PREFIX>-<n>-some-feature`
 - PR descriptions or commit messages with ticket references
 
-If found, confirm with the user: _"I see this session relates to CET-123 (Jira). Should I update that ticket?"_
+If found, confirm with the user: _"I see this session relates to <PREFIX>-<n> (Jira). Should I update that ticket?"_
 
-If nothing is found, **ask the user**: _"Which ticket should I update? (e.g. CET-123 for Jira or CAF-123 for Linear)"_
+If nothing is found, **ask the user**: _"Which ticket should I update? (e.g. `<PREFIX>-<n>` — a CET/DET key for Jira or a CAF/DAF key for Linear)"_
 
 ---
 

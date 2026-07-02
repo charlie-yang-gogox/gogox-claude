@@ -80,17 +80,17 @@ The deletable set = SAFE/squash branches **not** bound to a worktree.
 Repo: gogox-client-flutter   trunk: trunk
 
 Merged branches — safe delete (2)
-  bug/CAF-301
+  bug/CAF-<n>
   chore/cleanup-logs
 
 Squash-merged — needs --force-squash (1)
-  feat/CAF-318   (remote gone)
+  feat/CAF-<n>   (remote gone)
 
 Bound to a worktree → use /remove-worktree (1)
-  feat/CAF-272   checked out in ../CAF-272
+  feat/CAF-<n>   checked out in ../CAF-<n>
 
 KEEP (1)
-  feat/CAF-999   not merged
+  feat/CAF-<n>   not merged
 
 Repo objects: .git = 1.8 GB   → git gc available
 ```
@@ -124,8 +124,8 @@ Logging each action; on per-item failure warn and continue:
 ```
 Clean-branches complete.
 
-  Deleted: bug/CAF-301, chore/cleanup-logs
-  Skipped: feat/CAF-318 (needs --force-squash), feat/CAF-272 (worktree — use /remove-worktree)
+  Deleted: bug/CAF-<n>, chore/cleanup-logs
+  Skipped: feat/CAF-<n> (needs --force-squash), feat/CAF-<n> (worktree — use /remove-worktree)
   Repo objects: 1.8 GB → 1.1 GB (git gc)
 
   Remote branches were NOT touched. Delete with:

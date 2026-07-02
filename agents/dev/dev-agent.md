@@ -83,7 +83,7 @@ You MUST use the OpenSpec workflow. This is mandatory — do not skip it or impl
    The orchestrator's primary done signal is `tasks.md` checkboxes (`completedTasks == totalTasks` via `openspec list --json`). The `Status:` line in `.dev/apply-result.md` is your reason channel for FAILED/BLOCKED — it is NOT consulted on success (CLEAR is implied by all-`[x]`, but write the file anyway).
 
    Optionally repeat the same line as the LAST line of chat output for legacy log readers — but the file is authoritative.
-10. Return control to the orchestrator. The orchestrator is required to spawn `verify-agent` against your diff before any push or PR — do NOT spawn it yourself, and do NOT self-audit your work in `.dev/verify-pass.md`. Same-agent self-audit is the pattern this split is designed to break (a previous CAF-467 dev-agent reported "switched to AppCheckbox" but only changed one of two call sites — the user caught it, not self-audit).
+10. Return control to the orchestrator. The orchestrator is required to spawn `verify-agent` against your diff before any push or PR — do NOT spawn it yourself, and do NOT self-audit your work in `.dev/verify-pass.md`. Same-agent self-audit is the pattern this split is designed to break (in one real incident a dev-agent reported "switched to AppCheckbox" but only changed one of two call sites — the user caught it, not self-audit).
 
 Do NOT implement UI code without first consulting the Figma design (when available).
 Do NOT implement code without running `/opsx:apply` first.

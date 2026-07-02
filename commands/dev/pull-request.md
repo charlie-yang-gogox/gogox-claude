@@ -23,7 +23,7 @@ Push the current branch and create a new PR or update the existing one. Automati
 3. If neither found, error: "Run `/init-project` to set up this repo."
 4. Read `~/.claude/commands/profiles/org.yaml`.
 5. If `branch_prefix` and `ticket_system` are `auto`:
-   - Extract the ticket prefix from the branch name (e.g., `CET` from `feat/CET-1234`).
+   - Extract the ticket prefix from the branch name (e.g., `CET` from `feat/CET-<n>`).
    - Look up the prefix in `org.yaml` → `jira.prefixes` or `linear.prefixes` to resolve `ticket_system`.
    - If prefix not found in org.yaml, skip ticket integration.
 6. Resolve org constants for the resolved `ticket_system`:
@@ -62,7 +62,7 @@ Run these checks sequentially. Stop on first failure.
 
 ### 3. Extract Ticket ID
 
-Parse the branch name to extract a ticket ID (e.g., `CAF-272` from `feat/CAF-272`, or `CET-7911` from `feat/CET-7911`).
+Parse the branch name to extract a ticket ID (e.g., `CAF-<n>` from `feat/CAF-<n>`, or `CET-<n>` from `feat/CET-<n>`).
 
 ```bash
 git rev-parse --abbrev-ref HEAD
@@ -116,7 +116,7 @@ WARN: PR title fell back to branch name — ticket title unresolved
 
 **CRITICAL — PR title format:**
 - The PR title MUST be exactly `{TICKET_ID}: {ticket title from tracker}`.
-- Example: `CAF-593: "Account deactivated" dialog shows incorrect body text when user tries to edit payment settings`
+- Example: `CAF-<n>: "Account deactivated" dialog shows incorrect body text when user tries to edit payment settings`
 - Do NOT use conventional-commit format (e.g., `fix(scope): ...`) for the PR title.
 - Do NOT rephrase, summarize, or abbreviate the ticket title — use the exact title from the tracker.
 
@@ -154,10 +154,10 @@ Generate a **Summary** section by reading the commit messages and writing a plai
 ```
 
 **Mandatory field definitions — follow exactly:**
-- `{TICKET_ID}` is the extracted ticket ID (e.g., `CAF-272`, `CET-7911`)
+- `{TICKET_ID}` is the extracted ticket ID (e.g., `CAF-<n>`, `CET-<n>`)
 - `{TICKET_URL}` is:
-  - Linear: `{linear_base_url}/{TICKET_ID}` (e.g., `https://linear.app/gogox/issue/CAF-272`)
-  - Jira: `{jira_base_url}/{TICKET_ID}` (e.g., `https://gogotech.atlassian.net/browse/CET-7911`)
+  - Linear: `{linear_base_url}/{TICKET_ID}` (e.g., `https://linear.app/gogox/issue/CAF-<n>`)
+  - Jira: `{jira_base_url}/{TICKET_ID}` (e.g., `https://gogotech.atlassian.net/browse/CET-<n>`)
 - `{GENERATED_SUMMARY_BULLETS}` — plain-English summary as bullet points (not narrative paragraphs); each bullet states, in plain language, which aspect was fixed / changed and the reason
 - `{COMMIT_MESSAGES_AS_CHECKLIST}` — each commit message formatted as `- [x] <message>` (one per commit, in chronological order)
 - `{GENERATED_TEST_PLAN}` — QA-oriented numbered checklist generated from the diff and commits (see Step 6d)

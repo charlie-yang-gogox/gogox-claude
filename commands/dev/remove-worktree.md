@@ -111,8 +111,8 @@ For each worktree, assign exactly one bucket. The two work-loss guards (clean tr
 
 Build a **ticket URL** per worktree from the per-worktree resolved `ticket_system` plus the org constants captured in Step A0:
 
-- `linear` → `{org.linear.base_url}/{TICKET-ID}` (e.g. `https://linear.app/gogox/issue/CAF-272`).
-- `jira` → `{org.jira.base_url}/{TICKET-ID}` (e.g. `https://gogotech.atlassian.net/browse/CET-7911`).
+- `linear` → `{org.linear.base_url}/{TICKET-ID}` (e.g. `https://linear.app/gogox/issue/CAF-<n>`).
+- `jira` → `{org.jira.base_url}/{TICKET-ID}` (e.g. `https://gogotech.atlassian.net/browse/CET-<n>`).
 - `unknown` → leave blank (`—`).
 
 Build a **PR cell** as a single markdown link wrapping both the number and the state: `[#<num> <state>](<pr-url>)`. If no PR was found, show `No PR` (no link); if `gh` errored, show `unknown` (no link).
@@ -129,16 +129,16 @@ RECOMMENDED for deletion (N)
 
 | Ticket | Branch | Tracker | Status | PR | Clean | Pushed | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| [CAF-272](<ticket-url>) | feat/CAF-272 | Linear | Ready for QA | [#418 merged](<pr-url>) | ✓ | ✓ | SAFE |
+| [CAF-<n>](<ticket-url>) | feat/CAF-<n> | Linear | Ready for QA | [#418 merged](<pr-url>) | ✓ | ✓ | SAFE |
 | ...
 
 KEEP (M)
 
 | Ticket | Branch | Tracker | Status | PR | Clean | Pushed | Reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| [CET-7911](<ticket-url>) | feat/CET-7911 | Jira | In Review | [#503 open](<pr-url>) | ✓ | ✓ | PR not merged |
-| [DAF-12](<ticket-url>) | bug/DAF-12 | Linear | Done | [#290 merged](<pr-url>) | ✗ (3 files) | ✓ | dirty working tree |
-| [CAF-9](<ticket-url>) | feat/CAF-9 | Linear | In Progress | No PR | ✓ | ✗ (2 ahead) | unpushed: 2 commit(s) ahead |
+| [CET-<n>](<ticket-url>) | feat/CET-<n> | Jira | In Review | [#503 open](<pr-url>) | ✓ | ✓ | PR not merged |
+| [DAF-<n>](<ticket-url>) | bug/DAF-<n> | Linear | Done | [#290 merged](<pr-url>) | ✗ (3 files) | ✓ | dirty working tree |
+| [CAF-<n>](<ticket-url>) | feat/CAF-<n> | Linear | In Progress | No PR | ✓ | ✗ (2 ahead) | unpushed: 2 commit(s) ahead |
 | ...
 ```
 

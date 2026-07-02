@@ -28,9 +28,9 @@ MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
 # Pipeline mode: bug / feature-direct (both: no openspec) vs feature
 # (openspec-driven). Resolved by pipe_mode (lib/dev-mode.sh); .dev/mode.md
-# is written by /dev:start for --bug, --port-handoff, and feature-direct repos
-# (GGC-76); pipe_mode() resolves the mode dynamically (feature-direct via no
-# openspec/ dir — GGC-17).
+# is written by /dev:start for --bug, --port-handoff, and feature-direct repos;
+# pipe_mode() resolves the mode dynamically (feature-direct via no
+# openspec/ dir).
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
 
@@ -75,7 +75,7 @@ FIGMA_RAW=""
 Run `/check-test --fix` if available for `{platform}`, else fall back to the
 **resolved** test command directly. Auto-fix failures.
 
-**Per-repo test profile (GGC-24).** The gradle unit-test task and the
+**Per-repo test profile.** The gradle unit-test task and the
 known-flake quarantine are resolved from the repo profile, not hardcoded:
 
 - When delegating to `/check-test`, the resolution happens inside it (its
@@ -96,8 +96,7 @@ known-flake quarantine are resolved from the repo profile, not hardcoded:
   same exact-match flake partition (`/check-test` Step 5a) to the failures: a
   run whose only failures are known flakes is GREEN, and known flakes consume
   ZERO fix budget. This is what keeps the android `/ggx-pr-resolver` rebase
-  lane from being permanently red on the ~37 environment-flaky tests
-  (CET-8234/8424).
+  lane from being permanently red on the ~37 environment-flaky tests.
 
 **Suppression banner (always present, verbatim).** Whenever any known flake is
 suppressed, surface the same banner `/check-test` prints —
@@ -132,7 +131,7 @@ paths, profile keys, and cross-file references (grep for stale references to
 those, not code symbols). The "build" that confirms compilation is
 `scripts/prompt-lint.sh`, already run in Step 1 via `{test_cmd}`. There are no
 openspec artifacts on this platform (skill-edits ride the direct modes — bug, or
-feature-direct per GGC-17), so pass the `(bug-mode: no openspec change)`
+feature-direct), so pass the `(bug-mode: no openspec change)`
 change-name form.
 
 **Pass the raw dir, not the receipt path.** The auditor must read `.dev/figma-raw/*.json` directly, not `.dev/figma-context.md`. The receipt is a curated summary written by the implementing pipeline — sharing it with the auditor would re-converge auditor and implementer onto the same filtered view, defeating the whole point of the split. The receipt is referenced internally by verify-agent only for sha256 cross-check.
@@ -153,7 +152,7 @@ triggers it. Distinguish the two failure shapes exactly as `/dev:figma` Step 4b:
 - The agent **returned but wrote no `.dev/verify-pass.md`** → retry the spawn
   once; still no file → Step 2b.
 
-### Step 2b: Spawn-unavailable fallback (platform-gated — GGC-11, R3 revised)
+### Step 2b: Spawn-unavailable fallback (platform-gated — R3 revised)
 
 `verify-agent` is the **decorrelation auditor** — it exists to be a *different*
 context than the implementer — so it is NOT inlined as freely as the figma/align
@@ -173,7 +172,7 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
   Provenance: inline-self-audit — DECORRELATION LOST (Agent spawn unavailable in this session; the implementer audited its own diff). Acceptable ONLY on the prompt platform — diffs are tiny prose/bash and prompt-lint is the deterministic gate; NOT a substitute for the independent auditor on code platforms. See ARCHITECTURE.md R3.
   ```
 
-  This is deliberately **not silent**: the GGC-2 dogfood run self-audited with no
+  This is deliberately **not silent**: an early dogfood run self-audited with no
   such marker, and making that invisible degradation visible is exactly why the
   banner exists. Proceed to Step 3 on `Status: CLEAR`; Step 2a on `BLOCKED`.
 
@@ -181,7 +180,7 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
   unresolved platform)** — real code, large diffs, weaker deterministic gates:
   **NO inline fallback** — an inline verify would be the implementer auditing
   its own code, collapsing the decorrelation this stage exists to provide (the
-  self-audit asymmetry). Instead, run the **R4 headless auditor** (GGC-19): a
+  self-audit asymmetry). Instead, run the **R4 headless auditor**: a
   separate-OS-process `claude -p` is naturally level-1, so the nested-spawn
   ban does not apply and the auditor keeps a genuinely separate context — both
   decorrelation properties preserved (`ARCHITECTURE.md` R4). Inlining stays
@@ -198,7 +197,7 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
   dispatcher lane.
 
   ```bash
-  # --- R4 headless auditor (GGC-19) — code platforms only --------------------
+  # --- R4 headless auditor — code platforms only --------------------
   # Contract file: installed flat by install.sh; repo-local fallback covers
   # dev checkouts of gogox-claude itself.
   R4_CONTRACT="$HOME/.claude/agents/verify-agent.md"
@@ -248,7 +247,7 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
   R4_PID=$!
 
   # 3. Counter-bounded watchdog — no `timeout` (absent on stock macOS; the
-  #    GGC-2 / F1 rule). Bound = R4_MAX_SECS wall clock, then hard-kill.
+  #    F1 rule). Bound = R4_MAX_SECS wall clock, then hard-kill.
   R4_MAX_SECS=900
   R4_TIMED_OUT=0
   i=0
@@ -285,7 +284,7 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
   #    the Status: line). If the report is missing or contradicts the
   #    fail-closed verdict, atomic-write a BLOCKED report so the walker has a
   #    deterministic marker.
-  R4_PROV='Provenance: headless-r4-auditor — decorrelation PRESERVED via separate-process `claude -p --model sonnet` (Agent spawn unavailable in this session; see ARCHITECTURE.md R4 / GGC-19).'
+  R4_PROV='Provenance: headless-r4-auditor — decorrelation PRESERVED via separate-process `claude -p --model sonnet` (Agent spawn unavailable in this session; see ARCHITECTURE.md R4).'
   if [ "$R4_STATUS" = "BLOCKED" ] \
      && ! grep -q '^Status: BLOCKED' "$WT/.dev/verify-pass.md" 2>/dev/null; then
     {
@@ -316,7 +315,7 @@ sonnet spawns (R2). What happens on spawn-failure depends on `{platform}`
 3. Re-run the auditor with the same inputs — re-spawn `verify-agent`; or, if the spawn was unavailable and Step 2b's inline path (prompt platform) produced the report, re-run that same inline audit (preserving its `Provenance:` banner); or, if Step 2b's R4 headless path (code platforms) produced it, re-run the same `claude -p` headless audit (the wrapper re-injects the `headless-r4-auditor` provenance line).
 4. Read `.dev/verify-pass.md` again:
    - `Status: CLEAR` → proceed to Step 3.
-   - `Status: BLOCKED` (still) → ABORT. STOP. The walker will see `Status: BLOCKED` next iteration and refuse to advance until the report is fixed (or `/dev:ff --from verify` is used to discard and re-run). Before stopping, append a local breadcrumb (GGC-23): run `/_file-followup verify-blocked summary="<ticket-id>: verify still BLOCKED after recovery" report=.dev/verify-pass.md signature="<ticket-id>:verify"`. It is fail-soft (never blocks the abort) and writes only the local gitignored `.ggx-followups/followups.md` — NO Linear ticket / GitHub.
+   - `Status: BLOCKED` (still) → ABORT. STOP. The walker will see `Status: BLOCKED` next iteration and refuse to advance until the report is fixed (or `/dev:ff --from verify` is used to discard and re-run). Before stopping, append a local breadcrumb: run `/_file-followup verify-blocked summary="<ticket-id>: verify still BLOCKED after recovery" report=.dev/verify-pass.md signature="<ticket-id>:verify"`. It is fail-soft (never blocks the abort) and writes only the local gitignored `.ggx-followups/followups.md` — NO Linear ticket / GitHub.
 
 ## Step 3: Format
 

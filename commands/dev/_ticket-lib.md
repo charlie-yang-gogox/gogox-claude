@@ -36,7 +36,7 @@ BRANCH_PREFIX=$(grep -E '^branch_prefix:' "$PROFILE" | awk '{print $2}')
 if [ "$TICKET_SYSTEM" = "auto" ] || [ -z "$TICKET_SYSTEM" ]; then
   ORG="$HOME/.claude/commands/profiles/org.yaml"
   # Extract the ticket prefix from the ticket id passed in.
-  PREFIX="${TICKET_ID%%-*}"        # e.g. CET-8362 → CET
+  PREFIX="${TICKET_ID%%-*}"        # e.g. CET-<n> → CET
   # Look up the prefix in the org file's jira/linear arrays.
   if grep -A1 '^jira:' "$ORG" | grep -A5 'prefixes:' "$ORG" | grep -qE "\\b$PREFIX\\b" \
        && grep -B5 "$PREFIX" "$ORG" | grep -q '^jira:'; then

@@ -4,16 +4,16 @@ argument-hint: "<TICKET|PR> | --batch"
 description: >
   Post-hoc UI demo capture for already-shipped PRs with a recordable UI change.
   Operator skill with two modes — single (`<TICKET|PR>`) and self-discovering
-  batch (`--batch`, GGC-66, which absorbed the former `/_ui-demo-batch`):
+  batch (`--batch`, which absorbed the former `/_ui-demo-batch`):
   `--batch` captures a demo for every open PR of yours that still lacks one
   (no JSON input, no class/title gate — a diff-first LLM recordability judge
-  decides which PRs open a device; GGC-69), serially on one device. Single mode:
+  decides which PRs open a device), serially on one device. Single mode:
   given a Linear
   ticket id OR a PR (number/URL), it resolves the PR's worktree, asserts the
   local HEAD matches the PR head (fail-loud — never demo a stale/unreviewed
   build), runs `/ui-tweak:preview --capture-only` (the SOLE capture point —
   navigate to the target screen on an already-running device, logging in via a
-  staging QA account when the repo's `demo_auth` selector is set (GGC-65), and
+  staging QA account when the repo's `demo_auth` selector is set, and
   record a screenshot + short clip), then idempotently attaches the result to
   the Linear ticket and patches the PR body's `<!-- ui-tweak-demo -->` `## Demo`
   region (replace-between-markers, never append). REUSES the ui-tweak
@@ -24,7 +24,7 @@ description: >
   `/ui-tweak:ff` / `infer_ui_stage`), so it cannot mis-route a later
   `/ui-tweak` resume. Linear-only / flutter-only v1. NOT designer-facing —
   `/ui-tweak` is the designer entry; this is the operator/pipeline action.
-  GGC-116: the B1.5 capture plan carries resettable/reset/replayable lines and
+  The B1.5 capture plan carries resettable/reset/replayable lines and
   `preview --capture-only` does two-pass rehearse→record replay internally for
   Tier-2 / long-async flows (kills LLM-latency dead air); `--force` may reuse a
   persisted replay-script when sha + wm-size match.
@@ -34,12 +34,12 @@ description: >
 
 # `/ggx-demo <TICKET|PR>` | `/ggx-demo --batch`
 
-> Productizes the manual post-hoc demo procedure (prototyped on CAF-541 → PR #610). `--auto`-shipped
+> Productizes the manual post-hoc demo procedure that was first done by hand. `--auto`-shipped
 > `design bug` PRs carry a demo only when one is captured post-ship: the parallel fan-out is device-free
 > (build-only), so the demo must be recorded **after** the PR is open — on a device, logging in via the
-> Step 2.4 gate (GGC-65) when the repo's `demo_auth` selector is set.
+> Step 2.4 gate when the repo's `demo_auth` selector is set.
 >
-> **Why a standalone skill, not a `--demo` flag on `/ui-tweak`** (decision, GGC-59): `/ui-tweak` is
+> **Why a standalone skill, not a `--demo` flag on `/ui-tweak`** (decision): `/ui-tweak` is
 > designer-facing (plain-language cards, fail-silent, rides the forward flow). A post-hoc demo is the
 > *opposite* operation — no edit, fail-LOUD, runs against an already-shipped ticket — and an operator
 > action (`/ggx-*`). It REUSES the same capture/upload machinery via `preview --capture-only`; only the
@@ -51,17 +51,17 @@ description: >
 
 ## Usage
 
-- `/ggx-demo <TICKET>` — e.g. `/ggx-demo CAF-541`. Resolves the ticket's open PR.
+- `/ggx-demo <TICKET>` — e.g. `/ggx-demo <ticket-id>`. Resolves the ticket's open PR.
 - `/ggx-demo <PR>` — a PR number (`#610` / `610`) or full URL.
-- `/ggx-demo <TICKET|PR> --force` — **replace mode (GGC-115 E14)**: re-record and REPLACE an existing
+- `/ggx-demo <TICKET|PR> --force` — **replace mode**: re-record and REPLACE an existing
   demo on the same commit. Without `--force`, the Step-4 dedup SKIPs any ticket that already carries a
   `ui-tweak-demo-<sha>` attachment for the current sha — correct for idempotent re-runs, wrong when the
   existing demo is bad (wrong flow / expired clip) and needs replacing. With `--force`, Step 4 runs the
   attach contract's REPLACE path (delete the old attachment → upload the new capture → rewrite the
   PR-body link; the `assetUrl` changes on re-upload). Single-ticket mode only; batch never forces.
   On a reused `../<ID>` worktree, `--force` also lets `preview` skip the rehearsal and replay a
-  persisted `.dev/ui-tweak/replay-script` when its sha AND device `wm size` both still match (GGC-116
-  A6 fast-path); any mismatch rehearses fresh.
+  persisted `.dev/ui-tweak/replay-script` when its sha AND device `wm size` both still match (the
+  replay fast-path); any mismatch rehearses fresh.
 - `/ggx-demo --batch` — **no argument**: self-discover every open PR of mine that still lacks a demo and
   capture them serially on one device. See **Batch mode** below.
 
@@ -82,7 +82,7 @@ Steps 1–5 (batch loops them).
 ## Step 1 — resolve the PR + ticket id
 
 ```bash
-# GGC-115 E14: --force = replace mode (Step 4 takes the attach contract's REPLACE path on a same-title
+# --force = replace mode (Step 4 takes the attach contract's REPLACE path on a same-title
 # match instead of SKIP). Parse + strip it before the TICKET|PR resolution below. Single mode only.
 FORCE=0; printf '%s' "$ARGUMENTS" | grep -q -- '--force' && FORCE=1
 ARG="<TICKET|PR, --force stripped>"
@@ -112,7 +112,7 @@ TICKET_LC=$(printf '%s' "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
 
 The demo MUST build the exact diff that shipped. Reuse `../<ID>` only when it is genuinely on the PR
 head; otherwise check out a throwaway worktree at the PR head. Then assert HEAD equals the PR head
-(GGC-59 must-fix #4) — a mismatch means the worktree drifted (a sibling reset, an unpushed local commit)
+— a mismatch means the worktree drifted (a sibling reset, an unpushed local commit)
 and we must NOT capture a stale/unreviewed build.
 
 ```bash
@@ -148,7 +148,7 @@ fi
 ## Step 2.5 — cache ticket context (for Step 2.4 region inference + Step 2.5 Tier-1 host)
 
 `preview --capture-only` reads `.dev/ui-tweak/ticket.json` to (a) **infer the account region** for the
-Step 2.4 login gate (GGC-65 auto-resolve — market token → `hk`/`sg`/… else `hk`) and (b) derive the
+Step 2.4 login gate (auto-resolve — market token → `hk`/`sg`/… else `hk`) and (b) derive the
 Tier-1 `ggv://` deep-link host. A dev/port/bug worktree (the common `/ggx-demo` target) has none — the
 forward ui-tweak pipeline writes it, this post-hoc path does not — so cache a minimal one now. We already
 hold `$TICKET_ID`; fetch the ticket via the Linear MCP `get_issue` and write the fields region inference
@@ -179,7 +179,7 @@ UI_TWEAK_FF=1  /ui-tweak:preview --capture-only
 ```
 
 `preview --capture-only` (Step 0c) acquires an **already-running** device (path (a) only, **no
-cold-boot**), launches the existing build, runs the **Step 2.4 login gate** (GGC-65: logs in with a
+cold-boot**), launches the existing build, runs the **Step 2.4 login gate** (logs in with a
 staging QA account when the repo declares a `demo_auth` selector and the app is not already logged in —
 otherwise a no-op), then Step 2.5 navigate + capture (Tier-1 `ggv://` deep-link → Tier-2 nav-only
 tap-through → screenshot + short recording → `.dev/ui-tweak/demo-files`), and writes **no** walker
@@ -205,7 +205,7 @@ Run the **Idempotent attach** contract documented in `commands/design/ui-tweak/f
 1. **Linear attachment dedupe** by deterministic title `ui-tweak-demo-<sha>` (`<sha> = git -C "$WT"
    rev-parse --short HEAD`). List the ticket's existing attachments; skip the upload (reuse the existing
    `assetUrl`) when that title already exists, so re-running `/ggx-demo` never adds a second inline video.
-   **With `--force` (GGC-115 E14), same-title detection takes the contract's REPLACE path instead of
+   **With `--force`, same-title detection takes the contract's REPLACE path instead of
    SKIP**: `delete_attachment` the old one → upload the new capture → rewrite the PR-body link with the
    NEW `assetUrl` (re-upload always mints a fresh URL — the old link is dead once the attachment is
    deleted, so the PR-body rewrite is mandatory, not cosmetic).
@@ -236,7 +236,7 @@ exit 0
 > walker marker), and the next run overwrites it — but if strict "left as found" matters on a failure
 > path too, delete it in those branches as well.
 
-## Batch mode (`--batch`) — GGC-66 (absorbed `/_ui-demo-batch`)
+## Batch mode (`--batch`) — absorbed `/_ui-demo-batch`
 
 `/ggx-demo --batch` captures demos for **every open PR of mine that still lacks one** — no JSON input
 (it self-discovers). It is the serial, device-bound counterpart of the single-ticket flow: "ship the
@@ -249,22 +249,22 @@ line and continues; the batch never blocks/fails its caller and never touches sh
 open/closed, ticket status). Per ticket it edits only what the single-ticket flow edits — the Linear
 attachment + the PR-body `<!-- ui-tweak-demo -->` region.
 
-### B1 — discover candidate PRs (no input) — GGC-75 (attachment-truth dedup)
+### B1 — discover candidate PRs (no input) — attachment-truth dedup
 
 The "already demoed" dedup keys on the **Linear `ui-tweak-demo-<sha>` attachment**, NOT the PR-body
 `<!-- ui-tweak-demo -->` marker. The marker is written at PR-open *regardless of capture success*:
 forward `/ui-tweak:ff`'s "Deliver PR body" emits a marker-wrapped `## Demo` block even when
 `preview`'s navigate+capture fail-silents (the block just carries a "No screenshot" line). So
 **marker-present ≠ demo-captured** — keying discovery on the marker permanently skipped PRs that never
-actually recorded (CAF-613 #644 / CAF-519 #645, both flagged 2026-06-23). The Linear attachment is the
+actually recorded (observed on PRs whose demo silently never captured). The Linear attachment is the
 authoritative signal: both forward `/ui-tweak:ff` and Step 4 here create `ui-tweak-demo-<sha>` **only
 after a real capture** (`demo-files` non-empty); a fail-silent run produces no such attachment. This is
 the **same signal source** as Step 4's idempotent-attach dedup, so discovery and re-attach agree.
 
 ```bash
-# Every open PR of MINE. author=@me is a HARD limit (GGC-69 — never touch others' PRs). NO class/title
-# gate (the old `^## UI Tweak` body filter was DROPPED in GGC-69; the dispatch finisher emits that title
-# unreliably — GGC-67). Recordability is judged per-PR in B1.5 (diff-first), before any device opens.
+# Every open PR of MINE. author=@me is a HARD limit (never touch others' PRs). NO class/title
+# gate (the old `^## UI Tweak` body filter was DROPPED; the dispatch finisher emits that title
+# unreliably). Recordability is judged per-PR in B1.5 (diff-first), before any device opens.
 PRS=$(gh pr list --author "@me" --state open --json number,headRefName,url,body,title)
 [ "$(printf '%s' "$PRS" | jq 'length')" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine."; exit 0; }
 ```
@@ -288,13 +288,13 @@ real demo attachment. For each PR in `$PRS`:
 [ "$(printf '%s' "$CANDIDATES" | jq 'length')" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine without a recorded demo."; exit 0; }
 ```
 
-This makes the regression cases (#644 / #645 — marker present, no `ui-tweak-demo-*` attachment) candidates
+This makes the regression cases (marker present, no `ui-tweak-demo-*` attachment) candidates
 again, while PRs with a real attachment stay excluded.
 
 (A caller that already holds the freshly-shipped rows — `/ggx-dispatcher --demo`, `/ggx-on-duty --demo`
 — MAY narrow to these PRs, but the default is self-discovery so no caller has to hand-build a JSON array.)
 
-### B1.5 — recordability judge (diff-first, LLM, before any device) — GGC-69
+### B1.5 — recordability judge (diff-first, LLM, before any device)
 
 Dropping the title gate (B1) means `CANDIDATES` now includes non-UI PRs (pure logic / backend / config /
 test / analytics). Opening a device + `flutter run` for each of 16–18 PRs would blow the device budget,
@@ -313,7 +313,7 @@ Then **you (the LLM executing this skill) classify** each PR as RECORDABLE or SK
 title + body:
 
 - **RECORDABLE** — the diff plausibly produces a **user-visible change** AND the app can be **driven to
-  the state that shows it**. Two shapes qualify (GGC-115 C9 loosened the rubric — the first batch
+  the state that shows it**. Two shapes qualify (the rubric was loosened after an early batch
   recorded 1/12 and skipped obviously-recordable PRs):
   1. **Static UI change** — widget / layout / style / copy / asset / screen changes in app UI code,
      with the affected screen navigable (a known route, a `ggv://` deep-link, or tap-through).
@@ -321,7 +321,7 @@ title + body:
      (an error message, a pre-fill, a redirect, a validation) and the flow can be DRIVEN to that
      state on staging. "No pixel diff in a static shot" / "nav-only taps can't select it" do NOT
      make a PR unrecordable — recording the flow is the demo.
-     **Auth-error demos are explicitly RECORDABLE (GGC-115 C10)**: staging accepts the SMS request,
+     **Auth-error demos are explicitly RECORDABLE**: staging accepts the SMS request,
      reaches the code screen, and a deliberately wrong code (e.g. `1234`) returns a real 401 → the
      specific message renders. Wrong-code / wrong-password / verification-failure PRs need no real
      OTP and belong in `RECORDABLE`.
@@ -332,22 +332,21 @@ title + body:
      or the flow requires state we cannot create on staging — e.g. a real payment).
   Append the PR number + a one-phrase reason to a `DIFF_SKIPPED` list; do NOT open a device for it.
 
-For each RECORDABLE PR, also emit a one-line **capture plan** (consumed by B3 / Step 2.5's scoping —
-GGC-115 B6/B7/D11 + GGC-116 B9/B10):
+For each RECORDABLE PR, also emit a one-line **capture plan** (consumed by B3 / Step 2.5's scoping):
 
 - **`trigger:`** the control the recording must START on, for reuse / re-order / button-triggered
-  behaviours (B6) — or `none` for static screens.
-- **`source-data:`** what complete state to pick/seed first (B7) — e.g. "a fully-populated past
+  behaviours — or `none` for static screens.
+- **`source-data:`** what complete state to pick/seed first — e.g. "a fully-populated past
   order" — or `none`.
-- **`auth-mutating: yes|no`** (D11) — does the demo log out, sign up, or switch accounts? These
+- **`auth-mutating: yes|no`** — does the demo log out, sign up, or switch accounts? These
   contaminate the shared device's login state and are ORDERED LAST in B3.
-- **`resettable: yes|no`** (GGC-116 B10) — can the flow be reset to the recording start point (in-flow
+- **`resettable: yes|no`** — can the flow be reset to the recording start point (in-flow
   undo → pop-home + re-nav → force-stop + relaunch)? `no` for one-shot / consumable-fixture flows
   (force-stop clears process state only; persisted client state survives).
 - **`reset:`** the reset method to use — `in-flow undo` / `pop home + re-nav` / `force-stop + relaunch`
   / `n/a`.
-- **`replayable: yes|no`** (GGC-116 B9/B10) — eligible for the two-pass rehearse→record replay: `yes`
-  iff the flow is **Tier-2 / long-async** (the B9 trigger) AND **resettable** AND **not** one of the
+- **`replayable: yes|no`** — eligible for the two-pass rehearse→record replay: `yes`
+  iff the flow is **Tier-2 / long-async** (the replay trigger) AND **resettable** AND **not** one of the
   four single-pass classes (non-resettable / consumable crux / transient crux / auth-mutating). Tier-1
   single-action and pixel-verify colour tickets are always `no` (never rehearse — AC7). `preview
   --capture-only` re-derives this itself; the plan line just makes the batch's intent legible.
@@ -378,7 +377,7 @@ one, and pin it as `$DEV` for the whole pass (no lock because there is only one 
 ### B3 — serial loop (one ticket at a time on `$DEV`)
 
 Run the per-ticket procedure (Steps 1–5 above) for each `RECORDABLE` PR (B1.5) — **ordered with every
-`auth-mutating: yes` PR LAST (GGC-115 D11)**. An auth-mutating demo (logout → signup, account switch)
+`auth-mutating: yes` PR LAST**. An auth-mutating demo (logout → signup, account switch)
 leaves the shared device in a different login state, and the login-wall short-circuit below never fires
 for it (that guard catches *failures*, not a self-inflicted logout) — so a logged-in demo scheduled
 after it silently captures the wrong state. Sort `RECORDABLE`: `auth-mutating: no` first, `yes` last.
@@ -386,7 +385,7 @@ after it silently captures the wrong state. Sort `RECORDABLE`: `auth-mutating: n
 (auto-resolve + login) before the next ticket — belt-and-braces even with the LAST ordering, since a
 batch can contain more than one auth-mutating demo.
 
-**Per-ticket state re-confirmation (GGC-115 D13).** Login/session across a reinstall is unpredictable —
+**Per-ticket state re-confirmation.** Login/session across a reinstall is unpredictable —
 a reinstall can come back logged into a *different* stored account (stale fixtures, old orders). At the
 START of each ticket (after its build+install, before capture), take one read-only screenshot and
 confirm the logged-in account / fixtures match what the capture plan needs; mismatch → run the Step 2.4
@@ -394,9 +393,9 @@ gate (or re-seed source data per the plan) before recording. The per-ticket rebu
 and required (D12 confirmed: each diff must be in the binary) — do NOT "optimize" it away by reusing a
 prior ticket's build.
 
-**Two-pass replay is internal to `preview` (GGC-116).** For a `replayable: yes` PR, `preview
+**Two-pass replay is internal to `preview`.** For a `replayable: yes` PR, `preview
 --capture-only` rehearses (no recording) → resets → records ONE smooth scripted replay, killing the
-LLM-latency dead air that inflated CAF-882's clip to 124s. The batch does NOT orchestrate the two
+LLM-latency dead air that once inflated a clip to over two minutes. The batch does NOT orchestrate the two
 passes — it only carries the `replayable` / `reset` plan lines (B1.5) so the intent is legible. The
 D13 re-confirmation above still holds, and `preview` repeats it **after its reset, before the replay**
 (the reset is one more state transition since the last verify). Auth-mutating demos are a
@@ -449,12 +448,12 @@ nothing to capture on a build-only platform.
 ## Constraints
 
 - Linear-only, flutter-only v1. Batch mode demos any open PR of mine with a recordable UI change
-  (GGC-69 — not bound to `design bug` / ui-tweak; a diff-first judge filters non-UI PRs before any
-  device opens); single mode demos an explicit ticket/PR. (Inline-renderable PR images are GGC-30, separate.)
+  (not bound to `design bug` / ui-tweak; a diff-first judge filters non-UI PRs before any
+  device opens); single mode demos an explicit ticket/PR. (Inline-renderable PR images are a separate concern.)
 - Edits NO source, writes NO walker markers, never enters `/ui-tweak:ff`.
 - Reuses `preview --capture-only` (capture) + the `ff.md` Idempotent-attach contract (upload/embed) —
   it does NOT reimplement either. The only logic owned here is PR/worktree resolution, the head guard,
   the fail-loud disposition, and (batch) device-once + self-discovery + the serial loop.
-- Batch mode (`--batch`) absorbed the former `/_ui-demo-batch` (GGC-66) — there is now ONE post-hoc demo
-  skill. Self-discovers open PRs lacking a demo, filtered by a diff-first recordability judge (GGC-69); no JSON input.
-- Regression case (GGC-59): `/ggx-demo CAF-541` reproduces the manual PR #610 demo.
+- Batch mode (`--batch`) absorbed the former `/_ui-demo-batch` — there is now ONE post-hoc demo
+  skill. Self-discovers open PRs lacking a demo, filtered by a diff-first recordability judge; no JSON input.
+- Regression case: `/ggx-demo <ticket-id>` reproduces the equivalent manual post-hoc demo.
