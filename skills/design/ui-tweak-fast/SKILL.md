@@ -775,12 +775,24 @@ never error.**
   returns the native framebuffer while `input tap` expects display coords — read `wm size` and the PNG
   dims, scale `x=sx*wm_w/shot_w, y=sy*wm_h/shot_h`. iOS taps need `idb ui tap` (`xcrun simctl` cannot
   tap); if `idb` is absent, Tier-2 is unavailable on iOS → fail-silent.
-- **Capture:** screenshot + a short (~6s) recording into `.dev/ui-tweak-fast/demo`:
+- **Capture (GGC-115 mechanics):** screenshot + a recording that spans the CRUX into
+  `.dev/ui-tweak-fast/demo`. Scope before recording: start on the TRIGGER control for
+  reuse/button-triggered behaviours (B6), keep recording until the crux UI has RENDERED — async loads
+  can show a placeholder 10s+ (A3) — and screenshot-verify the post-fix state before finalizing (B8).
+  - Recording is a backgrounded SHELL job with a generous safety cap, stopped by SIGINT — never a
+    fixed short window (the clip must contain the crux, whatever its length), and on Android NEVER
+    the MCP `adb_shell` tool (its schema has no `run_in_background`; the file is never produced — A1):
+    `adb -s "$id" shell screenrecord --size 720x1280 --time-limit 180 /sdcard/uitw.mp4 &` … act …
+    `adb -s "$id" shell pkill -INT screenrecord` (SIGINT flushes a valid mp4 — A2), then pull.
   - iOS: `xcrun simctl io "$id" screenshot after-<id>.png`; record `xcrun simctl io "$id" recordVideo
-    --codec h264 after-<id>.mp4` backgrounded ~6s then SIGINT.
-  - Android: `adb -s "$id" exec-out screencap -p > after-<id>.png`; record with an explicit `--size`
-    ladder (`--size 720x1280` → `--size 540x1140` → device-native) — a sizeless `screenrecord` throws
-    codec error -22 on large native resolutions and produces a 0-byte file.
+    --codec h264 after-<id>.mp4` backgrounded, SIGINT-stopped after the crux renders.
+  - Android screenshot: `adb -s "$id" exec-out screencap -p > after-<id>.png`; the `--size` ladder
+    still applies (`--size 720x1280` → `--size 540x1140` → device-native) — a sizeless `screenrecord`
+    throws codec error -22 on large native resolutions and produces a 0-byte file.
+  - Post-process: normalize VFR→CFR before any trim (`ffmpeg -i in.mp4 [-t N] -r 15 -vsync cfr -c:v
+    libx264 -pix_fmt yuv420p -movflags +faststart out.mp4` — A4) and verify the final clip's last
+    frame is the crux (`ffmpeg -sseof -1 -i out.mp4 -frames:v 1 last.png` — A5); no `ffmpeg` → skip
+    with a one-line note and upload the raw SIGINT-flushed clip.
   Append each output path to `.dev/ui-tweak-fast/demo-files`.
 - **Pixel-verify subtle colours (stale-build guard).** Only when the checklist names a colour
   (`grep -qiE '#[0-9A-Fa-f]{6}|target=.*(colou?r|bg|background|shade|fill)' figma-context.md`): sample the
