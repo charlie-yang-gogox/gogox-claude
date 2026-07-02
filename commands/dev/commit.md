@@ -1,3 +1,8 @@
+---
+name: commit
+description: Analyze all current git changes and split them into logical, atomic commits.
+---
+
 Analyze all current git changes and split them into logical, atomic commits.
 
 **Arguments:**
@@ -101,7 +106,7 @@ These rules override general grouping logic when openspec files are detected:
 
 ## Rules
 
-- **Commit message format is strictly `{type}({scope}): {description}`** — never include branch names, ticket numbers (e.g., CAF-123), or issue IDs in the commit message. Ticket tracking belongs in the PR, not in commits.
+- **Commit message format is strictly `{type}({scope}): {description}`** — never include branch names, ticket numbers (e.g., CAF-<n>), or issue IDs in the commit message. Ticket tracking belongs in the PR, not in commits.
 - **Generated API SDK changes must be a separate commit** — e.g. `lib/apis/` for Flutter or the equivalent generated module for other platforms. Never mix with other changes. Use `chore(api): regenerate API SDK (<modules>)` as the commit message.
 - Each commit must be atomic and independently buildable
 - Scope should reflect the module or feature name (e.g., `auth`, `booking`, `map`, `core`)

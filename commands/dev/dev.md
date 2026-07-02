@@ -17,7 +17,7 @@ Orchestrator for the OpenSpec dev loop of a Linear ticket. Project-agnostic — 
 
 **Usage**: `/dev <ticket-id> [--auto]`
 
-- `<ticket-id>` — Linear ticket ID (e.g. `CAF-207`). Required in `--auto`; if omitted in default mode, ask.
+- `<ticket-id>` — Linear ticket ID (e.g. `<PREFIX>-<n>`). Required in `--auto`; if omitted in default mode, ask.
 - `--auto` — Full autonomous pipeline. Adds worktree, tests, format, commit, code review, and PR creation. No human prompts. Designed for unattended/overnight execution.
 
 ---
@@ -63,7 +63,7 @@ When `<auto-mode>` is true, apply the following throughout all steps:
 
 **If `<auto-mode>`**:
 
-- Verify the repo is on its default branch AND has no **tracked** modifications (`source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude). If not → STOP with error. Test only tracked dirt — `git status --porcelain --untracked-files=no` (empty ⇒ clean) — not the whole porcelain: untracked files in the main worktree are harmless because the worktree created in Step 2A branches off origin/<default> and never touches main (aligns with `/ggx-dispatcher` Step 1.3 and `/dev:start` Step 3a; counting untracked files here was the GGC-13 false-positive).
+- Verify the repo is on its default branch AND has no **tracked** modifications (`source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude). If not → STOP with error. Test only tracked dirt — `git status --porcelain --untracked-files=no` (empty ⇒ clean) — not the whole porcelain: untracked files in the main worktree are harmless because the worktree created in Step 2A branches off origin/<default> and never touches main (aligns with `/ggx-dispatcher` Step 1.3 and `/dev:start` Step 3a; counting untracked files here was the false-positive).
 - Skip branch name check (worktree will be created in Step 2A).
 
 **If not `<auto-mode>`**:
@@ -91,7 +91,7 @@ _Skip this step entirely if `<auto-mode>` is false._
 - Use Linear MCP (`mcp__claude_ai_Linear__get_issue`) to fetch the ticket (title, description, comments, attachments).
 - Keep title and description in context — they are the source of truth for `/opsx:ff`.
 - Derive a kebab-case change name from the ticket title. Strip leading ticket IDs / prefixes. E.g.
-  - `CAF-207: Add favourite driver from rating screen` → `add-favourite-driver-from-rating-screen`
+  - `<PREFIX>-<n>: Add favourite driver from rating screen` → `add-favourite-driver-from-rating-screen`
 
 ### 3a: Extract and fetch Figma design (mandatory when URL exists)
 
@@ -271,7 +271,7 @@ _Skip Steps 6–9 entirely if `<auto-mode>` is false. Jump to Output._
 
 1. Run `/check-test --fix` (if available for `{platform}`) or fall back to `{test_cmd}` directly to run tests and auto-fix failures.
    - If still failing after fix attempts, note in report and proceed.
-2. **Spawn `verify-agent`** to audit the diff. This is mandatory in auto mode — same-session self-audit cannot catch the misses it produced (CAF-467 checkbox case). Pass:
+2. **Spawn `verify-agent`** to audit the diff. This is mandatory in auto mode — same-session self-audit cannot catch the misses it produced. Pass:
    - `base` — the default-branch ref the worktree branched from (e.g. `origin/trunk` or `origin/main`).
    - `change name` — the OpenSpec change name from Step 4.
    - `figma context path` — `.dev/figma-context.md` if it exists.

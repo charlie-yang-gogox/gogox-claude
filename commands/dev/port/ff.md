@@ -31,7 +31,7 @@ Run the entire port flow end-to-end from a single invocation. Mirrors what `/ops
 Parse `$ARGUMENTS`:
 
 - Extract `--ticket:<ID>` (required). Missing → STOP with:
-  > `/port:ff` requires `--ticket:<ID>` (e.g. `/port:ff --ticket:CAF-212`).
+  > `/port:ff` requires `--ticket:<ID>` (e.g. `/port:ff --ticket:CAF-<n>`).
 - Detect flags: `--auto`, `--simple`, `--no-ticket-init`. `--auto` and `--simple` are mutually exclusive — `--simple` ignores `--auto` (no autonomy needed for a one-stage run). `--no-ticket-init` is passed through verbatim to `/port:start`.
 - All other flags are passed through to the underlying stages.
 

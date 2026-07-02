@@ -34,7 +34,7 @@ description: >
 - **`--type <kind>`** (optional) — the type of test to run: `unit`, `widget`, `integration`, or `e2e` (`all` = no filter). This selects *which* runner/target the contract resolves in Step 1 (e.g. `flutter test test/` vs `integration_test/`; gradle `testDebugUnitTest` vs `connectedAndroidTest`; xcodebuild `…Tests` vs `…UITests`; node `test` vs `test:e2e`). If omitted, defaults to the project's primary unit-test target and the contract records the resolved type. If the requested `--type` has no resolvable runner for `{platform}`, abort in Step 1 and say so.
 - **`--incremental`** (optional) — only run tests affected by the current branch's diff (delegates detection to `/check-test`'s incremental logic) instead of the full suite. Default is full suite, because unattended runs want a complete picture.
 - **`--max-iters N`** (optional, default `8`) — hard cap on loop iterations (see §6).
-- **Optional ticket id** (e.g. `CAF-123`) — used only to name the worktree/branch (Step 0.5). If omitted, the skill derives a `test/test-fix-loop-<scope>` branch name.
+- **Optional ticket id** (e.g. `<ticket-id>`) — used only to name the worktree/branch (Step 0.5). If omitted, the skill derives a `test/test-fix-loop-<scope>` branch name.
 
 ## Prerequisites
 
@@ -237,5 +237,5 @@ A **pushed** worktree branch with one commit per fixed test — all touching tes
 > Format: `YYYY-MM-DD by @username — one-line context`
 
 - 2026-06-08 by @peter.wong — initial authoring, not yet run on a real suite
-- 2026-06-11 by @peter.wong — dropped never-push; added Step 8 publish (push at terminal state + Maestro/run-artifact GCS upload + PR comment, PR-only) for REQUIRES-HUMAN states (CAF-699); still not run on a real suite
-- 2026-06-12 by @peter.wong — aligned the Step 8 GCS upload with the e2e runner's path (`scripts/e2e_pr_runner.py`: bucket `ggx-e2e-testresult`, key `<repo>/pr-<#>/<sha>-<stamp>.zip`) instead of a bespoke bucket/`gsutil` prefix (CAF-699)
+- 2026-06-11 by @peter.wong — dropped never-push; added Step 8 publish (push at terminal state + Maestro/run-artifact GCS upload + PR comment, PR-only) for REQUIRES-HUMAN states; still not run on a real suite
+- 2026-06-12 by @peter.wong — aligned the Step 8 GCS upload with the e2e runner's path (`scripts/e2e_pr_runner.py`: bucket `ggx-e2e-testresult`, key `<repo>/pr-<#>/<sha>-<stamp>.zip`) instead of a bespoke bucket/`gsutil` prefix

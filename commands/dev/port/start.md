@@ -14,7 +14,7 @@ Set up the worktree, OpenSpec change, and `.port/` working directory for a Linea
 
 **Usage**: `/port:start --ticket:<ID> [--prd:"text"|--prd-file:<path>] [--auto] [--recreate] [--no-ticket-init]`
 
-- `--ticket:<ID>` (**required**) — Linear ticket ID, e.g. `--ticket:CAF-212`. Reject with usage message when missing.
+- `--ticket:<ID>` (**required**) — Linear ticket ID, e.g. `--ticket:CAF-<n>`. Reject with usage message when missing.
 - `--prd:"<text>"` / `--prd-file:<path>` — Optional PRD enrichment. Mutually exclusive. When omitted in HITL mode the user is asked; in `--auto` mode the ticket description's `<!-- port:simple:start -->` block is used if present.
 - `--auto` — Unattended mode. Skip every `AskUserQuestion`; resolve every gate per the auto-decision table.
 - `--recreate` — Always remove an existing worktree / change directory and re-scaffold.

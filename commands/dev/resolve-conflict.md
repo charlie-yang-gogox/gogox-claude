@@ -124,7 +124,7 @@ Run `{test_cmd}` to verify the test suite passes after the merge/rebase. Fix any
 
 Note: on platforms where `{test_cmd}` is itself a slash command (e.g. Flutter's `/check-test --all --fix`), invoke it as a slash command. On platforms where it's a raw shell command (e.g. Android's `./gradlew testDebugUnitTest`), run it via Bash.
 
-**Per-repo test profile (GGC-24).** When `{test_cmd}` is a slash command
+**Per-repo test profile.** When `{test_cmd}` is a slash command
 (`/check-test`), the android variant override (`test_task` / `test_variant`)
 and the `known_flaky_tests` quarantine are resolved inside it (its Step 0.3) —
 nothing extra to do. When `{test_cmd}` is a RAW gradle command, resolve the
@@ -142,7 +142,7 @@ TEST_TASK=$(resolved_android_test_task "$(git rev-parse --show-toplevel)")
 
 This is the fix the ticket calls out: the rebase tests-green gate must pick up
 the same resolved command + flake quarantine, or the android rebase lane stays
-permanently red on the ~37 environment-flaky tests (CET-8234/8424). Every
+permanently red on the known environment-flaky tests. Every
 suppression is printed verbatim in the banner.
 
 ### 5. Format
@@ -291,7 +291,7 @@ Give each subagent these instructions:
 
 1. **Find or create the PR's worktree.**
    - List worktrees: `git -C "$ROOT" worktree list --porcelain`. If an entry's `branch` is `refs/heads/<headRefName>`, use that worktree's path. Work there.
-   - Otherwise create one. Derive a path from the ticket id in the branch (`[A-Z]+-[0-9]+`, e.g. `CAF-668`) → `<ROOT>/../<TICKET-ID>`; fall back to a sanitized branch name if there is no ticket id. Then:
+   - Otherwise create one. Derive a path from the ticket id in the branch (`[A-Z]+-[0-9]+`, e.g. `<PREFIX>-<n>`) → `<ROOT>/../<TICKET-ID>`; fall back to a sanitized branch name if there is no ticket id. Then:
      ```bash
      git -C "$ROOT" fetch origin <headRefName> <baseRefName>
      git -C "$ROOT" worktree add <path> <headRefName>   # creates a local branch tracking origin/<headRefName>
@@ -328,8 +328,8 @@ Repo: <owner/repo>   Strategy: <rebase|merge>   Filter: <--user value or "all (b
 
 | # | PR | Branch ← Base | Behind | Outcome | Pushed | Worktree | Notes |
 |---|----|--------------|--------|---------|--------|----------|-------|
-| 1 | #123 Add foo | feat/foo ← main | 7 | conflicts | no | ../CAF-123 (reused) | 3 files conflict — run /resolve-conflict there |
-| 2 | #124 Fix bar | fix/bar ← trunk | 5 | pushed | yes | ../CAF-124 (created) | clean + tests green, force-with-lease |
+| 1 | #123 Add foo | feat/foo ← main | 7 | conflicts | no | ../<PREFIX>-<n> (reused) | 3 files conflict — run /resolve-conflict there |
+| 2 | #124 Fix bar | fix/bar ← trunk | 5 | pushed | yes | ../<PREFIX>-<n> (created) | clean + tests green, force-with-lease |
 | 3 | #125 Forky    | pr-125 ← master | 4 | tests-failed | no | ../pr-125 (created) | 2 tests red — left as-is |
 | 4 | #126 Tidy     | tidy ← main | 0 | up-to-date | — | — | skipped (orchestrator pre-filter) |
 ```

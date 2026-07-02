@@ -73,7 +73,7 @@ Prerequisite: >
 
 Notes:
 
-- `<ticket-id>` — Linear ticket ID (e.g. `CAF-370`). **Required** — unlike
+- `<ticket-id>` — Linear ticket ID (e.g. `<PREFIX>-<n>`). **Required** — unlike
   `/route`, `/ggx-work` does not infer from cwd because the orchestration
   span outlives any single worktree.
 - `--auto` propagates: each spawned `/port:ff` / `/dev:ff` / `/ui-tweak:ff`
@@ -275,7 +275,7 @@ substring appearing later in prose would mis-classify the outcome (M2). Then:
 
 Ticket is done.
 
-**Finalize: session metrics (GGC-71).** Gated on `<run-metrics> == True` (the `--metric` flag). When `<run-metrics> == False` (the default), **SKIP finalize entirely** — `/ggx-work` finishes silently with no CSV row and no Linear metrics comment. When `--metric` is present, run this BEFORE printing the done block, but ONLY when `<pipeline-ran> == True` (a Step 4.4 pipeline actually executed this invocation). If `/route` returned `(none)` on the very first iteration (the ticket was already done and nothing ran this run), **SKIP finalize** even with `--metric` — re-running an already-done ticket must not add a duplicate CSV row or Linear comment.
+**Finalize: session metrics.** Gated on `<run-metrics> == True` (the `--metric` flag). When `<run-metrics> == False` (the default), **SKIP finalize entirely** — `/ggx-work` finishes silently with no CSV row and no Linear metrics comment. When `--metric` is present, run this BEFORE printing the done block, but ONLY when `<pipeline-ran> == True` (a Step 4.4 pipeline actually executed this invocation). If `/route` returned `(none)` on the very first iteration (the ticket was already done and nothing ran this run), **SKIP finalize** even with `--metric` — re-running an already-done ticket must not add a duplicate CSV row or Linear comment.
 
 When finalizing:
 
@@ -422,7 +422,7 @@ Execute `<spawn-cmd>` inline (LLM continues the current session, walking
 the slash command's pseudocode just like `/dev:ff` and `/port:ff` do for
 their own stages).
 
-Set `<pipeline-ran> = True` (a Step 4.4 pipeline executed this invocation — read by Step 4.1's finalize, GGC-71).
+Set `<pipeline-ran> = True` (a Step 4.4 pipeline executed this invocation — read by Step 4.1's finalize).
 
 Print before spawn:
 ```
@@ -450,8 +450,8 @@ three** outcomes (B3 — do NOT collapse to a binary success/failure; an exit
   message and no terminal marker / pause line is present. An intermediate
   stage message is NOT terminal — e.g. `Apply complete.`, `Verify CLEAR.`,
   `Detect: state B`, or any `/dev:*` / `/port:*` stage banner that is not the
-  pipeline's own `done`/pause. (Regression guard, CAF-370 / 2026-05-11: that
-  run treated `Apply complete.` as success → fell through to a no-progress
+  pipeline's own `done`/pause. (Regression guard: a past run once treated
+  `Apply complete.` as success → fell through to a no-progress
   loop that span to the iter-cap.) Treating this as success would either
   fall through Step 4.4a or re-loop with no state change — burning iterations
   to `<iter-cap>`. Instead, **jump to Step 4.3 with `reason =
@@ -557,22 +557,22 @@ Jump to Step 4.3 with `reason = loop-cap-exceeded (<iter-cap>): last recommendat
 ### Feature ticket, interactive
 
 ```
-/ggx-work CAF-512
-  iter 1: /route → /dev:ff CAF-512
-          running: /dev:ff CAF-512
+/ggx-work <ticket-id>
+  iter 1: /route → /dev:ff <ticket-id>
+          running: /dev:ff <ticket-id>
           ...dev pipeline runs to PR...
   iter 2: /route → (none — /dev:ff terminates at /dev:ship)
-          Ticket CAF-512: done. Iterations: 2.
+          Ticket <ticket-id>: done. Iterations: 2.
 ```
 
 ### Port ticket, --auto, first dispatcher round
 
 ```
-/ggx-work CAF-370 --auto
-  iter 1: /route → /port:ff CAF-370
-          running: /port:ff CAF-370 --auto
+/ggx-work <ticket-id> --auto
+  iter 1: /route → /port:ff <ticket-id>
+          running: /port:ff <ticket-id> --auto
           ...port pipeline runs, ships, adds need-spec-review...
-  iter 2: /route → /spec-review CAF-370
+  iter 2: /route → /spec-review <ticket-id>
           (HITL gate, --auto)
           posted Linear comment <!-- ggx-work-hitl -->
           exit 0
@@ -581,33 +581,33 @@ Jump to Step 4.3 with `reason = loop-cap-exceeded (<iter-cap>): last recommendat
 ### Port ticket, --auto, post-spec-review round
 
 ```
-/ggx-work CAF-370 --auto
+/ggx-work <ticket-id> --auto
   (human already ran /spec-review since last invocation; ready-to-dev set)
-  iter 1: /route → /dev:ff CAF-370
-          running: /dev:ff CAF-370 --auto
+  iter 1: /route → /dev:ff <ticket-id>
+          running: /dev:ff <ticket-id> --auto
           ...dev pipeline runs to PR, In Review...
   iter 2: /route → (none — /dev:ff terminates at /dev:ship)
-          Ticket CAF-370: done. Iterations: 2.
+          Ticket <ticket-id>: done. Iterations: 2.
 ```
 
 ### Failed dev pipeline, interactive
 
 ```
-/ggx-work CAF-512
-  iter 1: /route → /dev:ff CAF-512
-          running: /dev:ff CAF-512
+/ggx-work <ticket-id>
+  iter 1: /route → /dev:ff <ticket-id>
+          running: /dev:ff <ticket-id>
           ...dev:apply fails: test failures in src/foo_test.go...
           /dev:ff exits non-zero
   /ggx-work: aborting.
-  Reason: pipeline-failed: /dev:ff CAF-512
+  Reason: pipeline-failed: /dev:ff <ticket-id>
   Iter  : 1
-  Last  : /dev:ff CAF-512
+  Last  : /dev:ff <ticket-id>
   (last 20 lines of stderr printed)
 
   exit non-zero
 ```
 
-User fixes the failing test → re-invokes `/ggx-work CAF-512` → loop
+User fixes the failing test → re-invokes `/ggx-work <ticket-id>` → loop
 counter resets to 0, `/route` re-derives stage, `/dev:ff` resumes from
 where it left off via `infer_dev_stage`.
 

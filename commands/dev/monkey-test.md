@@ -197,7 +197,7 @@ Summarise:
 - Total events fuzzed.
 
 When the verdict is ❌ (crashes remain — `--no-fix` mode, or a crash that could
-not be fixed), append a local breadcrumb (GGC-23) per remaining distinct crash
+not be fixed), append a local breadcrumb per remaining distinct crash
 (respecting the helper's per-run cap of 3): run `/_file-followup monkey-crash
 summary="<PKG>: <one-line crash root cause>" signature="<crash signature>"`. It
 is fail-soft (never blocks the report) and writes only the local gitignored

@@ -150,6 +150,19 @@ Both mechanisms must be re-checked — the Agent-tool result does NOT predict th
 
 If Mechanism B ever returns `true`, that is the trigger to revisit R1–R5 (and only then) — see the workaround retirement discussion on GGC-90.
 
+## Authoring conventions
+
+### No ticket-id citations in skill/command bodies
+
+Skill and command prompt bodies (`commands/**/*.md`, `skills/**/*.md`, `agents/**/*.md`) MUST NOT embed a `<PREFIX>-<number>` ticket id — neither downstream/dogfood app tickets (`CAF-`/`DAF-`/`CET-`/`DET-`) NOR this repo's own `GGC-` rule/version tags. A skill should describe the **behaviour** it enforces, not its historical provenance: ticket ids are noise to the next reader, go stale, and leak specifics.
+
+- **Rewrite, don't cite.** A rule tag like `(GGC-115 B8)` becomes the named mechanism it labels ("the post-fix crux check"); an evidence citation like "a 124s clip on CAF-882" becomes the behaviour ("a clip bloated several-fold by dead air").
+- **Examples use a placeholder.** Worked-example invocations use `<ticket-id>` (or `<ticket-a>` / `<ticket-b>`), never a real number.
+- **Bare prefixes are fine.** "Linear `CAF`/`DAF`", "Jira `CET`/`DET`", "the `GGC` team" name a *system*, not a ticket — the rule only targets `PREFIX-<digits>`.
+- **Scope is prompt bodies only.** Commit messages, PR titles/bodies, Linear comments, and code/config comments (`*.js`, `*.sh`, `*.py`, `*.yaml`) still cite tickets normally — that is ordinary engineering provenance, not runtime skill prose.
+
+Enforced by `scripts/prompt-lint.sh` as a hard error: any `PREFIX-<digits>` inside an in-scope `.md` fails the lint (which is the `prompt` platform's `test_cmd`, so the dev pipeline blocks on it).
+
 ## Rollout
 
 ```

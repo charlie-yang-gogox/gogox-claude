@@ -38,7 +38,7 @@ None required. Optional inputs the user may provide:
    - Skip empty/system-only transcripts.
 
 4. **Extract ticket IDs and non-ticket work** from the transcripts:
-   - Ticket regex: `[A-Z]{2,}-\d+` (e.g. `CAF-229`, `ENG-1234`). Dedupe.
+   - Ticket regex: `[A-Z]{2,}-\d+` (e.g. `<ticket-id>`). Dedupe.
    - Non-ticket work: significant work the user did that does not reference a ticket. Look for signals like:
      - Commits, PRs created/merged (search transcript for `git commit`, `gh pr create`, etc.)
      - Bug fixes the user described in plain language ("fixed X", "patched Y")
@@ -139,8 +139,8 @@ The `Source` column documents where each prefix lives (Linear or Jira) for human
 Concrete rendered example (so the format is unambiguous):
 
 ```html
-<p>•&nbsp;<a href="https://linear.app/gogox/issue/CAF-229/support-fixed-fee-moving-additional-requirement">CAF-229</a>: Support fixed fee moving additional requirement <code>Ready for QA</code></p>
-<p>•&nbsp;<a href="https://gogotech.atlassian.net/browse/CET-8351">CET-8351</a>: Fix push token refresh <code>In Progress</code></p>
+<p>•&nbsp;<a href="https://linear.app/gogox/issue/<ticket-id>/support-fixed-fee-moving-additional-requirement"><ticket-id></a>: Support fixed fee moving additional requirement <code>Ready for QA</code></p>
+<p>•&nbsp;<a href="https://gogotech.atlassian.net/browse/<ticket-id>"><ticket-id></a>: Fix push token refresh <code>In Progress</code></p>
 ```
 
 Rules for rendering:

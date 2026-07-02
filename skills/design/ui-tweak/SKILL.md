@@ -1,6 +1,6 @@
 ---
 name: ui-tweak
-description: "UI-Designer-safe codebase edit. Given a UI change described as free text, a Linear/Jira ticket (ID or URL), and/or a Figma link, it edits the codebase for UI-only changes (visual values, layout, structure) and builds to confirm it compiles — never touching logic or build config. There is no edit-time hook: a build (Phase 1) plus an independent decorrelated 2-judge panel (Phase 2, both judges always run) catch any logic/behavior change and revert the whole run before anything is committed. Use when a designer says 'make the order-page button 5dp bigger', 'change this color', 'increase the padding', 'reorder these sections', passes a ticket like CAF-1234 that describes a UI tweak, or provides a Figma frame to match."
+description: "UI-Designer-safe codebase edit. Given a UI change described as free text, a Linear/Jira ticket (ID or URL), and/or a Figma link, it edits the codebase for UI-only changes (visual values, layout, structure) and builds to confirm it compiles — never touching logic or build config. There is no edit-time hook: a build (Phase 1) plus an independent decorrelated 2-judge panel (Phase 2, both judges always run) catch any logic/behavior change and revert the whole run before anything is committed. Use when a designer says 'make the order-page button 5dp bigger', 'change this color', 'increase the padding', 'reorder these sections', passes a ticket like <ticket-id> that describes a UI tweak, or provides a Figma frame to match."
 ---
 
 <!--
@@ -24,7 +24,7 @@ only ever types `/ui-tweak`; everything else is internal.
 ```
 
 - `<source>` is **polymorphic**: free text (`make the order-page button 5dp taller`), a Linear/Jira ticket
-  (`CAF-1234` / a ticket URL — the richest source; often already names the screen, target value, and
+  (`<ticket-id>` / a ticket URL — the richest source; often already names the screen, target value, and
   Figma frame), or implicitly carries a trailing `[figma-url]` to ground the exact target.
 - The pipeline, stages, markers, judges, and every wayfinding card are implemented in
   `commands/design/ui-tweak/{ff,start,apply,preview,audit}.md`. (There is no `demo.md` — demo capture
@@ -54,7 +54,7 @@ only ever types `/ui-tweak`; everything else is internal.
      designer already saw it on their own device; skip the device preview, run a build-only compile
      gate, then go straight to Phase 2), or *more changes*;
    - after preview → **card C1 (looks-good)** — *Ship it* (→ Phase 2 `audit` → commit → draft PR) or
-     *more changes*. (GGC-14: `preview` already navigated to the screen and captured it FOR the
+     *more changes*. (`preview` already navigated to the screen and captured it FOR the
      designer, so the screenshot/recording is embedded in the PR automatically — there is no separate
      "record a demo" option to pick.);
    - the designer picks an option, or just describes another change in words (a correction via the
@@ -90,7 +90,7 @@ for free. **Phase 1**: pick "I'm done — show me" and the change is **built + l
 device** (`flutter run` covers Android emulators + iOS simulators; cascade uses an already-running /
 connected device first — incl. a physical phone — else boots one, else honestly falls back to
 build-only; a simulator is pre-warmed in the background when the run starts, so this is usually fast).
-Then (GGC-14) the skill **navigates to the affected screen and captures it FOR you** — a screenshot +
+Then the skill **navigates to the affected screen and captures it FOR you** — a screenshot +
 short recording — so you review the **result** instead of driving the device. Navigation is bounded to
 **navigation only** (a deep-link, or nav-only taps): it **never** taps confirm/submit/pay/delete, grants
 permissions, types, or logs in — if a screen needs login it just captures nothing (no wrong-screen shot,

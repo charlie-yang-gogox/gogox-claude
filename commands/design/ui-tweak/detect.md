@@ -1,15 +1,15 @@
 ---
 name: detect
-description: "Stage 2 of the /ui-tweak pipeline (GGC-107) — the FIRST dispatched stage INSIDE /ui-tweak:ff, immediately after Step 0 (the worktree split). A cheap, read-only visual-vs-logic triage: it locates the target widget (from ticket text + Figma refs) and READS it, then classifies the requested change. pure-visual → write .dev/ui-tweak/triage-pass (carrying the widget path + a one-line rationale; /ui-tweak:apply reuses that widget) and proceed to :apply. needs-logic → stop BEFORE any edit and recommend reclassifying Design bug → Bug (human-owned, never auto-flip the label): under --auto exit non-zero with a `UI-TWEAK BLOCKED (detect: needs-logic)` error so the dispatcher's terminal-ui-block cleanup runs verbatim; interactive writes .dev/ui-tweak/needs-logic (a card-terminus the orchestrator renders as C-RECLASSIFY). Reads code but NEVER edits it and NEVER writes any marker other than triage-pass / needs-logic. Mirrors /dev:detect (a markerless/marker-driven router that classifies and can abort/redirect). Internal stage: designers run /ui-tweak, not this directly — a misdirect guard routes them back."
+description: "Stage 2 of the /ui-tweak pipeline — the FIRST dispatched stage INSIDE /ui-tweak:ff, immediately after Step 0 (the worktree split). A cheap, read-only visual-vs-logic triage: it locates the target widget (from ticket text + Figma refs) and READS it, then classifies the requested change. pure-visual → write .dev/ui-tweak/triage-pass (carrying the widget path + a one-line rationale; /ui-tweak:apply reuses that widget) and proceed to :apply. needs-logic → stop BEFORE any edit and recommend reclassifying Design bug → Bug (human-owned, never auto-flip the label): under --auto exit non-zero with a `UI-TWEAK BLOCKED (detect: needs-logic)` error so the dispatcher's terminal-ui-block cleanup runs verbatim; interactive writes .dev/ui-tweak/needs-logic (a card-terminus the orchestrator renders as C-RECLASSIFY). Reads code but NEVER edits it and NEVER writes any marker other than triage-pass / needs-logic. Mirrors /dev:detect (a markerless/marker-driven router that classifies and can abort/redirect). Internal stage: designers run /ui-tweak, not this directly — a misdirect guard routes them back."
 ---
 
 <!-- RULE: ALL content, including designer-facing CARD text, is English. No Chinese / non-ASCII. -->
 
 # `/ui-tweak:detect`
 
-> **Single responsibility (GGC-107)**: a read-only visual-vs-logic triage that runs BEFORE any edit.
+> **Single responsibility**: a read-only visual-vs-logic triage that runs BEFORE any edit.
 > It is the **middle tier** of a 3-tier cascade, cheap → expensive:
-> 1. `ticket-analyze` (GGC-58 design-bug gate) — whole-pool, **text-only**, upstream.
+> 1. `ticket-analyze` (design-bug gate) — whole-pool, **text-only**, upstream.
 > 2. `/ui-tweak:detect` (this stage) — per-ticket, **reads one widget**, before the worktree work pays off.
 > 3. `/ui-tweak:audit` dual-judge — post-apply backstop (unchanged; remains the safety net).
 >
@@ -92,12 +92,12 @@ Mirror `/ui-tweak:apply` Step 3 exactly (read-only — never change status/assig
 
 - Ticket (ID/URL): **reuse `.dev/ui-tweak/ticket.json`** if `/ui-tweak:start` cached it. Otherwise
   fetch via `mcp__claude_ai_Linear__get_issue` / Jira (`_ticket-lib.md`), read-only, and cache it.
-- **Read the comment thread too** (GGC-84): reuse `.dev/ui-tweak/comments.json`; if absent/empty,
+- **Read the comment thread too**: reuse `.dev/ui-tweak/comments.json`; if absent/empty,
   re-fetch read-only. Fail-soft — proceed with the description alone if comments are unavailable.
 - Derive the requirement from the UNION of title + description + the full comment thread; the
   **most-recent comment is authoritative** when it refines or contradicts the description.
 - Free text: use it verbatim.
-- **Ticket reference image (GGC-62)**: if the ticket carries a screenshot (an `.attachments[]` entry
+- **Ticket reference image**: if the ticket carries a screenshot (an `.attachments[]` entry
   in `ticket.json`, or an inline `![](https://uploads.linear.app/...)`), `curl -fsSL` it and **Read it
   as an image** — the picture often pins scope a sentence loses, and it is part of the visual-vs-logic
   signal (a before/after that only repaints pixels is a strong pure-visual signal; one that adds a
@@ -133,10 +133,10 @@ alone:
 - **needs-logic** — the request can only be satisfied by changing **gesture / state / control-flow /
   data / interaction wiring**: a different tap target or navigation, a new/altered callback, a state
   transition, conditional rendering driven by new logic, a changed data binding, etc. (The motivating
-  case is CAF-884: "reusing a DP order while on the TP page redirects to the TP flow" — a routing/
+  case is a scenario like "reusing a DP order while on the TP page redirects to the TP flow" — a routing/
   control-flow bug dressed as a design bug.)
 
-When genuinely ambiguous, **lean pure-visual and pass through** (mirror the GGC-58 gate's bias): the
+When genuinely ambiguous, **lean pure-visual and pass through** (mirror the design-bug gate's bias): the
 `/ui-tweak:audit` dual-judge is the post-apply backstop, so a false pure-visual is caught later, while
 a false needs-logic wrongly blocks a real design bug from the cheap path. Only emit needs-logic when
 the logic dependency is clear from the code you read.
@@ -170,7 +170,7 @@ UI-TWEAK BLOCKED (detect: needs-logic): <one-line rationale>. Recommend reclassi
 
 The prefix is what the dispatcher keys on: the `runUiTweak` prep agent surfaces this as
 `{ outcome: "failed", uiTweakFailed: true, stage: "ui:detect-block", error: "UI-TWEAK BLOCKED …" }`,
-and `classifyFailure` routes any `UI-TWEAK BLOCKED` error to `terminal-ui-block` (GGC-37) — which
+and `classifyFailure` routes any `UI-TWEAK BLOCKED` error to `terminal-ui-block` — which
 removes `dispatcher-dev-in-flight`, adds `need-revision`, resets status `To-do`, and posts the
 `<!-- dispatch-triage-ui-blocked -->` reclassify-recommendation comment. **No new dispatcher code, no
 new marker grammar.** A standalone `/ggx-work --auto` (not via the dispatcher) classifies the non-zero

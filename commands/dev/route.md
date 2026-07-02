@@ -46,7 +46,7 @@ Prerequisite: >
 
 **Usage**: `/route [ticket-id] [--non-interactive]`
 
-- `<ticket-id>` — Linear ticket ID (e.g. `CAF-370`). Optional.
+- `<ticket-id>` — Linear ticket ID (e.g. `CAF-<n>`). Optional.
 - If absent, infer from the current worktree directory name (`basename "$PWD"`
   uppercased). If inference fails → **AskUserQuestion** for the ticket id
   (or exit non-zero in `--non-interactive`, see Step 1).

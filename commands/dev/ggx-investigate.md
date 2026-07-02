@@ -4,7 +4,7 @@ argument-hint: "<ticket-id> [--verify-fixed]"
 description: >
   Investigate a Linear/Jira ticket and write a lane-aware **engineer note**
   back to it — the automated form of the operator's recurring "調查這張單，
-  寫成 engineer note" request. Self-contained (GGC-114): reads the ticket,
+  寫成 engineer note" request. Self-contained: reads the ticket,
   derives its lane, investigates the current project **read-only**
   (Grep/Glob/Read + reasoning — NO gstack, NO external skill, D4), auto-detects
   whether origin-project grounding is warranted and if so scans the origin repo
@@ -54,7 +54,7 @@ later `/bug:ff` / `/dev:ff` consumes.
   already resolved, and record `Status: fixed | not-fixed | partially` with
   code evidence at the top of the note.
 
-**Locked decisions** (from the GGC-114 PRD — do not silently deviate):
+**Locked decisions** (from the PRD — do not silently deviate):
 
 | # | Decision |
 |---|---|

@@ -80,11 +80,11 @@ re-entering apply.) The rest of this file is the normal first-pass path.
   fetch via `mcp__claude_ai_Linear__get_issue` or Jira (`_ticket-lib.md`), **read-only** (never change
   status/assignee, never comment), and cache it to `.dev/ui-tweak/ticket.json` so the deliver path does
   not re-fetch.
-- **Read the comment thread too, not just the description (GGC-84).** The `get_issue` /
+- **Read the comment thread too, not just the description.** The `get_issue` /
   `getJiraIssue` snapshot in `ticket.json` carries the description + attachments but NOT the Linear
   comment thread, so a follow-up comment that refines or reverses the spec is invisible to a
   description-only read — and the earned-no-op grounded off it then validates against a **stale**
-  spec (CAF-632: the merged en-route fix earned a no-op against the description's en-route reference
+  spec (a real case: a merged en-route fix earned a no-op against the description's en-route reference
   image while a follow-up comment had already specified the opposite for the *completed* state). To
   prevent that:
   - Reuse `.dev/ui-tweak/comments.json` if `/ui-tweak:start` cached it (the normal path — no
@@ -98,7 +98,7 @@ re-entering apply.) The rest of this file is the normal first-pass path.
     a later comment refines or contradicts the description, **the most-recent comment is
     authoritative** (it is the live intent; the description is the stale baseline). This mirrors the
     `/dev:start` Step 4 precedent that scans description AND comments. Note the spec can be
-    **state-dependent** (CAF-632: the *completed* state needs the opposite section order from the
+    **state-dependent** (e.g. the *completed* state needs the opposite section order from the
     *en-route* state) — keep every state's requirement, do not collapse them into one.
 - Free text: use it verbatim as the requirement.
 
@@ -126,9 +126,9 @@ by the ticket text.
   **continue** (Figma is optional — a fetch failure never blocks the run). The
   grounding provenance (figma-confirmed / SKIPPED / ⚠ DEGRADED-estimated) is stamped on card C1 and
   in the PR body (R2) so an engineer knows whether values were Figma-confirmed.
-- **Ticket reference image is the spec (GGC-62)** — for `design bug` tickets the attached screenshot is
+- **Ticket reference image is the spec** — for `design bug` tickets the attached screenshot is
   almost always more precise than the one-line text: it encodes zoned/partial scope a sentence loses
-  (CAF-609 said "page should be grey" but the image showed only the vehicle-list zone grey, the
+  (a real case: a ticket said "page should be grey" but the image showed only the vehicle-list zone grey, the
   Date/Hourly rows staying white — a whole-page reading was wrong, and the designer rejected v1). So
   whenever the ticket carries an image — an attachment in `.dev/ui-tweak/ticket.json` (`.attachments[]`)
   or an inline `![](https://uploads.linear.app/...)` in the description — BEFORE finalizing scope:
@@ -142,7 +142,7 @@ by the ticket text.
 
 ## Step 4 — locate + map (+ shared-token blast radius, R12)
 
-**Reuse the `detect`-resolved widget (GGC-107).** If `.dev/ui-tweak/triage-pass` exists, the upstream
+**Reuse the `detect`-resolved widget.** If `.dev/ui-tweak/triage-pass` exists, the upstream
 `/ui-tweak:detect` stage already located the primary target widget and recorded it (`Widget:
 <path>[:<line>]`) after judging the change pure-visual. Read that path and use it as the **starting /
 primary code site** for the locate below instead of re-deriving it from scratch — this collapses the
@@ -150,7 +150,7 @@ two "find the widget" passes into one and keeps apply editing the same file dete
 audit) reasoned about. Still run the per-`Ti` grep to map each target's exact line and to catch
 additional sites (shared tokens, secondary `Ti`s); the marker primes the search, it does not replace
 the coverage gate. If the marker's `Widget` is `<unresolved>` (detect deferred the locate) or the
-marker is absent (e.g. a direct `/ui-tweak:apply` resume on a pre-GGC-107 worktree), fall back to the
+marker is absent (e.g. a direct `/ui-tweak:apply` resume on a worktree predating the detect stage), fall back to the
 full grep-locate exactly as before.
 
 For each checklist row `Ti`: grep the target screen/component, record
@@ -193,7 +193,7 @@ listing the unmet targets; otherwise ensure that file does **not** exist. `Fetch
 does **not** trip the bar (Figma is optional). This marker lets the orchestrator structurally hide
 card C1's "I'm done — show me" / "Ship it" option — the designer never has to read "NOT-FOUND".
 
-**Earned-no-op must be validated against the LATEST spec (GGC-84).** When **every** `Ti` resolves to
+**Earned-no-op must be validated against the LATEST spec.** When **every** `Ti` resolves to
 `ALREADY-MATCHES` (no planned edit — an earned no-op), that verdict is only trustworthy if the target
 checklist was grounded against the **current** spec, i.e. description **+ the full comment thread**
 (Step 3), not the description alone. Before treating an all-`ALREADY-MATCHES` outcome as a real no-op:
@@ -202,7 +202,7 @@ checklist was grounded against the **current** spec, i.e. description **+ the fu
   `⚠ comments-unavailable` (comments could not be read), **do NOT earn a no-op** — the spec may have
   evolved past trunk in a comment the pipeline never saw. Refuse, leave the run for a human, and let
   the sibling no-op→`failed with reason` mechanism surface it.
-- Watch for **state-dependent** specs (CAF-632): an `ALREADY-MATCHES` against one state's reference
+- Watch for **state-dependent** specs: an `ALREADY-MATCHES` against one state's reference
   (e.g. en-route) says nothing about another state a later comment introduced (e.g. completed). A
   no-op is earned only when every state named across description + comments is satisfied — never when
   a comment lists a state the description's reference image did not cover.
@@ -211,13 +211,13 @@ checklist was grounded against the **current** spec, i.e. description **+ the fu
 status`): in default mode take one plan confirmation (the designer may adjust a target in place —
 correction Level A, no re-arm). `--auto` skips the interactive confirm but still records the plan.
 
-**Skip the plan-confirm when it would be redundant (P5, GGC-14).** In default (interactive) mode, if
+**Skip the plan-confirm when it would be redundant (P5).** In default (interactive) mode, if
 **exactly ONE target** resolved (a single `Ti`) **AND its grounding source is the ticket** (the
 description/Figma gave the values — provenance `figma-confirmed` or `from the work-item description`,
 NOT `⚠ estimated`), skip the plan-confirm and go straight to the edit → card C1 (show-me). Rationale:
 C1 (show-me) is the next stop anyway and its **Other** field is already the in-place correction escape,
 so a separate plan-confirm for a single ticket-specified target is one prompt too many (it was the
-back-to-back double-ask observed in the GGC-14 dogfood). Still **record** the plan (for the PR body /
+back-to-back double-ask observed in dogfooding). Still **record** the plan (for the PR body /
 audit). Keep the plan-confirm whenever there are ≥2 targets, OR any target is `⚠ estimated`, OR the
 source is free-text (the designer benefits from confirming scope/inference before the edit).
 
@@ -237,10 +237,10 @@ mkdir -p "$REPO_ROOT/.dev/ui-tweak"
 if [ "$PLATFORM" = "flutter" ]; then
   git -C "$REPO_ROOT" checkout -- pubspec.lock 2>/dev/null || true
 fi
-# GGC-49 — a no-op must be EARNED against CLEAN TRUNK, never a contaminated base. Before recording
+# A no-op must be EARNED against CLEAN TRUNK, never a contaminated base. Before recording
 # base_ref (the cumulative-diff baseline the audit/no-op verdict trusts), assert HEAD is the freshly
 # fetched default-branch tip. Under the parallel fan-out a worktree's HEAD can leak to a sibling
-# ticket's commit (CAF-625: base_ref was 321be8fc, NOT trunk a6c525c7), making any "already
+# ticket's commit (observed in practice: base_ref was a sibling commit, NOT trunk), making any "already
 # matches / no source changes" verdict computed against it WORTHLESS. Refuse to record a poisoned
 # base_ref. Only assert on the FIRST record (a correction/repair re-run keeps the original base_ref,
 # which was already validated when first written).
@@ -251,7 +251,7 @@ if [ ! -f "$REPO_ROOT/.dev/ui-tweak/base_ref" ]; then
   ACTUAL_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD)
   if [ -n "$EXPECTED_TIP" ] && [ "$ACTUAL_HEAD" != "$EXPECTED_TIP" ]; then
     echo "FAIL: refusing to record base_ref — HEAD ($ACTUAL_HEAD) != fresh origin/$DEFAULT_BRANCH tip ($EXPECTED_TIP)." >&2
-    echo "Cross-worktree contamination (GGC-49): a no-op/diff computed against a non-trunk base is invalid." >&2
+    echo "Cross-worktree contamination: a no-op/diff computed against a non-trunk base is invalid." >&2
     echo "Recreate the worktree off clean trunk (/add-worktree re-fetches + asserts) and re-run /ui-tweak." >&2
     exit 1
   fi

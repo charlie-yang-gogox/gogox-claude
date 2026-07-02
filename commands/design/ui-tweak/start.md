@@ -53,10 +53,10 @@ designer never types `/ui-tweak:start`.
    mkdir -p .dev/ui-tweak
    # ticket.json — read-only snapshot for apply/deliver (skip the re-fetch)
    printf '%s\n' "$TICKET_JSON" > .dev/ui-tweak/ticket.json
-   # comments.json — the comment THREAD (GGC-84). The get_issue / getJiraIssue response in
+   # comments.json — the comment THREAD. The get_issue / getJiraIssue response in
    # ticket.json carries the description + attachments but NOT the Linear comment thread, so a
    # follow-up comment that refines or reverses the spec is otherwise invisible to apply's target
-   # derivation (which then earns a no-op against a stale, description-only spec — CAF-632). Cache
+   # derivation (which then earns a no-op against a stale, description-only spec). Cache
    # the thread here, read-only, so /ui-tweak:apply Step 3 can union it into the requirement without
    # a re-fetch. Fail-soft (mirrors /dev:start Step 4): a fetch failure caches an empty array + a
    # note and NEVER blocks the split. Jira embeds comments in the issue, so derive from ticket.json.
@@ -138,7 +138,7 @@ designer never types `/ui-tweak:start`.
      udid=$(xcrun simctl list devices available 2>/dev/null | grep iPhone | grep -m1 -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')
      [ -n "$udid" ] && { (xcrun simctl boot "$udid" >/dev/null 2>&1 &) ; }
    fi
-   # (c) flavor resolution + detection (GGC-7) — resolve the effective flavor by precedence, PROBE
+   # (c) flavor resolution + detection — resolve the effective flavor by precedence, PROBE
    #     whether the repo actually has it, and cache the result worktree-local so /ui-tweak:preview
    #     never re-probes. Android flavor = a gradle `productFlavors` entry; iOS flavor = an Xcode
    #     scheme of that name — DIFFERENT mechanisms (they only coincide as `stag` on gogox repos), so

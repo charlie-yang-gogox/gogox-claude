@@ -24,7 +24,7 @@ identical across trackers.
 
 ## Inputs
 
-- `<ticket-id>` — Linear ticket id (e.g. `CAF-370`). Required.
+- `<ticket-id>` — Linear ticket id (e.g. `CAF-<n>`). Required.
 - `<lane>` — exactly one of `port` or `dev`. Required. Determines which
   `ready-to-*` label to drop and which lane name appears in the starting
   comment body.

@@ -14,6 +14,9 @@
 #   3. frontmatter lint on changed command/skill/agent *.md — must have name + description
 #   4. footgun scan     inside ```bash blocks of changed *.md — macOS/portability traps
 #                       (v1: `timeout`, the F1 class — GGC-2)
+#   5. ticket-id scan   on changed command/skill/agent *.md — no <PREFIX>-<number>
+#                       citations in a skill body (describe the behaviour; see
+#                       ARCHITECTURE.md "Authoring conventions")
 # shellcheck, if installed, additionally lints *.sh (optional — absent = skipped, not failed).
 #
 # Scope: default = files changed vs the default branch (committed + uncommitted +
@@ -99,6 +102,27 @@ scan_footguns() {
   ' "$1"
 }
 
+# Ticket-id citation scan — skill/command PROSE bodies must NOT cite a <PREFIX>-<number>
+# ticket id (describe the behaviour instead; see ARCHITECTURE.md "Authoring conventions").
+# In scope: .md under commands/ (not profiles/), skills/, agents/. Out of scope: code
+# (*.js/*.sh/*.py) and *.yaml config, where a ticket ref is ordinary provenance. Bare
+# prefixes with NO trailing number (e.g. "Linear CAF/DAF") are allowed — the pattern
+# requires `-<digit>`. The leading (^|[^A-Za-z0-9]) guard avoids matching inside a larger
+# alnum token, and keeps a regex example like `CAF-[0-9]+` (no literal digit) unflagged.
+needs_ticket_scan() {
+  case "$1" in
+    commands/*/profiles/*) return 1 ;;
+    commands/*.md|commands/*/*.md|commands/*/*/*.md) return 0 ;;
+    skills/*.md|skills/*/*.md|skills/*/*/*.md)       return 0 ;;
+    agents/*.md|agents/*/*.md)                       return 0 ;;
+  esac
+  return 1
+}
+
+scan_ticket_ids() {   # prints "line:content" for each offending line
+  grep -nE '(^|[^A-Za-z0-9])(CAF|DAF|CET|DET|GGC)-[0-9]' "$1" 2>/dev/null
+}
+
 # --- per-file checks ---------------------------------------------------------
 while IFS= read -r f; do
   [ -z "$f" ] && continue
@@ -129,6 +153,17 @@ while IFS= read -r f; do
       fg=$(scan_footguns "$f")
       if [ -n "$fg" ]; then
         while IFS= read -r line; do [ -n "$line" ] && err "$line"; done < <(printf '%s\n' "$fg")
+      fi
+      if needs_ticket_scan "$f"; then
+        ti=$(scan_ticket_ids "$f")
+        if [ -n "$ti" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            ln=${line%%:*}
+            tok=$(printf '%s' "$line" | grep -oE '(CAF|DAF|CET|DET|GGC)-[0-9]+' | head -1)
+            err "$f:$ln: ticket-id citation '$tok' in a skill body — describe the behaviour, not the ticket (use <ticket-id> in examples; see ARCHITECTURE.md Authoring conventions)"
+          done < <(printf '%s\n' "$ti")
+        fi
       fi
       # Emit a per-.md success line on a clean pass so a green run is self-
       # evidencing, matching the ok lines the .js / .sh branches print. Gated

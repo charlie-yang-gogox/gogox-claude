@@ -1,6 +1,6 @@
 ---
 name: ui-tweak-fast
-description: "Self-contained, portable variant of /ui-tweak for UI-Designer-safe codebase edits. ONE file runs the whole flow (parse → worktree → triage → apply → iterate → preview → audit → ship) with every step's instructions inlined — an agent never has to read ff/start/detect/apply/preview/audit separately. Given a UI change as free text, a Linear/Jira ticket (ID/URL), and/or a Figma link, it edits ONLY the UI (visual values, layout, structure), confirms it compiles, and is blocked from touching logic by a deferred two-judge audit (kept model-agnostic so it runs under any host's own model). Three things make it 'fast': (1) one read instead of six; (2) device previews build+run from a PERSISTENT per-repo clone (changed files are synced in from the worktree) so .dart_tool/build caches survive across tickets instead of recompiling cold in every fresh worktree, and after the first preview a 'more changes' round HOT-RESTARTS the still-running app (~seconds) instead of cold-rebuilding; (3) the designer can pick a 'Show me on iPhone + Android' card answer to preview on an iOS simulator AND an Android emulator at once (no flag to type). Portable across hosts (no harness-specific tools or pinned models). Use when a designer says 'make the order-page button 5dp bigger', 'change this color', passes a ticket like CAF-1234 describing a UI tweak, or gives a Figma frame to match — and wants the fast, single-file, portable flow."
+description: "Self-contained, portable variant of /ui-tweak for UI-Designer-safe codebase edits. ONE file runs the whole flow (parse → worktree → triage → apply → iterate → preview → audit → ship) with every step's instructions inlined — an agent never has to read ff/start/detect/apply/preview/audit separately. Given a UI change as free text, a Linear/Jira ticket (ID/URL), and/or a Figma link, it edits ONLY the UI (visual values, layout, structure), confirms it compiles, and is blocked from touching logic by a deferred two-judge audit (kept model-agnostic so it runs under any host's own model). Three things make it 'fast': (1) one read instead of six; (2) device previews build+run from a PERSISTENT per-repo clone (changed files are synced in from the worktree) so .dart_tool/build caches survive across tickets instead of recompiling cold in every fresh worktree, and after the first preview a 'more changes' round HOT-RESTARTS the still-running app (~seconds) instead of cold-rebuilding; (3) the designer can pick a 'Show me on iPhone + Android' card answer to preview on an iOS simulator AND an Android emulator at once (no flag to type). Portable across hosts (no harness-specific tools or pinned models). Use when a designer says 'make the order-page button 5dp bigger', 'change this color', passes a ticket like <ticket-id> describing a UI tweak, or gives a Figma frame to match — and wants the fast, single-file, portable flow."
 ---
 
 <!--
@@ -128,7 +128,7 @@ Re-running with no new argument **resumes** from the markers; re-running with a 
 ```
 .dev/ui-tweak-fast/worktree-ready     # Step 1 done (idempotency; never re-split)
 .dev/ui-tweak-fast/ticket.json        # read-only ticket snapshot (no re-fetch)
-.dev/ui-tweak-fast/comments.json      # read-only comment-THREAD snapshot (GGC-84; union'd into the requirement, no re-fetch)
+.dev/ui-tweak-fast/comments.json      # read-only comment-THREAD snapshot (union'd into the requirement, no re-fetch)
 .dev/ui-tweak-fast/flutter-bin        # resolved flutter binary (flutter platform only)
 .dev/ui-tweak-fast/flavor             # line1=flavor, line2=detected|missing
 .dev/ui-tweak-fast/triage-pass        # Step 3 verdict: pure-visual (widget + rationale) — resume/correction skips re-triage
@@ -165,8 +165,8 @@ direct headless invocation and parity.)
   ```
   📍 Hi! I can change how the App looks — sizes, colors, spacing, layout.
   📦 Just describe it in plain words. It helps to say "which screen + what to change".
-  👉 e.g.  /ui-tweak-fast "make the order-page primary button a bit taller"  CAF-1234
-           /ui-tweak-fast CAF-1234   (a Figma link can go at the end)
+  👉 e.g.  /ui-tweak-fast "make the order-page primary button a bit taller"  <ticket-id>
+           /ui-tweak-fast <ticket-id>   (a Figma link can go at the end)
   ```
 - **Otherwise** → strip the `--auto` flag from `<source>` (⇒ unattended), then continue to Step 1.
   (There is no device flag — dual-device is a Step-5 card choice, recorded as the `dual-device` marker.)
@@ -203,7 +203,7 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
   `linear.app/<org>/issue/<ID>/...` URL; first match).
   - **No id (pure free text)**:
     - interactive → render **card C-WT** (header `Work-item no.`):
-      > Before I start, what's the work-item number for this (like CAF-1234)? I use it to keep your
+      > Before I start, what's the work-item number for this (like <ticket-id>)? I use it to keep your
       > change in its own space and to hand it over later. Pick **Other** and paste the number to begin.
 
       A number (via Other) → continue with it. "I don't have one yet" → STOP, change nothing, and say:
@@ -228,7 +228,7 @@ requirement from
 title + description + comments. **Capture the fetched issue JSON into `TICKET_JSON`** (it is written to
 `ticket.json` below). Free-text runs skip the fetch and write `TICKET_JSON='{}'`.
 
-**Also fetch the comment THREAD, not just the description (GGC-84).** The `get_issue` snapshot carries
+**Also fetch the comment THREAD, not just the description.** The `get_issue` snapshot carries
 the description + attachments but **NOT** the Linear comment thread — so a follow-up comment that
 refines or reverses the spec is invisible to a description-only read, and an earned no-op grounded off
 it then validates against a *stale* spec. Fetch the thread read-only via your host's Linear MCP
@@ -260,7 +260,7 @@ cd "$WT"   # If your host moves the session into the worktree on `cd`, later rel
            # does NOT, treat "$WT" as the absolute root for ALL later Read/Write/Edit + git/shell working_directory.
 mkdir -p "$WT/.dev/ui-tweak-fast"
 printf '%s\n' "${TICKET_JSON:-{\}}" > "$WT/.dev/ui-tweak-fast/ticket.json"  # read-only snapshot (skip refetch)
-# comments.json — the comment THREAD (GGC-84). Fail-soft (mirrors the ticket fetch): on any miss, cache
+# comments.json — the comment THREAD. Fail-soft (mirrors the ticket fetch): on any miss, cache
 # an empty array + a note so Step 3a knows to re-fetch — and NEVER block the split. (Jira: COMMENTS_JSON
 # was normalized from TICKET_JSON above; Linear: from the host list_comments call.)
 printf '%s\n' "${COMMENTS_JSON:-{\"comments\":[],\"note\":\"comment fetch failed at split — apply may re-fetch\"\}}" \
@@ -323,7 +323,7 @@ fi
 
 ## Step 3 — triage: pure-visual vs needs-logic (read-only, BEFORE any edit)
 
-> The upfront, read-only visual-vs-logic gate (mirrors `/ui-tweak:detect`, GGC-107). It runs BEFORE any
+> The upfront, read-only visual-vs-logic gate (mirrors `/ui-tweak:detect`). It runs BEFORE any
 > edit, grounding, or build, so a misrouted `design bug` that really needs logic/behaviour changes is
 > caught **here** — not after a whole apply + build + 3× repair cycle ends at the late Step-7 dual-judge
 > BLOCK. Middle tier of a 3-tier cascade, cheap → expensive: an upstream text-only ticket gate → **this**
@@ -334,7 +334,7 @@ fi
 > `.dev/ui-tweak-fast/triage-pass` already exists (a prior round triaged pure-visual) or
 > `.dev/ui-tweak-fast/repair-context` exists (repair mode), this step is already done — go to Step 4.
 
-**3a — derive the requirement (union title + description + the FULL comment thread; GGC-84).** Free
+**3a — derive the requirement (union title + description + the FULL comment thread).** Free
 text → use it verbatim. Ticket → derive from the **union** of the cached `ticket.json` title +
 description **and the full comment thread** in `comments.json`. When a later comment refines or
 contradicts the description, **the most-recent comment is authoritative** (it is the live intent; the
@@ -366,7 +366,7 @@ general) can be satisfied by **look-and-feel alone**:
 - **needs-logic** — satisfiable **only** by changing gesture / state / control-flow / data / interaction
   wiring: a different tap target or where a tap navigates, a new/altered callback, a state transition,
   conditional rendering, a changed data binding. (Motivating case: a routing bug dressed as a design bug
-  — e.g. CAF-884, where "reuse this order" silently redirects to the wrong flow.)
+  — e.g. a "reuse this order" control that silently redirects to the wrong flow.)
 
 **Bias: when genuinely ambiguous, LEAN pure-visual and proceed** — the Step-7 dual-judge panel is the
 backstop and reverts the whole run on any logic finding, so a false pure-visual is caught later, while a
@@ -449,7 +449,7 @@ screen/component, record `{Ti, file, current, target}`, classify the file UI-eli
   no backing target is flagged.
 - If **any `Ti` is NOT-FOUND** → write `.dev/ui-tweak-fast/.not-deliverable` listing the unmet targets;
   else ensure that file does not exist. (`Fetched: SKIPPED/DEGRADED` does NOT trip the bar.)
-- **Earned-no-op guard (GGC-84).** When **every** `Ti` resolves to `ALREADY-MATCHES` (no planned edit —
+- **Earned-no-op guard.** When **every** `Ti` resolves to `ALREADY-MATCHES` (no planned edit —
   an earned no-op), that no-op is trustworthy ONLY if the checklist was grounded against the **current**
   spec, i.e. description **+ the full comment thread** (3a) AND every state named across
   description+comments is satisfied. Refuse the no-op when either fails:
@@ -466,7 +466,7 @@ screen/component, record `{Ti, file, current, target}`, classify the file UI-eli
   free-text. `--auto` skips the interactive confirm but records the plan.
 
 **4e — record `base_ref` (clean-trunk-anchored) — guard against a poisoned baseline.** (Full rationale —
-the CAF-625 cross-worktree contamination case — is in `commands/design/ui-tweak/apply.md` Step 5, GGC-49.)
+the cross-worktree contamination case — is in `commands/design/ui-tweak/apply.md` Step 5.)
 
 ```bash
 WT=$(git rev-parse --show-toplevel)                                                  # re-derive (rule 2)
@@ -775,7 +775,7 @@ never error.**
   returns the native framebuffer while `input tap` expects display coords — read `wm size` and the PNG
   dims, scale `x=sx*wm_w/shot_w, y=sy*wm_h/shot_h`. iOS taps need `idb ui tap` (`xcrun simctl` cannot
   tap); if `idb` is absent, Tier-2 is unavailable on iOS → fail-silent.
-- **Capture (GGC-115 mechanics):** screenshot + a recording that spans the CRUX into
+- **Capture mechanics:** screenshot + a recording that spans the CRUX into
   `.dev/ui-tweak-fast/demo`. Scope before recording: start on the TRIGGER control for
   reuse/button-triggered behaviours (B6), keep recording until the crux UI has RENDERED — async loads
   can show a placeholder 10s+ (A3) — and screenshot-verify the post-fix state before finalizing (B8).
@@ -901,7 +901,7 @@ tokens (`App*` accessors), and generic shapes (`=>`, `return`, `if (`, `for (`) 
 ADDED=$(printf '%s\n' "$DIFF_TEXT" | grep -E '^\+' | grep -vE '^\+\+\+')
 # Unambiguous runtime-behavior signals only (macOS/BSD grep -E safe; no \b).
 # KEEP IN SYNC with commands/design/ui-tweak/audit.md's BEHAVIOR_RE (the canonical copy; there is no
-# automated byte-equal lint covering THIS file — the GGC-63 prompt-lint gate only binds audit.md ↔ the
+# automated byte-equal lint covering THIS file — the prompt-lint gate only binds audit.md ↔ the
 # dispatcher workflow). If you tune one, tune both.
 BEHAVIOR_RE='(initState|dispose|didChangeDependencies|didUpdateWidget|deactivate|setState|notifyListeners|addListener|removeListener)\(|GestureRecognizer|await |async[ ({]|\.then\(|ref\.(read|watch|listen)\(|Navigator\.|GoRouter|context\.(go|push|pop)|\.pushNamed\(|\.pushReplacement|StreamSubscription|StreamController'
 STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE "$BEHAVIOR_RE")

@@ -26,7 +26,7 @@ Run tests with platform-appropriate incremental detection.
    - If `<repo-root>/.gogox-claude.yaml` exists, read its `platform` and `product`.
    - Else read `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml` for `platform` and `product`.
 2. Branch on `{platform}` for the platform-specific steps below.
-3. **Resolve the per-repo test profile (GGC-24).** Source the shared helpers and
+3. **Resolve the per-repo test profile.** Source the shared helpers and
    capture the optional override keys ONCE — they are read here so every later
    step (and `/dev:verify` / `/ggx-pr-resolver`, which call this skill) sees the
    same resolved values. All are empty / no-op when the profile omits them, so
@@ -202,7 +202,7 @@ If any tests **fail**:
   - **File:Line**: file path and line number where the failure was reported. If the runner does not provide a line number, use the line from the top of the stack trace.
   - **Error Message**: the assertion or exception message. Truncate to 120 characters if longer, appending `…`.
 
-#### Step 5a: Known-flake quarantine (GGC-24) — partition BEFORE deciding
+#### Step 5a: Known-flake quarantine — partition BEFORE deciding
 
 Before reporting failure or spending any `--fix` budget, partition the failing
 tests against the repo's `KNOWN_FLAKES` list (resolved in Step 0.3). This runs
@@ -267,4 +267,4 @@ partitioned out and never enter this loop):
 - In incremental mode, if you are unsure whether the detected tests are sufficient, suggest the user run `--all` to be safe.
 - When on the repo's default branch (no diff against base), automatically fall back to `--all`.
 - iOS incremental mode is intentionally not implemented — full suite only. Revisit if iOS team onboards a workable filter.
-- Known-flake quarantine (GGC-24) is opt-in per repo via `known_flaky_tests` in the profile (see `profiles/registry/_SCHEMA.md`). Matching is exact class+method — never a name substring — and every suppression is printed verbatim. A repo with no `known_flaky_tests` key runs the suite unchanged. The gradle unit-test task is likewise resolved from the profile (`test_task` / `test_variant`), defaulting to `testDebugUnitTest`.
+- Known-flake quarantine is opt-in per repo via `known_flaky_tests` in the profile (see `profiles/registry/_SCHEMA.md`). Matching is exact class+method — never a name substring — and every suppression is printed verbatim. A repo with no `known_flaky_tests` key runs the suite unchanged. The gradle unit-test task is likewise resolved from the profile (`test_task` / `test_variant`), defaulting to `testDebugUnitTest`.

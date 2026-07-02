@@ -1,3 +1,8 @@
+---
+name: init-project
+description: Interactively onboard a repo to gogox-claude — generate a .gogox-claude.yaml config and auto-register it in the registry.
+---
+
 # Init Project — Onboard a repo to gogox-claude
 
 Interactive setup for a new project. Generates a `.gogox-claude.yaml` config in the current project and auto-registers it in the gogox-claude registry.
@@ -121,7 +126,7 @@ branch_prefix: auto
 ticket_system: auto
 ```
 
-When `auto`, commands extract the ticket prefix from the branch name (e.g., `CET` from `feat/CET-1234`) and resolve the ticket system via `org.yaml` prefix mapping.
+When `auto`, commands extract the ticket prefix from the branch name (e.g., `CET` from `feat/CET-<n>`) and resolve the ticket system via `org.yaml` prefix mapping.
 
 ### 4. Show Platform Defaults
 

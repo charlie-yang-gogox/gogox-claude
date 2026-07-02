@@ -71,7 +71,7 @@ many changed files — you MAY additionally fan the judges out per-file, but a U
 always tiny, so the default single-diff-inline path is both correct and faster; the bottleneck is the
 opus model latency, not the diff size, which is exactly what Step 1c targets.)
 
-## Step 1b.5 — binary-only short-circuit → CLEAR by construction (GGC-93)
+## Step 1b.5 — binary-only short-circuit → CLEAR by construction
 
 A changeset whose **every** file is binary (image assets at multiple density buckets, fonts, …)
 **cannot carry logic**, so the dual-judge — whose only question is *UI-only vs behavior* — is
@@ -86,8 +86,8 @@ NON_BINARY=$(printf '%s\n' "$NUMSTAT" | grep -cvE '^-\t-\t')   # rows that are N
 - `NUMSTAT` non-empty **and** `NON_BINARY == 0` → **CLEAR by construction**: skip the structural
   pre-pass (Step 1c) **and** the dual-judge panel (Step 2/3) entirely, write
   `.dev/ui-verify-pass.md` first line `Status: CLEAR`, and advance straight to `commit`. This is
-  **not** a no-op — the binary assets ARE the change (e.g. CAF-780: a `pick_up_code.png` shipped at
-  1x/2x/3x to fix a blurry retina image). It also closes the CAF-780 false-BLOCK: a binary `git diff`
+  **not** a no-op — the binary assets ARE the change (e.g. an image asset shipped at
+  1x/2x/3x to fix a blurry retina image). It also closes a known false-BLOCK: a binary `git diff`
   has no `+`/`-` hunks, which a judge misreads as "diff incomplete" and re-diffs with a **bare**
   `git diff` against the wrong / lagging-trunk repo, confabulating already-merged files as phantom
   violations.
@@ -108,16 +108,16 @@ therefore deliberately tight: allow-by-default, deny only unambiguous behavior.
 **Not scanned / not a signal** (these are inert UI — they fall through to the panel):
 
 - **Any `import`.** An import line is inert; behavior comes from *using* the symbol, which the
-  behavior signals below (or the panel) catch. (Generalizes GGC-38 — which previously allowlisted
+  behavior signals below (or the panel) catch. (Generalizes an earlier rule that previously allowlisted
   only design-system style/token imports — to: no import trips the scan at all. A behavioral import
-  like a service / controller is caught by the *use* of its symbol, not the import line. CAF-555's
+  like a service / controller is caught by the *use* of its symbol, not the import line. A
   `import '.../gestures.dart'` no longer trips the scan; it still BLOCKs, but on its
   `TapGestureRecognizer` + `initState`/`dispose`, which is genuine behavior.)
 - **Pure layout / structure widgets** — `LayoutBuilder`, `ConstrainedBox`, `IntrinsicHeight`, `Row`,
   `Column`, `Stack`, `Padding`, `SizedBox`, `Align`, `Center`, `Expanded`, `Flexible`, `Wrap`, …
   and their `builder:` closures (`=>`), `BoxConstraints`, and collection-`if` / `for` inside a widget
-  list. These ARE ui-tweak's allowed scope (visual / layout / structure). (This is why CAF-540 —
-  `LayoutBuilder` + `ConstrainedBox` + `IntrinsicHeight` for vertical centering — must NOT be blocked
+  list. These ARE ui-tweak's allowed scope (visual / layout / structure). (This is why a diff of
+  `LayoutBuilder` + `ConstrainedBox` + `IntrinsicHeight` for vertical centering must NOT be blocked
   here: it reaches the panel and, being pure layout, clears.)
 - **Style / token references** — `App*`-prefixed const accessors (`AppColors.blue100`,
   `AppTypography.fontSizeCaption`, `AppSpacing.medium`).
@@ -141,7 +141,7 @@ ADDED=$(printf '%s\n' "$DIFF_TEXT" | grep -E '^\+' | grep -vE '^\+\+\+')
 # legit UI change).
 # This pattern is kept BYTE-EQUAL with the inline copy in
 # workflows/dispatch-fanout.workflow.js (the dispatcher/on-duty fan-out path); the
-# GGC-63 sync check in scripts/prompt-lint.sh fails if the two ever diverge.
+# sync check in scripts/prompt-lint.sh fails if the two ever diverge.
 BEHAVIOR_RE='(initState|dispose|didChangeDependencies|didUpdateWidget|deactivate|setState|notifyListeners|addListener|removeListener)\(|GestureRecognizer|await |async[ ({]|\.then\(|ref\.(read|watch|listen)\(|Navigator\.|GoRouter|context\.(go|push|pop)|\.pushNamed\(|\.pushReplacement|StreamSubscription|StreamController'
 
 STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE "$BEHAVIOR_RE")
@@ -154,11 +154,11 @@ STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE "$BEHAVIOR_RE")
   is unchanged (a CLEAR still requires BOTH judges to actually run and return CLEAR).
 - `STRUCTURAL_HIT == 0` → proceed to Step 2 and spawn BOTH judges normally.
 
-> **A non-hit is NOT a CLEAR (GGC-57).** `STRUCTURAL_HIT == 0` only means the deterministic
+> **A non-hit is NOT a CLEAR.** `STRUCTURAL_HIT == 0` only means the deterministic
 > short-circuit did not fire — it does **not** pass the change. The decorrelated dual-judge panel
 > (Step 2/3) still runs in full on the complete diff and BOTH judges must return CLEAR. So a
-> pure-layout diff (CAF-540: `LayoutBuilder`/`ConstrainedBox`/`IntrinsicHeight`) or an import-only
-> diff now reaches the panel instead of being reverted outright, while genuine behavior (CAF-555's
+> pure-layout diff (`LayoutBuilder`/`ConstrainedBox`/`IntrinsicHeight`) or an import-only
+> diff now reaches the panel instead of being reverted outright, while genuine behavior (a
 > `TapGestureRecognizer` + `initState`/`dispose`) still short-circuits to BLOCK exactly as before.
 > Tightening the pre-pass shifts borderline diffs from a false deterministic BLOCK to the opus
 > `dev-reviewer`'s judgement — strictly more scrutiny, never less.

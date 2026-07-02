@@ -17,12 +17,12 @@ Prepares the working environment for the dev loop. The done marker for this stag
 
 ## Inputs
 
-- `<ticket-id>` — Linear ticket ID (e.g. `CAF-207`). Required.
+- `<ticket-id>` — Linear ticket ID (e.g. `<PREFIX>-<n>`). Required.
 - `--auto` — full autonomous pipeline.
 - `--no-figma` — pre-declare that this ticket has no Figma source. Atomic-writes `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` so `/dev:figma` is skipped by the walker. **`/dev:start` is the SOLE writer of the SKIPPED first-line variant** (figma-subagent only writes `Fetched: <ISO>` or `Fetched: FAILED`).
 - `--bug` — bug-fix mode. Skips `/dev:detect` / `/dev:align` (no OpenSpec change to align), and `/dev:apply` takes its Step 0-bug branch: the agent re-fetches the ticket, investigates the codebase, writes the fix, and commits — autonomously. The human is NOT asked to find root cause or write code. In `default` mode there is one HITL gate confirming the agent's fix plan; in `--auto` even that is skipped. Writes `.dev/mode.md` so downstream stages take the bug branch.
 - `--no-ticket-init` — Skip the Linear ticket-init step (status → `In Progress`, drop `ready-to-dev` label, assignee → self, estimate=1, starting comment). Use when running the pipeline locally for inspection / debugging without flipping the ticket on Linear. Default: enabled (init runs in both default and `--auto` modes; the underlying `/_ticket-init` skill is idempotent).
-- `--port-handoff` — port→need-spec-review→ready-to-dev handoff entry (GGC-56). Set by `/dev:ff --port-handoff` when adopting a committed `openspec/changes/<name>` that `/port:ship` produced. Adopts the existing port worktree/branch instead of creating a fresh one (Step 3), exempts the committed openspec change from the re-entry refusal (Step 2), and writes `.dev/mode.md` = `port-handoff` so `/dev:apply` rides the feature OpenSpec flow but can hard-fail if it ever runs without the spec-review directives this stage captures (Step 4c). Rides the feature flow — does NOT combine with `--bug`.
+- `--port-handoff` — port→need-spec-review→ready-to-dev handoff entry. Set by `/dev:ff --port-handoff` when adopting a committed `openspec/changes/<name>` that `/port:ship` produced. Adopts the existing port worktree/branch instead of creating a fresh one (Step 3), exempts the committed openspec change from the re-entry refusal (Step 2), and writes `.dev/mode.md` = `port-handoff` so `/dev:apply` rides the feature OpenSpec flow but can hard-fail if it ever runs without the spec-review directives this stage captures (Step 4c). Rides the feature flow — does NOT combine with `--bug`.
 - Linear ticket (fetched).
 - Project profile (`{platform}`, `{deps_install}`, `{test_cmd}`).
 
@@ -31,7 +31,7 @@ Prepares the working environment for the dev loop. The done marker for this stag
 - Worktree at `../<ticket-id>` (auto only).
 - `.dev/figma-context.md` with first line `Fetched: SKIPPED — <reason>` (when `--no-figma` OR ticket has no Figma URL after parsing).
 - `.dev/spec-review-directives.md` — first line `Status: PRESENT` (latest `<!-- spec-review:v1 -->` Linear comment captured verbatim) or `Status: NONE` (no such comment). Always written. Consumed by `/dev:apply` Step 0-bug.1 and Step 4D.1 to surface `[REVISED]` directives to whichever agent authors code.
-- `.dev/mode.md` with single line `bug` (when `--bug`), `port-handoff` (when `--port-handoff`), or `feature-direct` (when neither flag is set AND the worktree has no `openspec/` dir — GGC-76). Absent only for the OpenSpec `feature` path. `pipe_mode` (lib/dev-mode.sh) resolves the mode: a `feature-direct`-valued marker is NOT a positive `bug`/`port-handoff` match, so it falls through to the `! -d openspec` branch and still resolves `feature-direct`. `pipe_mode` also detects feature-direct dynamically for legacy/unmarked worktrees, so the marker is required only by the direct-mode walker's `start→apply` gate (`infer_bug_stage` in `/dev:ff`), never by `pipe_mode`.
+- `.dev/mode.md` with single line `bug` (when `--bug`), `port-handoff` (when `--port-handoff`), or `feature-direct` (when neither flag is set AND the worktree has no `openspec/` dir). Absent only for the OpenSpec `feature` path. `pipe_mode` (lib/dev-mode.sh) resolves the mode: a `feature-direct`-valued marker is NOT a positive `bug`/`port-handoff` match, so it falls through to the `! -d openspec` branch and still resolves `feature-direct`. `pipe_mode` also detects feature-direct dynamically for legacy/unmarked worktrees, so the marker is required only by the direct-mode walker's `start→apply` gate (`infer_bug_stage` in `/dev:ff`), never by `pipe_mode`.
 - Linear ticket: assigned to self, status `In Progress`, `ready-to-dev` label removed, estimate=1 if null, starting comment posted (both modes; skipped only with `--no-ticket-init`). Driven by `/_ticket-init` (idempotent).
 - `/tmp/<ticket-id>.md` — ticket dump (auto only).
 
@@ -55,7 +55,7 @@ A pipeline is in flight in this worktree if any of these are true:
 
 If in flight, STOP with: `Pipeline already in flight in this worktree. Resume with /dev:ff, or /dev:ff --from <stage> to reset.`
 
-**Port-handoff exemption (GGC-56)**: when `PORT_HANDOFF == 1`, EXEMPT only the first bullet — a committed `openspec/changes/<name>` is the EXPECTED input of a port handoff (`/port:ship` produced it), not an in-flight dev pipeline, so its presence must NOT refuse re-entry. The second bullet (`.dev/` marker files) stays active: if a dev marker like `.dev/figma-context.md` or `.dev/verify-pass.md` already exists, a real dev pipeline is genuinely in flight and `/dev:start` must still refuse (resume via `/dev:ff` instead). In short: `--port-handoff` only waives the openspec-change-dir signal, never the dev-marker signal.
+**Port-handoff exemption**: when `PORT_HANDOFF == 1`, EXEMPT only the first bullet — a committed `openspec/changes/<name>` is the EXPECTED input of a port handoff (`/port:ship` produced it), not an in-flight dev pipeline, so its presence must NOT refuse re-entry. The second bullet (`.dev/` marker files) stays active: if a dev marker like `.dev/figma-context.md` or `.dev/verify-pass.md` already exists, a real dev pipeline is genuinely in flight and `/dev:start` must still refuse (resume via `/dev:ff` instead). In short: `--port-handoff` only waives the openspec-change-dir signal, never the dev-marker signal.
 
 ## Step 3: Pre-flight + ticket assignment
 
@@ -98,7 +98,7 @@ OTHER_DIRT=$(printf '%s\n' "$PORCELAIN" | grep -vE "$RUNTIME_REGEX" || true)
 # Step 1.3's policy ("Untracked files warn but proceed — agents work in
 # separate worktrees"); the two checks previously disagreed, which let a
 # benign untracked file (e.g. claude-reports/, scripts/measure-ios-startup.sh)
-# in main false-positive an auto worker's first stage (GGC-13).
+# in main false-positive an auto worker's first stage.
 OTHER_TRACKED_DIRT=$(printf '%s\n' "$OTHER_DIRT" | grep -vE '^\?\?' || true)
 OTHER_UNTRACKED_DIRT=$(printf '%s\n' "$OTHER_DIRT" | grep -E '^\?\?' || true)
 
@@ -131,13 +131,13 @@ fi
 
 **Auto mode**:
 
-1. Verify the repo is on its default branch AND has no **tracked** modifications. If not → STOP. (Resolve the default branch dynamically: `source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude.) This is the tracked-only re-check that pairs with Step 3a: untracked files were already triaged there as warn-and-proceed, so test only tracked dirt here — `git status --porcelain --untracked-files=no` (empty ⇒ clean) — never the whole porcelain. Counting untracked files here would re-introduce the GGC-13 false-positive that Step 3a just resolved.
+1. Verify the repo is on its default branch AND has no **tracked** modifications. If not → STOP. (Resolve the default branch dynamically: `source "$HOME/.claude/lib/dev-mode.sh"; default_branch` — `trunk` on flutter, `main` on gogox-claude.) This is the tracked-only re-check that pairs with Step 3a: untracked files were already triaged there as warn-and-proceed, so test only tracked dirt here — `git status --porcelain --untracked-files=no` (empty ⇒ clean) — never the whole porcelain. Counting untracked files here would re-introduce the false-positive that Step 3a just resolved.
 2. Read the ticket to determine branch type (`feat`, `fix`, `test`, `ci`, `chore`):
    - **Linear**: `mcp__claude_ai_Linear__get_issue` (already done in ownership check; reuse the snapshot). Branch type heuristic: `bug` label → `fix`; otherwise default to `feat`.
    - **Jira**: `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` (already done; reuse). Branch type heuristic: `.fields.issuetype.name == "Bug"` → `fix`; otherwise `feat`. The `--bug` flag (when set by `/bug:ff`) is the authoritative override in both trackers.
 3. **Worktree.** Normal path: invoke `/add-worktree <ticket-id> --type <type>` — handles fetch, branch, EnterWorktree, port-settings, `{deps_install}`.
 
-   **Port-handoff path (GGC-56)**: when `PORT_HANDOFF == 1`, do NOT `/add-worktree` — the port pipeline already created the worktree/branch that holds the committed openspec change. Reuse it instead of branching fresh (a fresh branch off `origin/<default>` would not contain the ported change):
+   **Port-handoff path**: when `PORT_HANDOFF == 1`, do NOT `/add-worktree` — the port pipeline already created the worktree/branch that holds the committed openspec change. Reuse it instead of branching fresh (a fresh branch off `origin/<default>` would not contain the ported change):
 
    ```bash
    ticket_lc=$(echo "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
@@ -263,7 +263,7 @@ if [ "$BUG_FLAG" = "1" ]; then
 fi
 ```
 
-`.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. The OpenSpec `feature` path does NOT write this file — `pipe_mode` (lib/dev-mode.sh) resolves it as `feature` (repo has an `openspec/` dir). The `feature-direct` path (no `openspec/` dir — GGC-17) DOES write a marker as of GGC-76 (Step 4b-featuredirect below); see that step for why the marker is needed and why it is safe.
+`.dev/mode.md` presence with value `bug` is the canonical signal that downstream stages (`/dev:verify`, `/dev:ship`, `/dev:ff` walker) read to take the bug-mode branch. The OpenSpec `feature` path does NOT write this file — `pipe_mode` (lib/dev-mode.sh) resolves it as `feature` (repo has an `openspec/` dir). The `feature-direct` path (no `openspec/` dir) DOES write a marker (Step 4b-featuredirect below); see that step for why the marker is needed and why it is safe.
 
 ## Step 4b-port: Port-handoff marker (when --port-handoff)
 
@@ -275,14 +275,14 @@ if [ "$PORT_HANDOFF" = "1" ]; then
 fi
 ```
 
-`.dev/mode.md` with value `port-handoff` (GGC-56) is the canonical signal that this dev run was reached via the port→need-spec-review→ready-to-dev handoff rather than a fresh scaffold. `pipe_mode` (lib/dev-mode.sh) returns `port-handoff`; the `/dev:apply` walker rides the FEATURE OpenSpec flow (Steps 1–5, normal figma/detect/align chain) for it, but `/dev:apply`'s feature spec-review consumers HARD-FAIL when this marker is present and `.dev/spec-review-directives.md` is absent — proof that `/dev:start` (and therefore Step 4c's directive capture) was skipped. Runs in both auto and default modes. Mutually exclusive with `--bug`; `/dev:ff` never passes both.
+`.dev/mode.md` with value `port-handoff` is the canonical signal that this dev run was reached via the port→need-spec-review→ready-to-dev handoff rather than a fresh scaffold. `pipe_mode` (lib/dev-mode.sh) returns `port-handoff`; the `/dev:apply` walker rides the FEATURE OpenSpec flow (Steps 1–5, normal figma/detect/align chain) for it, but `/dev:apply`'s feature spec-review consumers HARD-FAIL when this marker is present and `.dev/spec-review-directives.md` is absent — proof that `/dev:start` (and therefore Step 4c's directive capture) was skipped. Runs in both auto and default modes. Mutually exclusive with `--bug`; `/dev:ff` never passes both.
 
-## Step 4b-featuredirect: Feature-direct marker (GGC-76)
+## Step 4b-featuredirect: Feature-direct marker
 
 ```bash
 # Runs only when NEITHER --bug NOR --port-handoff is set (those Steps already
 # wrote .dev/mode.md and returned). A worktree with no `openspec/` dir is a
-# feature-direct repo (the `prompt` platform — GGC-17). Write the marker so the
+# feature-direct repo (the `prompt` platform). Write the marker so the
 # direct-mode walker's start→apply gate can fire (see below).
 if [ "$BUG_FLAG" != "1" ] && [ "$PORT_HANDOFF" != "1" ] && [ ! -d openspec ]; then
   mkdir -p .dev
@@ -291,7 +291,7 @@ if [ "$BUG_FLAG" != "1" ] && [ "$PORT_HANDOFF" != "1" ] && [ ! -d openspec ]; th
 fi
 ```
 
-**Why this marker is needed (GGC-76).** `feature-direct` shares the bug-mode walker `infer_bug_stage` (in `/dev:ff`), whose `start→apply` gate is `[ -d .dev ] && [ -f .dev/mode.md ]`. Before GGC-76, `/dev:start` wrote `.dev/mode.md` only for `--bug`/`--port-handoff`, so on a feature-direct repo the gate never fired: after `/dev:start`, `infer_dev_stage` re-derived `start`, `/dev:ff` saw `NEW == CURRENT`, and the pipeline STOPped with no progress. Writing the marker here lets the gate advance to `apply`.
+**Why this marker is needed.** `feature-direct` shares the bug-mode walker `infer_bug_stage` (in `/dev:ff`), whose `start→apply` gate is `[ -d .dev ] && [ -f .dev/mode.md ]`. Before this fix, `/dev:start` wrote `.dev/mode.md` only for `--bug`/`--port-handoff`, so on a feature-direct repo the gate never fired: after `/dev:start`, `infer_dev_stage` re-derived `start`, `/dev:ff` saw `NEW == CURRENT`, and the pipeline STOPped with no progress. Writing the marker here lets the gate advance to `apply`.
 
 **Why it is safe for `pipe_mode`.** `pipe_mode` only treats `mode.md` values `bug` and `port-handoff` as positive matches; any other value (here, `feature-direct`) falls through to the `! -d openspec` branch and still resolves `feature-direct`. So the marker changes nothing for `pipe_mode` while unblocking the walker. `pipe_mode` also keeps its dynamic `! -d openspec` detection, so legacy/unmarked feature-direct worktrees (created before this fix) still resolve correctly. (Regression-guarded by `lib/dev-mode.test.sh`, run by `scripts/prompt-lint.sh`.)
 

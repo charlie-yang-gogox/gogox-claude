@@ -160,7 +160,7 @@ The script outputs `rows` with `suggested_output`, `messages`, `ticket`, `cost`,
 
    **For each regex-derived ticket that survived step 2:**
    1. Resolve the Linear `get_issue` tool name first — call ToolSearch with query `select:mcp__claude_ai_Linear__get_issue`; if no match (Claude desktop routine context exposes Linear tools under a UUID prefix instead of the friendly name), fall back to ToolSearch with query `+linear get_issue` and pick the first result whose name ends with `__get_issue`. Cache the resolved tool name and reuse it across all tickets in this run. Same for Jira: try `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` first, otherwise resolve via `+jira getJiraIssue`.
-   2. Call the resolved Linear tool with the ticket identifier (e.g. `CAF-355`, `CET-8360`).
+   2. Call the resolved Linear tool with the ticket identifier (e.g. `<ticket-id>`).
    3. If Linear returns a valid issue → keep the ticket (confirmed real).
    4. If Linear returns not found → call the resolved Jira tool with the same identifier (some prefixes like `CET-xxx` may live in Jira rather than Linear).
    5. If neither Linear nor Jira finds the ticket → it is a false positive. Set `ticket=""` and remove it from `tickets` list.
@@ -384,7 +384,7 @@ will produce duplicate rows — that's an operator concern, not a code path.
 | `Output` | select | one of: `PR shipped`, `feature dev`, `bug fix`, `code review`, `code review (routine)`, `PRD/spec`, `tooling`, `research`, `devops` |
 | `Week` | formula (readonly) | auto |
 
-**Pre-write: register new tickets.** Collect all unique `[A-Z]{2,}-\d+` tickets from this run (e.g. CAF-355, CET-8360). If any are NOT in existing Ticket multi_select options, run `mcp__notion__notion-update-data-source`:
+**Pre-write: register new tickets.** Collect all unique `[A-Z]{2,}-\d+` tickets from this run (e.g. `<ticket-id>`). If any are NOT in existing Ticket multi_select options, run `mcp__notion__notion-update-data-source`:
 ```
 ALTER COLUMN "Ticket" SET MULTI_SELECT('existing1':blue, ..., 'NEW_TICKET':blue)
 ```
@@ -405,7 +405,7 @@ reflects the per-session cadence.
 
 | Property | How to set |
 |----------|------------|
-| `工作摘要` | Ticket row: `{TICKET-ID}: [summary phrase]` (e.g. `CAF-355: ...` or `CET-8360: ...`). Non-ticket row: `[summary phrase]` (no prefix). |
+| `工作摘要` | Ticket row: `{TICKET-ID}: [summary phrase]` (e.g. `<ticket-id>: ...`). Non-ticket row: `[summary phrase]` (no prefix). |
 | `Ticket` | JSON array of ALL `[A-Z]{2,}-\d+` from this row; `[]` for non-ticket rows. |
 | `Linear` | `https://linear.app/gogox/issue/{first ticket}` for Linear-validated ticket rows; `null` for Jira-only or non-ticket rows. If the ticket was validated via Jira (not Linear), set to `null`. For cwd/branch-derived tickets (not API-validated), generate the Linear URL optimistically. |
 | `date:Date:start` | TARGET_DATE (YYYY-MM-DD). |
@@ -438,7 +438,7 @@ multi_select options for unseen IDs.
 
    | helper field | value (from the row) |
    |--------------|----------------------|
-   | `title` | the `工作摘要` string — ticket-prefixed for ticket rows (`CET-8382: …`), bare for non-ticket rows |
+   | `title` | the `工作摘要` string — ticket-prefixed for ticket rows (`<ticket-id>: …`), bare for non-ticket rows |
    | `tickets` | array of ALL `[A-Z]{2,}-\d+` for this row (`[]` if none) — same list 4b's `Ticket` uses |
    | `linear` | `https://linear.app/gogox/issue/{first ticket}` for Linear-validated rows; `null` for Jira-only / non-ticket / unknown |
    | `date` | TARGET_DATE (`YYYY-MM-DD`) |
