@@ -80,6 +80,20 @@ Ship the reviewed OpenSpec change. After this stage the branch is on origin, Lin
      ```
    - Skipping this step lets `.port/timings.jsonl` leak into every commit forever; the previous commit's `.gitignore` does not retroactively untrack files.
 
+5b. **Force-add the OpenSpec artifacts when the change tree is gitignored.**
+   - Some target repos gitignore the **entire** `openspec/changes/*` tree (not just the `.port/` runtime files). In such a repo, `/commit`'s plain `git add` silently skips every generated artifact: the commit produces nothing under `openspec/changes/`, the pushed `feat/<ticket-id>` branch ends up identical to trunk, and the step-8 spec-tree URL 404s. Where only the `.port/` runtime files are ignored (the common case), this block does nothing.
+   - `.gitignore` blocks only *untracked* files, so a force-add lands the artifacts. Run right before `/commit`, gated on the change dir actually being ignored so it is a no-op otherwise:
+     ```bash
+     if git check-ignore -q "openspec/changes/<change-name>"; then
+       git add -f "openspec/changes/<change-name>"
+       # Re-exclude the runtime-only files the force-add just swept in (step 5 keeps these untracked).
+       git reset -q -- \
+         "openspec/changes/<change-name>/.port/.lock" \
+         "openspec/changes/<change-name>/.port/timings.jsonl" 2>/dev/null || true
+     fi
+     ```
+   - `/commit` (step 6) then respects the already-staged files. `.port/.lock` / `.port/timings.jsonl` are never committed — step 5 gitignores + evicts them, and the `git reset` above unstages any that the force-add re-added.
+
 6. **Commit via `/commit`.**
    - Invoke the existing `/commit` skill. It analyses the working tree and writes one or more atomic commits.
    - Format-hook failure inside `/commit` → STOP. Surface the error verbatim. Do NOT amend, do NOT retry blindly. The user fixes the hook, re-runs `/port:ship`. Lock stays in place. Append timings with `outcome:"aborted-commit-failed"`.
