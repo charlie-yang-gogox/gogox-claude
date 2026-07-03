@@ -48,13 +48,18 @@ if [ "$MODE" != "auto" ] && ! is_direct_mode "$PIPE_MODE"; then
 fi
 
 if is_direct_mode "$PIPE_MODE"; then
-  # Direct modes (bug / feature-direct): no openspec change dir, no tasks.md.
-  # Sanity-check something was committed.
-  N=""
+  # Direct modes (bug / feature-direct): the fix was a direct Edit, not
+  # /opsx:apply — so there is no tasks.md completeness gate. Sanity-check
+  # something was committed instead.
   COMMITS_AHEAD=$(git rev-list --count "$BASE_REF..HEAD" 2>/dev/null || echo 0)
   [ "$COMMITS_AHEAD" -gt 0 ] || {
     echo "FAIL: direct-mode /dev:verify requires at least one commit beyond $BASE_REF. Commit your change first." >&2
     exit 1; }
+  # Resolve $N from the filesystem (NOT forced empty): a spec-impacting bug fix
+  # authors an OpenSpec delta (see /dev:apply Step 0-bug.4.6). When present, it
+  # is passed to the auditor below so it cross-checks the delta against the diff
+  # (a plain bug / feature-direct leaves $N empty).
+  N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
 else
   # Feature AND port-handoff: require openspec change dir + completed tasks.
   N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
@@ -121,7 +126,7 @@ issues; abort decision is downstream).
 Use the **Agent** tool with `subagent_type: "verify-agent"`, `mode: "bypassPermissions"`. Prompt with the three required inputs:
 
 - `base` — `$BASE_REF` (e.g. `origin/trunk` or `origin/main`)
-- `change name` — `$N` if non-empty, else pass `(bug-mode: no openspec change)` so the auditor knows to skip openspec cross-checks and rely on diff + tests alone. (Same form for both direct modes — `feature-direct` runs also have no openspec change; the string is a contract with the auditor, do not vary it per mode.)
+- `change name` — `$N` if non-empty, else pass `(bug-mode: no openspec change)` so the auditor knows to skip openspec cross-checks and rely on diff + tests alone. `$N` is non-empty for feature / port-handoff AND for a bug-lane fix that authored a spec delta — in all three the auditor cross-checks the delta spec against the diff. It is empty for a plain bug / feature-direct run (no delta); the fixed string is the contract for that case, do not vary it.
 - `figma raw directory` — `$FIGMA_RAW` if non-empty, else omit
 
 **Prompt-platform repos (`{platform}` = `prompt`, e.g. gogox-claude).** Also tell
