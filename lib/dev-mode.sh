@@ -62,6 +62,32 @@ pipe_mode() {
   fi
 }
 
+# is_direct_mode <pipe-mode>
+#
+# Single source of truth for the question "does this pipeline mode ride the
+# OpenSpec flow, or is it a direct-edit mode with no openspec/changes/<name>
+# dir?". Returns 0 (true) for the TRUE direct modes, 1 (false) otherwise:
+#
+#   bug            → direct  (LLM investigates + edits; no change dir)
+#   feature-direct → direct  (feature work on a no-OpenSpec repo; no change dir)
+#   port-handoff   → NOT direct (rides the feature OpenSpec flow: adopts a
+#                    committed openspec/changes/<name> and applies Steps 1-5 —
+#                    so it HAS a change dir that must be archived/verified)
+#   feature        → NOT direct (the OpenSpec-driven default)
+#
+# INVARIANT: is_direct_mode(m) is true  ⇔  mode m has NO OpenSpec change dir.
+# Every stage that used to hand-roll `[ "$PIPE_MODE" != "feature" ]` as a proxy
+# for "no change to handle" MUST route through this predicate instead — that
+# proxy silently misclassified port-handoff (feature semantics, not named
+# `feature`) as a direct mode. Adding a future mode = add one case here, and
+# lib/dev-mode.test.sh's truth-table asserts it was wired in.
+is_direct_mode() {
+  case "$1" in
+    bug|feature-direct) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # default_branch
 #
 # Echoes the repo's default branch NAME (e.g. `trunk`, `main`) so the pipeline

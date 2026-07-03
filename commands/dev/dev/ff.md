@@ -330,15 +330,19 @@ Hard rules when you execute this loop:
 3. **Re-derive after every stage.** Even if you "know" what the next stage should be, run `infer_dev_stage` again. Stages may have written or cleared marker files in ways that change the next derivation (e.g. `/dev:verify` writes `verify-pass.md` with either `CLEAR` → next is `review`, or `BLOCKED` → next is `verify` again).
 4. **When you stop, name the terminal condition.** Report which of (`done`, `NEW == CURRENT at <stage>`, `BLOCKED/FAILED marker at <path>`, `HITL gate at <stage>`) caused the stop. If you can't name one, you stopped early — go back and continue the loop.
 
-### Default-mode terminal (`/dev:apply` exits without verify) — feature mode only
+### Default-mode terminal (`/dev:apply` exits without verify) — feature and port-handoff modes
 
-In default mode + feature pipeline, `/dev:apply` does NOT advance to verify (verify/review/ship are auto-only). After `/dev:apply` runs, `infer_dev_stage` returns `verify` (because tasks are all `[x]`) — but the user is not in `--auto`. The dispatch loop checks `AUTO_FLAG` before invoking auto-only stages:
+In default mode + an OpenSpec pipeline (feature OR port-handoff — both ride the OpenSpec flow), `/dev:apply` does NOT advance to verify (verify/review/ship are auto-only). After `/dev:apply` runs, `infer_dev_stage` returns `verify` (because tasks are all `[x]`) — but the user is not in `--auto`. The dispatch loop checks `AUTO_FLAG` before invoking auto-only stages:
 
 ```
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode)
 
-if PIPE_MODE == "feature" and CURRENT in {"verify", "review", "ship"} and AUTO_FLAG == 0:
+# Fire for the OpenSpec-flow modes only — i.e. NOT a direct mode.
+# port-handoff MUST be included here: without it, the loop would dispatch
+# /dev:verify in default mode, and verify's own auto-only guard (`! is_direct_mode`)
+# would then hard-FAIL "requires --auto" — relocating the stall from ship to verify.
+if ! is_direct_mode "$PIPE_MODE" and CURRENT in {"verify", "review", "ship"} and AUTO_FLAG == 0:
   STOP — print:
     "Apply complete. Pipeline at <stage>. Default mode terminal — drive next steps manually:
      /format → /commit → /pull-request. To upgrade to auto and chain through verify/review/ship: /dev:ff --auto."
@@ -347,7 +351,7 @@ if PIPE_MODE == "feature" and CURRENT in {"verify", "review", "ship"} and AUTO_F
 
 This replaces the v7 `done_default` terminal that was tracked in `state.json`. Filesystem-as-state derives the same outcome from "tasks done + no `--auto` flag this invocation".
 
-**Direct-mode exception**: when `PIPE_MODE` is `bug` or `feature-direct`, the default-mode terminal does NOT fire. Direct modes run end-to-end through `verify` → `review` → `ship` even without `--auto`, because `/dev:apply`'s Step 0-bug (direct-edit) branch already commits the change autonomously — there is no user-decision gap left after apply. The HITL in direct-default is exclusively the plan-confirmation gate inside Step 0-bug, before the apply runs; once that is past, the rest is mechanical (test + audit + push) and runs whether the user passed `--auto` or not. `/dev:verify`, `/dev:review`, and `/dev:ship` each gate their auto-only check on `MODE == auto OR PIPE_MODE != feature` to permit this.
+**Direct-mode exception**: when `is_direct_mode "$PIPE_MODE"` is true (`bug` or `feature-direct`), the default-mode terminal does NOT fire. Direct modes run end-to-end through `verify` → `review` → `ship` even without `--auto`, because `/dev:apply`'s Step 0-bug (direct-edit) branch already commits the change autonomously — there is no user-decision gap left after apply. The HITL in direct-default is exclusively the plan-confirmation gate inside Step 0-bug, before the apply runs; once that is past, the rest is mechanical (test + audit + push) and runs whether the user passed `--auto` or not. `/dev:verify`, `/dev:review`, and `/dev:ship` each gate their auto-only check on `MODE == auto OR is_direct_mode(PIPE_MODE)` to permit this — so feature and port-handoff still require `--auto` for those stages, while bug/feature-direct do not.
 
 ## Mode-specific behavior
 

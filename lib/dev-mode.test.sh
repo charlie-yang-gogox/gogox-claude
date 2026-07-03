@@ -78,6 +78,27 @@ expect "openspec/ + no mode.md → feature" feature "$(pipe_mode "$wt")"
 wt=$(mk_wt bug_os "openspec" "bug")
 expect "openspec/ + mode.md=bug → bug" bug "$(pipe_mode "$wt")"
 
+# --- is_direct_mode invariant (GGC-122) --------------------------------------
+# Truth table for the "does this mode ride the OpenSpec flow?" predicate every
+# ship/verify/review/ff site now routes through instead of a `!= feature` proxy.
+# INVARIANT: is_direct_mode(m) true ⇔ mode m has NO OpenSpec change dir.
+#   direct (no change): bug, feature-direct
+#   OpenSpec flow (has change, must archive/verify): port-handoff, feature
+# A future mode that forgets to add its case here defaults to NOT-direct (the
+# `*)` branch) — if that is wrong for it, the case below will FAIL loudly.
+
+# expect_direct <mode> <expected: direct|openspec>
+expect_direct() {
+  local mode="$1" want="$2" got
+  if is_direct_mode "$mode"; then got=direct; else got=openspec; fi
+  expect "is_direct_mode $mode → $want" "$want" "$got"
+}
+
+expect_direct bug            direct
+expect_direct feature-direct direct
+expect_direct port-handoff   openspec
+expect_direct feature        openspec
+
 # --- summary -----------------------------------------------------------------
 printf 'dev-mode.test: %d passed, %d failed\n' "$PASSES" "$FAILS"
 [ "$FAILS" -eq 0 ] || exit 1

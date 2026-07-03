@@ -42,12 +42,12 @@ else
 fi
 BASE_REF=$(trunk_ref)   # origin/<default branch> — trunk (flutter) or main (gogox-claude); see lib/dev-mode.sh
 
-if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" = "feature" ]; then
-  echo "FAIL: /dev:verify requires --auto (or a direct mode: bug via /bug:ff, feature-direct on no-OpenSpec repos). Default-mode feature pipelines terminate at /dev:apply." >&2
+if [ "$MODE" != "auto" ] && ! is_direct_mode "$PIPE_MODE"; then
+  echo "FAIL: /dev:verify requires --auto (or a direct mode: bug via /bug:ff, feature-direct on no-OpenSpec repos). Default-mode feature/port-handoff pipelines terminate at /dev:apply." >&2
   exit 1
 fi
 
-if [ "$PIPE_MODE" != "feature" ]; then
+if is_direct_mode "$PIPE_MODE"; then
   # Direct modes (bug / feature-direct): no openspec change dir, no tasks.md.
   # Sanity-check something was committed.
   N=""
@@ -56,7 +56,7 @@ if [ "$PIPE_MODE" != "feature" ]; then
     echo "FAIL: direct-mode /dev:verify requires at least one commit beyond $BASE_REF. Commit your change first." >&2
     exit 1; }
 else
-  # Feature mode: require openspec change dir + completed tasks.
+  # Feature AND port-handoff: require openspec change dir + completed tasks.
   N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
   [ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
   tasks_done=$(openspec list --json 2>/dev/null \
