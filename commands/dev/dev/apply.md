@@ -85,6 +85,21 @@ The agent is responsible for the **full fix loop** — investigate, hypothesize,
 
 **`feature-direct` reading**: everywhere this section says "fix" / "bug", read "the ticket's requested change" — Step 0-bug.2's investigation targets *where the change lands and how* rather than a defect's root cause; everything else (autonomy, HITL shape, commit, `.dev/apply-result.md` contract) is identical. Commit semantics follow the lane: `/commit` derives the type from the diff (`feat:` / `docs:` for feature-direct work, `fix:` for bugs).
 
+### Spec-Impact rubric (bug lane — the spec-delta trigger)
+
+Some fixes **change or add product behaviour** rather than restoring code to an already-specified behaviour. Those must update the spec so it stays truthful. This rubric decides whether the bug lane authors an OpenSpec delta. It is evaluated in two passes (defined in Step 0-bug.2 and Step 0-bug.4.5); **either pass → `REQUIRED` wins**, and a verdict that *flips* between passes is itself a `REQUIRED` signal.
+
+`Spec-Impact: REQUIRED` if ANY of:
+
+- **(a)** NEW product decision — the expected result is not derivable from the ticket + existing spec/PRD.
+- **(b)** contract / interface change — API request/response shape, analytics-event contract, persisted data shape, or a cross-feature interface. **[HARD/absolute trigger.]** Diff-pass globs: `lib/apis/**`, `lib/services/analytics/**` (incl. `analytics_events.dart`), persisted-model files.
+- **(c)** behavioural-surface expansion — adds/removes a user-facing capability or flow branch. **Disambiguator:** `None` if the correct behaviour is stated in, or derivable from, the ticket + existing spec — even if the fix adds a code branch (e.g. restoring a never-shown empty state).
+- **(d)** ambiguous / conflicting expected behaviour vs the existing spec.
+
+Else `Spec-Impact: None`.
+
+`None` is the common case: a genuine defect fix that restores already-specified behaviour authors NO delta and behaves exactly as the bug lane does today.
+
 ### Step 0-bug.1: Refresh ticket context
 
 Re-fetch the ticket so the agent has the latest description, comments, and any attached repro steps. **System-aware** — resolve `TICKET_SYSTEM` via the `_ticket-lib.md` resolution flow first, then branch:
@@ -132,7 +147,11 @@ Write `.dev/bug-analysis.md` with this structure (the agent owns the content):
 
 **Risk / tests to update**:
 - <what could regress, which tests to add or modify>
+
+**Spec-Impact (intention pass)**: <REQUIRED | None> — <cited criterion (a/b/c/d) + one-line reason>
 ```
+
+Evaluate the **Spec-Impact rubric intention pass** here (judgment-based, from the investigation): does the planned fix change/add product behaviour, or restore already-specified behaviour? Record the tentative verdict in the `Spec-Impact (intention pass)` line above. It is combined with the mechanical diff pass (Step 0-bug.4.5) after the fix lands.
 
 This file is the agent's audit trail — useful for post-hoc review even if the fix is correct.
 
@@ -162,9 +181,62 @@ Edit / Write the files listed in `.dev/bug-analysis.md`'s "Planned fix" section.
 
 If the platform has a test target that maps obviously to the changed code path (e.g. a `*_test.dart` next to `*.dart` in flutter), add or modify a test that would have caught this bug. Bug fix without a regression test is acceptable but flagged in `apply-result.md`.
 
+### Step 0-bug.4.5: Spec-Impact rubric — diff pass
+
+Now that the fix is in the working tree, run the **second, mechanical pass** of the Spec-Impact rubric against the ACTUAL diff (immune to the "lazy-None" incentive of a pure judgment call):
+
+```bash
+git -C "$WT" diff --name-only | grep -qE '^lib/apis/|^lib/services/analytics/|analytics_events\.dart' && echo "criterion-(b) contract surface touched"
+```
+
+Grep the diff's changed paths against the criterion-(b) contract globs (`lib/apis/**`, `lib/services/analytics/**` incl. `analytics_events.dart`, persisted-model files). Combine with the intention-pass verdict from `.dev/bug-analysis.md`:
+
+- Either pass says `REQUIRED` → final verdict is **`REQUIRED`**.
+- The two passes disagree (a flip) → treat as **`REQUIRED`** (the disagreement is itself a signal).
+- Both `None` → final verdict `None`.
+
+Record the final verdict; it drives Step 0-bug.4.6 and the mandatory `Spec-Impact:` line in Step 0-bug.6.
+
+### Step 0-bug.4.6: Author the OpenSpec delta — only when `Spec-Impact: REQUIRED`
+
+Skip this entire step when the final verdict is `None` (the common case — a plain bug authors no delta and the flow is unchanged). When `REQUIRED`:
+
+1. **Idempotency reconcile FIRST** (a re-entry after interruption may have left a change dir):
+   - If `openspec/changes/<name>` already exists AND the verdict is still `REQUIRED` → adopt it (do not re-scaffold).
+   - If it exists but the verdict is now `None` → `git rm -r "openspec/changes/<name>"` and record the reversal in `.dev/bug-analysis.md`. (Prevents an orphan change dir that could poison an unrelated ticket — see the walker's `PIPELINE_IN_FLIGHT` guard.)
+2. **Scaffold via the non-interactive CLI** — NOT `/opsx:new` or `/opsx:ff` (both are interactive and would deadlock a `--auto` subagent):
+
+   ```bash
+   openspec new change "<ticket-id-kebab>"
+   ```
+
+3. **Write the artifacts** (agent Write — the delta describes the behaviour the fix introduced):
+   - `proposal.md` — the behaviour delta, the rubric verdict, and the cited criterion. Stamp the provenance marker `<!-- spec-impact:v1 ticket=<ticket-id> provenance=auto-bug-lane -->` at the top.
+   - delta `specs/<capability>/spec.md` — the changed/added requirement(s), each carrying the same `spec-impact:v1` provenance marker.
+   - a minimal `design.md`.
+   - `tasks.md` — a single pre-checked line: `- [x] Fix applied directly in the bug lane`.
+4. **Validate** — guarantees canonical format so the downstream `openspec archive` (which merges the delta into the main specs) accepts it:
+
+   ```bash
+   openspec validate "<name>" || { echo "FAIL: authored delta is invalid" >&2; exit 1; }
+   ```
+
+   A hard-fail here stops the stage (write `Status: FAILED — invalid spec delta` to `.dev/apply-result.md`).
+
 ### Step 0-bug.5: Commit
 
-Run `/commit` to stage and commit the changes. The commit message should reference `<ticket-id>` and summarize the fix in one sentence — `/commit` handles the formatting.
+Commit in two scoped commits so the spec delta is independently revertible:
+
+1. **The fix** — run `/commit` for the code change. The message references `<ticket-id>` and summarizes the fix; `/commit` derives the `fix:` type from the diff.
+2. **The spec delta (only when Step 0-bug.4.6 ran)** — stage the change dir explicitly and commit it separately:
+
+   ```bash
+   git -C "$WT" add -f "openspec/changes/<name>"   # -f: some repos gitignore the change tree (see /port:ship force-add)
+   ```
+
+   then `/commit` (or `git commit`) as `docs(openspec): <ticket-id> spec delta`. This is a distinct commit so a reviewer can revert the delta with one command without touching the fix.
+
+Author + commit the delta **before** writing `.dev/apply-result.md` (Step 0-bug.6) — otherwise `/dev:verify`'s residual-`/commit` sweep would bundle it into a mislabeled commit.
 
 If `/commit` fails (pre-commit hook, etc.), do NOT amend, retry, or paper over. Write `.dev/apply-result.md` with `Status: FAILED — /commit failed: <hook output>` and STOP. The user resolves the hook issue and re-runs `/dev:ff` (which re-enters this stage; analysis + fix are still in working tree).
 
@@ -175,8 +247,11 @@ Status: CLEAR
 Summary: <one-line summary of fix>
 Files changed: <list>
 Regression test: <added | modified | not-applicable | none — reason>
+Spec-Impact: <REQUIRED | None> — <reason / cited criterion / file:line; if REQUIRED, the authored change name>
 Analysis: .dev/bug-analysis.md
 ```
+
+The `Spec-Impact:` line is **mandatory** on every bug-lane apply-result (it records the rubric outcome for audit even when `None`).
 
 This file is the walker's done marker for the bug-mode apply stage — `infer_bug_stage` sees `Status: CLEAR` and advances to `verify`.
 

@@ -78,14 +78,12 @@ expect "openspec/ + no mode.md → feature" feature "$(pipe_mode "$wt")"
 wt=$(mk_wt bug_os "openspec" "bug")
 expect "openspec/ + mode.md=bug → bug" bug "$(pipe_mode "$wt")"
 
-# --- is_direct_mode invariant (GGC-122) --------------------------------------
-# Truth table for the "does this mode ride the OpenSpec flow?" predicate every
-# ship/verify/review/ff site now routes through instead of a `!= feature` proxy.
-# INVARIANT: is_direct_mode(m) true ⇔ mode m has NO OpenSpec change dir.
-#   direct (no change): bug, feature-direct
-#   OpenSpec flow (has change, must archive/verify): port-handoff, feature
-# A future mode that forgets to add its case here defaults to NOT-direct (the
-# `*)` branch) — if that is wrong for it, the case below will FAIL loudly.
+# --- is_direct_mode: apply-path classification -------------------------------
+# is_direct_mode answers "direct Edit vs /opsx:apply" (and the --auto gate),
+# NOT "is there a change dir". Truth table (a future mode defaults to the `*)`
+# NOT-direct branch — if wrong for it, the case below FAILs loudly):
+#   direct-apply: bug, feature-direct
+#   OpenSpec /opsx:apply flow: port-handoff, feature
 
 # expect_direct <mode> <expected: direct|openspec>
 expect_direct() {
@@ -98,6 +96,34 @@ expect_direct bug            direct
 expect_direct feature-direct direct
 expect_direct port-handoff   openspec
 expect_direct feature        openspec
+
+# --- has_change_dir: orthogonal to is_direct_mode ----------------------------
+# The bug lane can author an OpenSpec delta, so "direct mode" no longer implies
+# "no change dir". ship/verify detect the dir via has_change_dir, not the mode.
+# expect_haschange <description> <expected: yes|no> <worktree>
+expect_haschange() {
+  local desc="$1" want="$2" wt="$3" got
+  if has_change_dir "$wt"; then got=yes; else got=no; fi
+  expect "$desc" "$want" "$got"
+}
+
+# no openspec/ dir at all → no change dir (feature-direct / gogox-claude)
+wt=$(mk_wt hcd_noopenspec "" "")
+expect_haschange "no openspec/ → has_change_dir no" no "$wt"
+
+# openspec/ present but changes/ empty → no change dir (plain bug, no delta)
+wt=$(mk_wt hcd_empty "openspec" "bug")
+expect_haschange "openspec/ empty changes → has_change_dir no" no "$wt"
+
+# a bug worktree carrying an authored delta dir → has_change_dir yes
+wt=$(mk_wt hcd_bugdelta "openspec" "bug")
+mkdir -p "$wt/openspec/changes/ggc-123-some-fix"
+expect_haschange "bug + authored delta dir → has_change_dir yes" yes "$wt"
+
+# only archive/ present → no live change dir
+wt=$(mk_wt hcd_archived "openspec" "")
+mkdir -p "$wt/openspec/changes/archive/2026-01-01-old"
+expect_haschange "only archive/ → has_change_dir no" no "$wt"
 
 # --- summary -----------------------------------------------------------------
 printf 'dev-mode.test: %d passed, %d failed\n' "$PASSES" "$FAILS"

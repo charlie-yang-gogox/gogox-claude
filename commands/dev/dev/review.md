@@ -55,6 +55,19 @@ The point of looping back through verify (not just re-running review) is that th
 
 If only non-critical issues: note them in the report but do not block.
 
+## Step 2.5: Lazy-None catch (bug lane spec-impact)
+
+Defensive cross-check for the bug lane's Spec-Impact rubric. If `.dev/apply-result.md` carries `Spec-Impact: None` **but** the committed diff touches a criterion-(b) contract surface, the rubric was likely a lazy `None` and a spec delta is missing:
+
+```bash
+if [ -f "$WT/.dev/apply-result.md" ] && grep -q '^Spec-Impact: None' "$WT/.dev/apply-result.md" \
+   && git -C "$WT" diff "$BASE_REF"...HEAD --name-only | grep -qE '^lib/apis/|^lib/services/analytics/|analytics_events\.dart'; then
+  echo "REVIEW FLAG: Spec-Impact: None but the diff touches a contract surface (criterion b)."
+fi
+```
+
+Treat a raised flag as a review finding to resolve: either the verdict is wrong (re-enter `/dev:apply` to author the delta — delete `.dev/verify-pass.md` so the walker loops back through verify, same as a critical fix) or there is a defensible reason it is genuinely `None` (record it in the report). This is a no-op on non-bug lanes and on repos without those paths (e.g. gogox-claude).
+
 ## Step 3: Save report
 
 ```bash

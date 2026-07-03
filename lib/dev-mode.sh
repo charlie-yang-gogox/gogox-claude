@@ -64,28 +64,48 @@ pipe_mode() {
 
 # is_direct_mode <pipe-mode>
 #
-# Single source of truth for the question "does this pipeline mode ride the
-# OpenSpec flow, or is it a direct-edit mode with no openspec/changes/<name>
-# dir?". Returns 0 (true) for the TRUE direct modes, 1 (false) otherwise:
+# Answers "how is the change APPLIED?" — direct Edit (the Step 0-bug branch of
+# /dev:apply) vs the OpenSpec /opsx:apply Steps 1-5 — and, equivalently, the
+# --auto/HITL semantics of the lane. Returns 0 (true) for the direct-apply
+# modes, 1 (false) otherwise:
 #
-#   bug            → direct  (LLM investigates + edits; no change dir)
-#   feature-direct → direct  (feature work on a no-OpenSpec repo; no change dir)
-#   port-handoff   → NOT direct (rides the feature OpenSpec flow: adopts a
-#                    committed openspec/changes/<name> and applies Steps 1-5 —
-#                    so it HAS a change dir that must be archived/verified)
-#   feature        → NOT direct (the OpenSpec-driven default)
+#   bug            → direct-apply  (LLM investigates + edits the fix directly)
+#   feature-direct → direct-apply  (feature work on a no-OpenSpec repo)
+#   port-handoff   → NOT direct  (rides the feature OpenSpec /opsx:apply flow)
+#   feature        → NOT direct  (the OpenSpec-driven default)
 #
-# INVARIANT: is_direct_mode(m) is true  ⇔  mode m has NO OpenSpec change dir.
-# Every stage that used to hand-roll `[ "$PIPE_MODE" != "feature" ]` as a proxy
-# for "no change to handle" MUST route through this predicate instead — that
-# proxy silently misclassified port-handoff (feature semantics, not named
-# `feature`) as a direct mode. Adding a future mode = add one case here, and
-# lib/dev-mode.test.sh's truth-table asserts it was wired in.
+# This predicate is about the APPLY PATH and the --auto gate (bug/feature-direct
+# run verify→review→ship without --auto; feature/port-handoff require it). It is
+# used by: the --auto guards in ship/verify/review, and the /dev:ff default-mode
+# walker terminal. Adding a future mode = add one case here; lib/dev-mode.test.sh
+# asserts each mode's classification.
+#
+# NOT an "is there a change dir?" predicate. It once doubled as one, but the
+# bug lane can now author an OpenSpec *delta* for a spec-impacting fix while
+# staying a direct-apply bug (the fix is still a direct Edit; only a spec delta
+# is added). So a `bug`-mode worktree MAY contain openspec/changes/<name>.
+# Callers that need "is there a change to archive / cross-check?" MUST test the
+# filesystem via has_change_dir — NOT infer it from is_direct_mode.
 is_direct_mode() {
   case "$1" in
     bug|feature-direct) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# has_change_dir [<worktree_root>]
+#
+# Filesystem truth for "does this worktree have a non-archived OpenSpec change
+# to handle right now?". Returns 0 (true) if openspec/changes/ holds at least
+# one dir other than `archive`, else 1. Orthogonal to is_direct_mode: feature
+# and port-handoff always have one; a plain bug / feature-direct has none; a
+# bug whose fix was spec-impacting DOES (the authored delta). ship/verify gate
+# archive + auditor-cross-check on THIS, not on the mode name.
+has_change_dir() {
+  local wt
+  wt="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+  [ -n "$wt" ] || return 1
+  [ -n "$(ls "$wt/openspec/changes" 2>/dev/null | grep -v '^archive$')" ]
 }
 
 # default_branch
