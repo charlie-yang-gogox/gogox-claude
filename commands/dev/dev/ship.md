@@ -27,12 +27,15 @@ WT=$(git rev-parse --show-toplevel)
 TICKET_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '[A-Z]+-[0-9]+' | head -1)
 MODE=$(echo "$ARGUMENTS" | grep -q -- '--auto' && echo auto || echo default)
 
-# Pipeline mode: bug / feature-direct / feature. Resolved by pipe_mode
-# (lib/dev-mode.sh). See /dev:start --bug and /dev:verify Step 0.
+# Pipeline mode: bug / feature-direct / port-handoff / feature. Resolved by
+# pipe_mode (lib/dev-mode.sh). The "does this mode have an OpenSpec change to
+# archive?" question is answered by is_direct_mode (NOT by a `= feature` name
+# check — that proxy misclassifies port-handoff, which rides the feature flow).
+# See /dev:start --bug and /dev:verify Step 0.
 source "$HOME/.claude/lib/dev-mode.sh"
 PIPE_MODE=$(pipe_mode "$WT")
 
-if [ "$MODE" != "auto" ] && [ "$PIPE_MODE" = "feature" ]; then
+if [ "$MODE" != "auto" ] && ! is_direct_mode "$PIPE_MODE"; then
   echo "FAIL: /dev:ship requires --auto (or a direct mode: bug via /bug:ff, feature-direct on no-OpenSpec repos)." >&2
   exit 1
 fi
@@ -42,23 +45,31 @@ fi
 [ -f "claude-reports/$TICKET_ID/code-review.md" ] && ! grep -qiE '^critical:' "claude-reports/$TICKET_ID/code-review.md" \
   || { echo "FAIL: code-review.md missing or has critical findings. Run /dev:review first." >&2; exit 1; }
 
-if [ "$PIPE_MODE" != "feature" ]; then
+if is_direct_mode "$PIPE_MODE"; then
   N=""   # direct modes (bug / feature-direct): no openspec change to archive
 else
+  # feature AND port-handoff: both ride the OpenSpec flow and have a change
+  # dir that MUST be archived (port-handoff adopts a committed change from
+  # /port:ship and applies it via /dev:apply Steps 1-5).
   N=$(ls "$WT/openspec/changes" 2>/dev/null | grep -v '^archive$' | head -1)
   [ -n "$N" ] || { echo "FAIL: no openspec change directory" >&2; exit 1; }
 fi
 ```
 
-## Step 1: Archive OpenSpec changes (feature mode only)
+## Step 1: Archive OpenSpec changes (feature and port-handoff modes)
 
-In direct modes (`PIPE_MODE` = `bug` or `feature-direct`), there is no OpenSpec change to archive — skip this step entirely and proceed to Step 2.
+In direct modes (`is_direct_mode "$PIPE_MODE"` is true — `bug` or `feature-direct`), there is no OpenSpec change to archive — skip this step entirely and proceed to Step 2.
 
-In feature mode:
+In feature and port-handoff modes (both have `$N` resolved above):
 
 1. Run `/opsx:archive` to archive all OpenSpec changes for `$N`.
 2. Commit the archived changes.
 3. Run `/check-archive` to verify archive integrity.
+4. Assert the archive actually landed — this is the backstop that stops an un-archived change dir from being pushed to the branch and merged to trunk:
+
+   ```bash
+   [ -d "$WT/openspec/changes/archive/$N" ] || { echo "FAIL: /opsx:archive did not produce openspec/changes/archive/$N — refusing to push an un-archived change." >&2; exit 1; }
+   ```
 
 ## Step 2: Push and create PR
 
