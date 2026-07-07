@@ -238,10 +238,14 @@ capture produced only a clip, sample its first/mid/last frame) with two gates:
 1. **Non-blank** — the frame is not a solid black / solid white / single-flat-colour surface (a crashed
    launch, a not-yet-rendered frame, or a `screenrecord` that captured nothing). Read the image and
    reject if it carries no rendered UI.
-2. **Not the login wall** — the frame is not the app's login / OTP / sign-in screen. Cross-check against
-   the repo's `demo_auth` login-screen signal (the same selector Step 2.4 uses) and the cached
-   `ticket.json` target: a capture that shows the login screen means the Step 2.4 gate did not actually
-   land on the target (a silent login-wall), NOT a real demo of the change.
+2. **Not the login wall** — the frame is not the app's login / OTP / sign-in screen. Judge this the same
+   way Step 2.4 decides whether a login is needed: a **visual read of the screenshot** (Step 2.4.1's
+   LLM screenshot read), NOT a config selector — `demo_auth` carries no login-screen field (its fields
+   are `notion_page` / `app` / `region` / `account_label` / `login_probe_host`). Compare what the frame
+   shows against the target screen described by the cached `ticket.json` (its `title` / `description`):
+   a capture that shows the login / OTP screen means
+   the Step 2.4 gate did not actually land on the target (a silent login-wall), NOT a real demo of the
+   change.
 
 If BOTH gates pass → proceed to Step 4 (attach). If EITHER fails:
 
