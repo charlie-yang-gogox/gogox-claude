@@ -1,6 +1,6 @@
 ---
 name: ggx-demo
-argument-hint: "<TICKET|PR> [--force] | --batch [--plan] [--draft]"
+argument-hint: "<TICKET|PR> [--force] [--plan] [--max-scenarios:N] | --batch [--plan] [--draft] [--max-scenarios:N]"
 description: >
   Post-hoc UI demo capture for already-shipped PRs with a recordable UI change.
   Operator skill with two modes — single (`<TICKET|PR>`) and self-discovering
@@ -38,8 +38,17 @@ description: >
   `/ui-tweak` is the designer entry; this is the operator/pipeline action.
   The B1.5 capture plan carries resettable/reset/replayable lines and
   `preview --capture-only` does two-pass rehearse→record replay internally for
-  Tier-2 / long-async flows (kills LLM-latency dead air); `--force` may reuse a
-  persisted replay-script when sha + wm-size match.
+  Tier-2 / long-async / DRIVE=full driving flows (kills LLM-latency dead air);
+  `--force` may reuse a persisted replay-script when sha + wm-size match.
+  On a confirmed staging build `preview` resolves DRIVE=full, so the capture MAY
+  type into fields and place an order to reach the demonstrated state (staging QA
+  account only; fails closed to nav-only off-staging). `--plan` is a CORE
+  single-`/ggx-demo` flag (not batch-bound): `/ggx-demo <PR> --plan` plans this one
+  demo (recordability + navigation grounding + data-prereq probe + N-scenario
+  enumeration, bounded by `--max-scenarios`, default 3), STOPs for approval, then
+  captures in the SAME session — emitting one clip PER scenario, each keyed and
+  attached without clobbering. `--batch --plan` reuses that core plan gate over the
+  discovered set; `--draft` stays a batch-only discovery filter.
 ---
 
 <!-- RULE: command content is English. -->
@@ -74,22 +83,39 @@ description: >
   On a reused `../<ID>` worktree, `--force` also lets `preview` skip the rehearsal and replay a
   persisted `.dev/ui-tweak/replay-script` when its sha AND device `wm size` both still match (the
   replay fast-path); any mismatch rehearses fresh.
+- `/ggx-demo <TICKET|PR> --plan` — **per-demo plan gate + multi-scenario** (a CORE single-mode flag).
+  Runs the shared **Plan gate** (Step 1.9): confirm recordability, ground navigation, probe data
+  prerequisites, and **enumerate N scenarios** for this PR (each = a typed-event intent + reset method +
+  expected crux) against the current PR head, present the plan, and STOP for approval. On approval it
+  captures in the SAME session (never stale) — **one clip per scenario**, each keyed and attached without
+  clobbering. Without `--plan`, single mode captures exactly one clip (the pre-existing behaviour). Combinable with `--force`.
+- `/ggx-demo <TICKET|PR> --plan --max-scenarios:N` — cap the enumerated scenarios at `N` (default `3`,
+  bounding device time). Ignored (with a one-line warn) without `--plan`. LOUD-skips a per-scenario
+  failure rather than emitting a silent empty clip.
 - `/ggx-demo --batch` — **no ticket argument**: self-discover every open PR of mine that still lacks a
-  demo and capture them serially on one device. See **Batch mode** below. Accepts two optional modifiers:
+  demo and capture them serially on one device. See **Batch mode** below. Accepts these optional modifiers:
   - `--draft` — **restrict discovery to DRAFT PRs** (B1). Use to attach a demo before a PR leaves draft.
     Without it, discovery is every open PR of mine (draft and ready alike). Batch-only.
-  - `--plan` — **HITL review gate** (B1.9). Build the entire plan — discovery + per-PR recordability
-    verdicts + navigation grounding + a data-prereq probe against the CURRENT PR heads — present it, and
-    STOP for human review. On approval, capture immediately in the SAME run (the plan is generated fresh
-    against the latest heads and consumed in the same session, so it is never stale — no persisted-plan
-    re-consumption, no version-drift handling). The plan is also written to a receipt file for
-    traceability, but that file is a record, NOT a re-consumed input. Without `--plan`, batch behaviour is
-    unchanged (the agent captures directly after B1.5). Batch-only; combinable with `--draft`.
+  - `--max-scenarios:N` — cap per-PR scenario enumeration at `N` (default `3`). A `--plan` companion (it
+    bounds B1.9's enumeration); ignored with a one-line warn when `--plan` is absent.
+  - `--plan` — **HITL review gate** — the batch reuse of the CORE Plan gate (Step 1.9). Build the entire
+    plan — discovery + per-PR recordability verdicts + navigation grounding + a data-prereq probe +
+    per-PR scenario enumeration against the CURRENT PR heads — present it, and STOP for human review. On
+    approval, capture immediately in the SAME run (the plan is generated fresh against the latest heads and
+    consumed in the same session, so it is never stale — no persisted-plan re-consumption, no version-drift
+    handling). The plan is also written to a receipt file for traceability, but that file is a record, NOT
+    a re-consumed input. Without `--plan`, batch behaviour is unchanged (the agent captures directly after
+    B1.5). Combinable with `--draft`. **STOP granularity**: the batch aggregates all PRs' plans into ONE
+    STOP before any device opens (the B3 capture sub-agents are non-interactive and cannot host a per-PR
+    HITL prompt) — this is the build-time settlement of the plan's open "per-call vs aggregate" sub-detail.
 
 **Mode dispatch.** If the argument set contains `--batch`, run the **Batch mode** section (B1–B4) and
-STOP; otherwise run the single-ticket flow (Steps 0–5). `--plan` / `--draft` are batch-only modifiers —
-ignored (with a one-line warn) if passed to single-ticket mode. Both modes share Step 0's env gate and
-the per-ticket Steps 1–5 (batch runs each ticket's Steps 1–5 in its own serial sub-agent — see B3).
+STOP; otherwise run the single-ticket flow (Steps 0–5, including Step 1.9's Plan gate when `--plan` is
+set). `--plan` is valid in **both** modes (a CORE flag — single mode plans one demo at Step 1.9; batch
+reuses the same gate over the discovered set). `--max-scenarios:N` is a `--plan` companion (ignored with a
+one-line warn without `--plan`). `--draft` is **batch-only** (a discovery filter) — ignored with a
+one-line warn in single mode. Both modes share Step 0's env gate and the per-ticket Steps 1–5 (batch runs
+each ticket's Steps 1–5 in its own serial sub-agent — see B3).
 
 ## Step 0 — resolve env (flutter-only / Linear-only gate)
 
@@ -129,6 +155,50 @@ PR_URL=$(printf '%s' "$PR_JSON"    | jq -r .url)
 [ -n "$TICKET_ID" ] || TICKET_ID=$(printf '%s' "$HEAD_REF" | grep -oE '[A-Z]+-[0-9]+' | head -1)
 TICKET_LC=$(printf '%s' "$TICKET_ID" | tr '[:upper:]' '[:lower:]')
 ```
+
+## Step 1.9 — Plan gate (`--plan` only) — the CORE plan-then-capture flow
+
+_Run this step ONLY when `--plan` was passed (single mode). When `--plan` is absent, skip Step 1.9
+entirely and fall through to Step 2 (single-clip capture, the pre-existing behaviour). This is the CORE
+plan gate — batch mode's B1.9 REUSES it over its discovered set (see Batch mode); it does NOT live in
+batch (that was the prior batch-only binding, now corrected). It runs BEFORE the worktree/device (everything here is
+cheap + read-only), so an unapproved plan never opens a device._
+
+```bash
+# --max-scenarios cap (companion to --plan; default 3). Ignored + warned without --plan.
+MAX_SCENARIOS=3
+printf '%s' "$ARGUMENTS" | grep -qE -- '--max-scenarios[:= ]' \
+  && MAX_SCENARIOS=$(printf '%s' "$ARGUMENTS" | grep -oE -- '--max-scenarios[:= ][0-9]+' | grep -oE '[0-9]+' | head -1)
+```
+
+**1. Confirm recordability + ground navigation + probe data (read-only, no device)** — the same three
+checks batch runs (B1.5 recordability, B1.9 nav grounding, B1.9 data-prereq probe), for this ONE PR:
+fetch the diff (`gh pr diff "$PR" | head -c 60000`), confirm it produces a user-visible change reachable
+on staging, mark the target `nav: grounded` / `nav: unresolved`, and record `data: ok|missing|unprobeable`.
+
+**2. Enumerate N scenarios (the multi-clip plan).** From the PR's acceptance criteria (ticket + diff),
+enumerate the **distinct demonstrable outcomes** — each its own clip. The canonical trigger is
+multi-scenario behaviour verification: e.g. (a) blank field → inline error; (b) filled field → validation
+passes / order proceeds. Each scenario is `{key, intent, reset-method, expected-crux}`:
+- `key` — a short kebab slug (`blank-error`, `filled-pass`) used to key demo-files + attachments.
+- `intent` — the typed-event drive to perform (what to type / tap / place, per the DRIVE=full policy).
+- `reset-method` — how to return to the recording start point for the NEXT scenario (the B10 ladder rung:
+  `in-flow undo` / `pop home + re-nav` / `force-stop + relaunch` / `n/a`).
+- `expected-crux` — the post-fix state the clip must show (the A5/A7 assertion).
+
+A PR with a single demonstrable outcome yields exactly ONE scenario (→ one clip, same as no-`--plan`).
+**Bound N at `MAX_SCENARIOS`** (default 3): if the ACs imply more, keep the `MAX_SCENARIOS` highest-value
+ones and note the rest as dropped in the plan (never silently truncate — surface what was cut).
+
+**3. Present + STOP for approval** via `AskUserQuestion`, showing: recordability one-liner; `nav:` /
+`data:` status; the enumerated scenarios (`key — intent — expected-crux`); and the capture order. Options:
+- **Capture all now** — proceed to Step 2 → capture, for the full scenario set in the same session.
+- **Capture a subset** — the human names scenarios/PR to drop; narrow the set, then proceed.
+- **Abort** — exit 0 without a worktree/device.
+
+Because approval leads straight into Step 2+ in the SAME session against the head just planned, there is
+no re-fetch and no staleness window. Hold the approved scenario set in the session; Step 2.5 persists it
+to `.dev/ui-tweak/scenarios` for `preview --capture-only` to consume.
 
 ## Step 2 — resolve the worktree + head-match guard (fail-LOUD)
 
@@ -191,6 +261,20 @@ This file is NOT a walker marker (the walker keys on `build-pass` / `preview-sho
 `ticket.json`), so it never mis-routes a later `/ui-tweak` resume; Step 5 still deletes it from a **reused**
 worktree to honor "left exactly as found" (a throwaway worktree is removed whole, so no per-file cleanup).
 
+**Persist the approved scenarios (`--plan` only).** When Step 1.9 ran and the human approved a scenario
+set, write it to `.dev/ui-tweak/scenarios` — one scenario per line, TAB-separated, in capture order —
+which `preview --capture-only`'s per-scenario loop reads:
+
+```bash
+# Only when --plan produced an approved set. Absent file → preview captures a single `main` clip.
+: > "$WT/.dev/ui-tweak/scenarios"
+# for each approved scenario: printf '%s\t%s\t%s\t%s\n' "$key" "$intent" "$reset_method" "$expected_crux" >> "$WT/.dev/ui-tweak/scenarios"
+```
+
+Like `ticket.json`, `scenarios` is NOT a walker marker; Step 5 removes it from a reused worktree (a
+throwaway worktree is removed whole). Without `--plan` this file is never written, so `preview` falls back
+to the single-clip `main` capture.
+
 ## Step 3 — capture (reuse `preview --capture-only`, the SOLE capture point)
 
 From inside `$WT`, set `UI_TWEAK_FF=1` (so `/ui-tweak:preview`'s Step-0a misdirect guard passes — this
@@ -228,12 +312,15 @@ capture actually shows the target screen:
 
 ```bash
 # Content assertion over the captured artifacts listed in demo-files. This is a CONTENT check, distinct
-# from Step 3's existence check. Fail LOUD in single mode (batch B3 catches it fail-soft and counts it).
-SHOT=$(grep -E '\.(png|jpg|jpeg)$' "$WT/.dev/ui-tweak/demo-files" | head -1)
+# from Step 3's existence check. demo-files is keyed: `<scenario-key>\t<path>` (a bare line = key `main`).
+# Judge PER SCENARIO KEY — each clip is its own demonstrable outcome and must be asserted independently.
+# For each unique key, its screenshot is the .png line for that key:
+#   SHOT=$(awk -F'\t' -v k="$key" '{ p=(NF>1?$2:$1); ky=(NF>1?$1:"main"); if (ky==k && p ~ /\.(png|jpg|jpeg)$/){print p; exit} }' "$WT/.dev/ui-tweak/demo-files")
+KEYS=$(awk -F'\t' '{ print (NF>1?$1:"main") }' "$WT/.dev/ui-tweak/demo-files" | sort -u)
 ```
 
-Then **you (the LLM executing this skill)** judge the primary captured screenshot (`$SHOT`; if the
-capture produced only a clip, sample its first/mid/last frame) with two gates:
+Then **you (the LLM executing this skill)** judge **each scenario key's** primary captured screenshot
+(`$SHOT` for that key; if the scenario produced only a clip, sample its first/mid/last frame) with two gates:
 
 1. **Non-blank** — the frame is not a solid black / solid white / single-flat-colour surface (a crashed
    launch, a not-yet-rendered frame, or a `screenrecord` that captured nothing). Read the image and
@@ -247,37 +334,49 @@ capture produced only a clip, sample its first/mid/last frame) with two gates:
    the Step 2.4 gate did not actually land on the target (a silent login-wall), NOT a real demo of the
    change.
 
-If BOTH gates pass → proceed to Step 4 (attach). If EITHER fails:
+A key whose screenshot passes BOTH gates is **kept** for attach (Step 4). A key that fails EITHER gate is
+**dropped** with a LOUD per-scenario note (never attach a blank / login-wall clip) — the remaining passing
+keys still attach:
 
 ```bash
-echo "GGX-DEMO FAIL: capture for $TICKET_ID did not show the target (blank frame or stuck on the login screen) — refusing to attach a useless demo." >&2
+echo "GGX-DEMO: scenario <key> for $TICKET_ID did not show the target (blank frame or stuck on the login screen) — dropping that clip." >&2
+```
+
+**Whole-run disposition.** If AT LEAST ONE key passes → proceed to Step 4 with the passing keys (single
+mode reports the dropped ones; each passing clip is attached under its key). If **EVERY** key fails →
+fail-LOUD the whole run:
+
+```bash
+echo "GGX-DEMO FAIL: no scenario for $TICKET_ID showed the target (all clips blank or stuck on the login screen) — refusing to attach a useless demo." >&2
 [ -n "$THROWAWAY" ] && git worktree remove --force "$THROWAWAY" 2>/dev/null
 exit 1
 ```
 
 This exit is a fail-LOUD non-zero (single mode). In batch, the B3 loop treats it exactly like any other
-per-ticket loud failure — counted as a capture-skip with its reason — and a `login screen` content
+per-ticket loud failure — counted as a capture-skip with its reason — and an all-`login screen` content
 failure is classified as a `login wall` for the B3 short-circuit (a silent login-wall recurs identically
-on the shared device). The assertion runs on EVERY path that would otherwise attach, including `--force`
-replace (never replace a good demo with a blank one).
+on the shared device). The assertion runs on EVERY key on EVERY path that would otherwise attach,
+including `--force` replace (never replace a good demo with a blank one). For a single-clip capture there
+is exactly one key (`main`), so this collapses to the pre-existing single-gate behaviour.
 
 ## Step 4 — idempotent attach (the shared `ff.md` contract — do NOT re-derive)
 
 Run the **Idempotent attach** contract documented in `commands/design/ui-tweak/ff.md` ("Deliver PR body"
 → "Idempotent attach (shared contract …)") against `$TICKET_ID` / PR `$PR`, using the files listed in
-`$WT/.dev/ui-tweak/demo-files`:
+`$WT/.dev/ui-tweak/demo-files` — which are **keyed by scenario** (`<scenario-key>\t<path>`; a bare line =
+key `main`). The contract is the single source of truth for the keyed-set behaviour; do NOT re-derive it
+here. In brief:
 
-1. **Linear attachment dedupe** by deterministic title `ui-tweak-demo-<sha>` (`<sha> = git -C "$WT"
-   rev-parse --short HEAD`). List the ticket's existing attachments; skip the upload (reuse the existing
-   `assetUrl`) when that title already exists, so re-running `/ggx-demo` never adds a second inline video.
-   **With `--force`, same-title detection takes the contract's REPLACE path instead of
-   SKIP**: `delete_attachment` the old one → upload the new capture → rewrite the PR-body link with the
-   NEW `assetUrl` (re-upload always mints a fresh URL — the old link is dead once the attachment is
-   deleted, so the PR-body rewrite is mandatory, not cosmetic).
-2. **PR body `## Demo` region** wrapped in `<!-- ui-tweak-demo -->` / `<!-- /ui-tweak-demo -->`:
-   read the current body, **replace between the markers** (or replace an existing unmarked `## Demo`
-   section, else append a marked block), then `gh pr edit "$PR" --body <new>`. Never blind-append.
-   Re-running produces exactly one marked block.
+1. **Linear attachment dedupe — PER KEY.** Title each scenario's attachment `ui-tweak-demo-<sha>-<key>`
+   (`<sha> = git -C "$WT" rev-parse --short HEAD`), except the single/`main` key stays the bare
+   `ui-tweak-demo-<sha>` (backward-compatible with pre-existing demos). List the ticket's existing
+   attachments; per key, SKIP the upload (reuse the existing `assetUrl`) on a title match, so re-running
+   never adds a duplicate. **With `--force`, same-title detection takes the REPLACE path per key**
+   (delete → re-upload → rewrite that key's PR-body link with the new `assetUrl`).
+2. **PR body — ONE `## Demo` region, N labeled links.** The region stays a single
+   `<!-- ui-tweak-demo -->` … `<!-- /ui-tweak-demo -->` block (replace-between-markers, never append), but
+   it lists **one labeled link per scenario key** (e.g. `- **blank-error**: <link>`). Re-running produces
+   exactly one marked block with the current key set.
 3. **PR link form**: the Linear `assetUrl` is a **plain link** in the PR body (deterministic 401 to
    GitHub on this private repo); inline render lives on the Linear ticket only.
 
@@ -290,7 +389,7 @@ ship state — no labels, no PR open/close/merge, no ticket status/assignee.
 if [ -n "$THROWAWAY" ]; then
   git worktree remove --force "$THROWAWAY" 2>/dev/null   # throwaway removed whole — no per-file cleanup
 else
-  rm -f "$WT/.dev/ui-tweak/ticket.json"                  # reused worktree: drop the Step 2.5 cache ("left as found")
+  rm -f "$WT/.dev/ui-tweak/ticket.json" "$WT/.dev/ui-tweak/scenarios"   # reused worktree: drop the Step 2.5 caches ("left as found")
 fi
 echo "ggx-demo: captured + attached demo for $TICKET_ID (PR #$PR, sha $(git -C "$WT" rev-parse --short HEAD 2>/dev/null))."
 exit 0
@@ -327,9 +426,14 @@ after a real capture** (`demo-files` non-empty); a fail-silent run produces no s
 the **same signal source** as Step 4's idempotent-attach dedup, so discovery and re-attach agree.
 
 ```bash
-# Batch modifiers (parse once, at the top of Batch mode). Both are batch-only and default OFF.
+# Batch modifiers (parse once, at the top of Batch mode). `--draft` is batch-only; `--plan` is the
+# CORE flag reused here (both default OFF). `--max-scenarios` is a `--plan` companion in BOTH modes —
+# parse it the same way as Step 1.9 so `--batch --plan --max-scenarios:N` bounds each PR's enumeration.
 PLAN=0;  printf '%s' "$ARGUMENTS" | grep -q -- '--plan'  && PLAN=1
 DRAFT=0; printf '%s' "$ARGUMENTS" | grep -q -- '--draft' && DRAFT=1
+MAX_SCENARIOS=3
+printf '%s' "$ARGUMENTS" | grep -qE -- '--max-scenarios[:= ]' \
+  && MAX_SCENARIOS=$(printf '%s' "$ARGUMENTS" | grep -oE -- '--max-scenarios[:= ][0-9]+' | grep -oE '[0-9]+' | head -1)
 
 # Every open PR of MINE. author=@me is a HARD limit (never touch others' PRs). NO class/title
 # gate (the old `^## UI Tweak` body filter was DROPPED; the dispatch finisher emits that title
@@ -399,6 +503,12 @@ title + body:
      (an error message, a pre-fill, a redirect, a validation) and the flow can be DRIVEN to that
      state on staging. "No pixel diff in a static shot" / "nav-only taps can't select it" do NOT
      make a PR unrecordable — recording the flow is the demo.
+     **"Requires typing" / "requires placing an order" is NO LONGER an auto-SKIP.** On a staging build
+     `preview` resolves `DRIVE=full` and MAY type addresses / form fields and place an order to reach the
+     crux, so order-flow states — post-placement price breakdown, ASAP-reset on a new order, a
+     duplicated-order toast — are RECORDABLE (drive the order flow on the staging QA account). A **staging
+     order placement is NOT a "real payment"** — it is the sanctioned staging drive, not the unreachable
+     real-money case.
      **Auth-error demos are explicitly RECORDABLE**: staging accepts the SMS request,
      reaches the code screen, and a deliberately wrong code (e.g. `1234`) returns a real 401 → the
      specific message renders. Wrong-code / wrong-password / verification-failure PRs need no real
@@ -406,8 +516,16 @@ title + body:
 - **SKIP (record the reason, no device)** — when the diff shows none of the above:
   1. No user-visible surface at all — pure backend / config / build / test / analytics /
      dependency-only diff whose effect cannot be seen on any screen.
-  2. Visible change present but the state is not reachable (no route AND no plausible tap-through,
-     or the flow requires state we cannot create on staging — e.g. a real payment).
+  2. Visible change present but the state is **genuinely unreachable** on the capture device — NOT merely
+     "needs typing / needs placement" (those are now driveable under `DRIVE=full`). Keep SKIP only for:
+     - **backend-only conditions** — a state that only fires on a region/backend the capture device is not
+       on (e.g. a `duplicated_order` 429 that fires on one staging region but not another);
+     - **platform-only** — behaviour visible only on a platform the capture device is not (e.g. an iOS-26
+       tap-arbitration change, invisible on an Android capture device);
+     - **access-gated** — a screen behind an account type / feature flag we cannot provision on staging
+       (e.g. a B2B business account + a Split flag we can't toggle);
+     - **real-money / irreversible external side-effect** — a state needing an actual payment or a real
+       external mutation (a staging order placement is NOT this — it is the sanctioned staging drive).
   Append the PR number + a one-phrase reason to a `DIFF_SKIPPED` list; do NOT open a device for it.
 
 For each RECORDABLE PR, also emit a one-line **capture plan** (consumed by B3 / Step 2.5's scoping):
@@ -443,12 +561,20 @@ acquiring a device** (the whole point of judging before B2).
 _Run this step ONLY when `PLAN == 1`. When `--plan` is absent, skip B1.9 entirely and fall straight
 through to B2 (batch behaviour is unchanged — the agent captures directly)._
 
-`--plan` turns the batch into a review-then-capture flow. Everything cheap and reversible (discovery,
-the recordability judgement, navigation grounding, and a data-prerequisite probe) runs FIRST against the
-**current PR heads**, the whole plan is presented, and the run STOPS for human review. On approval,
-capture proceeds in the SAME session against those same heads — so the plan is generated fresh and
-consumed immediately, never persisted-and-re-consumed, which is why no staleness / version-drift handling
-is needed.
+**This is the batch reuse of the CORE Plan gate (single-mode Step 1.9)** — the same checks
+(recordability, navigation grounding, data-prereq probe, **N-scenario enumeration bounded by
+`--max-scenarios`**), applied to each PR in `RECORDABLE` instead of one. `--plan` turns the batch into a
+review-then-capture flow. Everything cheap and reversible runs FIRST against the **current PR heads**, the
+whole plan is presented, and the run STOPS ONCE for human review. On approval, capture proceeds in the
+SAME session against those same heads — so the plan is generated fresh and consumed immediately, never
+persisted-and-re-consumed, which is why no staleness / version-drift handling is needed.
+
+**One aggregate STOP, not per-PR.** Unlike single mode (one PR, one STOP), the batch aggregates every PR's
+plan into a SINGLE STOP before any device opens. This is deliberate: the B3 capture sub-agents are
+non-interactive (a spawned sub-agent cannot host an `AskUserQuestion`), so a per-inner-call HITL prompt is
+impossible — aggregating the plan into one orchestrator-level STOP is the build-time settlement of the
+plan's open "per-call vs aggregate" sub-detail. Each approved PR then captures its scenarios in its own
+B3 sub-agent (the scenario set for each PR is written to that worktree's `.dev/ui-tweak/scenarios`).
 
 **1. Navigation grounding (per RECORDABLE PR, read-only, no device).** For each PR's capture plan
 (B1.5), confirm the target screen is plausibly reachable BEFORE committing a device to it: a known route
@@ -469,6 +595,12 @@ human can seed the fixture or drop the PR rather than discover the gap only afte
 > per-ticket capture (Step 2.5 / B3 re-confirmation) and is not required for this plan gate; record the
 > Tier-0 result here.
 
+**2.5. Scenario enumeration (per RECORDABLE PR).** Run the core Step 1.9 scenario enumeration for each PR:
+from its ACs, list the distinct demonstrable outcomes as `{key, intent, reset-method, expected-crux}`,
+bounded by `--max-scenarios` (default 3; surface any dropped). A single-outcome PR yields one scenario
+(→ one clip). Carry each PR's scenario set into B3 (each B3 sub-agent writes its PR's set to that
+worktree's `.dev/ui-tweak/scenarios`).
+
 **3. Write the plan receipt (record only — NOT re-consumed).** Write the plan to a receipt file for
 traceability. It is never read back as input (the same session captures directly on approval):
 
@@ -483,7 +615,7 @@ PLAN_FILE="$(cd .. && pwd)/.ggx-demo/plan-$(git rev-parse --short HEAD 2>/dev/nu
 
 **4. Present + STOP for review.** Show the human, in the session:
 - the candidate set and the discovery filter (`--draft` on/off);
-- per RECORDABLE PR: `#<num> sha=<short> — <recordability one-liner> | nav: <grounded|unresolved> | data: <ok|missing|unprobeable>`;
+- per RECORDABLE PR: `#<num> sha=<short> — <recordability one-liner> | nav: <grounded|unresolved> | data: <ok|missing|unprobeable> | scenarios: <N> (<key,key,…>)`;
 - the `DIFF_SKIPPED` non-recordable list with reasons;
 - the capture ORDER (auth-mutating PRs last, per B3).
 
@@ -563,7 +695,10 @@ re-login here.
 on. The sub-agent's brief: "Run `/ggx-demo <PR-number>` (single-ticket Steps 1–5, including Step 3.5's
 content assertion) for exactly this one PR on the already-running device `$DEV`. Read device + login
 state live off the device; re-login only if logged out. Return ONLY a ≤2k structured summary — do NOT
-dump build logs, adb output, or screenshots into your reply." The summary MUST carry: `outcome` =
+dump build logs, adb output, or screenshots into your reply." **When the batch ran with `--plan`**, the
+orchestrator also passes this PR's APPROVED scenario set (from B1.9) in the brief; the sub-agent writes it
+verbatim to `$WT/.dev/ui-tweak/scenarios` at Step 2.5 and does NOT re-run the Step 1.9 STOP (already
+approved) — so it captures one clip per approved scenario. The summary MUST carry: `outcome` =
 `captured | skipped`, and on skip a one-phrase `reason` plus a `login_wall: yes|no` flag (a Step 3.5
 `login screen` content failure or a Step 2.4 login-wall counts as `login_wall: yes`). The orchestrator
 parses that summary — it never re-reads the sub-agent's device output.
@@ -622,15 +757,28 @@ nothing to capture on a build-only platform.
 - Edits NO source, writes NO walker markers, never enters `/ui-tweak:ff`.
 - Reuses `preview --capture-only` (capture) + the `ff.md` Idempotent-attach contract (upload/embed) —
   it does NOT reimplement either. The only logic owned here is PR/worktree resolution, the head guard,
-  the post-capture content assertion, the fail-loud disposition, and (batch) device-once +
-  self-discovery + the optional `--plan` gate / `--draft` filter + the serial one-sub-agent-per-ticket loop.
+  the CORE `--plan` gate (Step 1.9 — recordability + nav grounding + data-prereq + N-scenario enumeration
+  + HITL STOP), the per-key post-capture content assertion, the scenario-file handoff to `preview`, the
+  fail-loud disposition, and (batch) device-once + self-discovery + the `--draft` filter + the B1.9 reuse
+  of the core plan gate + the serial one-sub-agent-per-ticket loop.
 - Batch device phase is serial + single-tenant: one ticket at a time on one shared device, each in its
   own sub-agent for context isolation (≤2k summary per ticket to the orchestrator). NOT parallel fan-out.
-- `--plan` (batch) = HITL review gate: plan built fresh against current heads, presented, STOP; on
-  approval capture in the SAME run (never stale). `--draft` (batch) restricts discovery to draft PRs.
-  Both default OFF; batch-only.
-- Post-capture content assertion (Step 3.5) gates every attach: a non-blank frame that is not the login
-  screen. A file-exists / non-empty check is explicitly insufficient. Runs on `--force` replace too.
+- `--plan` = HITL review gate + multi-scenario, a **CORE flag valid in both modes** (single: Step 1.9
+  plans one demo; batch: B1.9 reuses the same gate over the discovered set, ONE aggregate STOP). Plan
+  built fresh against current heads, presented, STOP; on approval capture in the SAME run (never stale).
+  Enumerates N scenarios (`--max-scenarios`, default 3) → one clip per scenario, keyed. `--draft` is
+  batch-only (a discovery filter). Both default OFF.
+- Multi-clip output: on `--plan`, `demo-files` is keyed (`<scenario-key>\t<path>`; bare line = `main`),
+  each clip attached under `ui-tweak-demo-<sha>-<key>` (bare `ui-tweak-demo-<sha>` for the single `main`
+  key), one `## Demo` PR-body region with N labeled links, `--force` REPLACE per key. Bound N; a
+  per-scenario failure LOUD-skips that clip (never a silent empty) — the whole run fails LOUD only when
+  EVERY scenario fails.
+- Driving is gated on the build (`preview` Step 2.4.4 `DRIVE=full|nav-only`): on a confirmed staging
+  build the capture MAY type + place orders to reach the crux (staging QA account only); off-staging it
+  fails closed to nav-only. The safety condition is the build, not this skill.
+- Post-capture content assertion (Step 3.5) gates every attach, PER scenario key: a non-blank frame that
+  is not the login screen. A file-exists / non-empty check is explicitly insufficient. Runs on `--force`
+  replace too.
 - Batch mode (`--batch`) absorbed the former `/_ui-demo-batch` — there is now ONE post-hoc demo
   skill. Self-discovers open PRs lacking a demo, filtered by a diff-first recordability judge; no JSON input.
 - Regression case: `/ggx-demo <ticket-id>` reproduces the equivalent manual post-hoc demo.

@@ -1,6 +1,6 @@
 ---
 name: preview
-description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, and never logs in EXCEPT the sanctioned Step 2.4 staging-QA login gate (always active — auto-resolves a staging account from Notion so login-gated screens can be captured; the repo's demo_auth block only OVERRIDES which account, it is not required). If it can't reach the screen (no route / unpassable login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set, where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs the Step 2.4 login gate + Step 2.5 navigate+capture slice on an already-running device (path (a) only, no cold-boot; Step 2.4 auto-resolves + logs in with a Notion staging QA account, no demo_auth config required), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too. Two-pass capture handles Tier-2 / long-async flows: rehearse the interaction with no recording (verifying the B8 crux and building a typed event script), reset, then record ONE smooth scripted replay with zero LLM round-trips in the recording window — Tier-1 single-action and pixel-verify colour tickets are exempt (single-pass); non-resettable / consumable-crux / transient-crux / auth-mutating flows fall back to single-pass."
+description: "Phase-1 stage of the /ui-tweak pipeline — build + install + launch the change onto a device, then navigate to the target screen and capture it (screenshot + short recording) FOR the designer (Step 2.5), so they review the result without driving. This is the SOLE capture point — there is no separate post-commit demo stage. Navigation is bounded to nav-only (deep-link + navigation taps); the agent never edits code, never taps state-mutating controls, and never logs in EXCEPT the sanctioned Step 2.4 staging-QA login gate (always active — auto-resolves a staging account from Notion so login-gated screens can be captured; the repo's demo_auth block only OVERRIDES which account, it is not required). The Drive policy is capability-gated on the build: on a CONFIRMED staging build (Step 2.4.4 sets DRIVE=full) the capture path MAY type into any field and tap state-mutating controls (including placing an order) to reach the demonstrated state — on a sanctioned staging QA account only; when staging cannot be confirmed it fails closed to DRIVE=nav-only (deep-link + navigation taps, the pre-existing policy). If it can't reach the screen (no route / unpassable login wall) it FAIL-SILENTs — no capture, the designer is never asked to drive (the C1 card just shows no image). Reached when the designer picks 'I'm done — show me' on card C1. Freezes the audited file set, runs a device cascade (use an already-running/connected device incl. physical FIRST → else boot an emulator/simulator → else honest no-device build-only fallback), then `ui_preview_cmd` (flutter run = build + install + launch; covers Android emulators AND iOS simulators) — all flutter calls use the fvm-aware resolved binary from .dev/ui-tweak/flutter-bin. Quarantines build side-effects, writes .dev/ui-tweak/build-pass (PASS|FAIL) + .dev/ui-tweak/preview-shown. Also runs in DIRECT-SHIP mode (R20, .dev/ui-tweak/direct-ship present): the designer already saw the change on their own device, so it is a build-only compile gate — EXCEPT when auto-navigate is set, where it launches onto an already-running device and Step 2.5 navigates + captures for the PR. No preview-shown, no card in direct-ship; the walker then advances to audit. Build fail → write repair-context + bump repair-count → the orchestrator routes back to /ui-tweak:apply for an agent fix (max 3, then the engineer card). The expensive LLM logic audit is Phase 2 (/ui-tweak:audit), AFTER the designer confirms the look. Internal stage — designers run /ui-tweak. Also exposes a --capture-only sub-mode (Step 0c) used exclusively by /ggx-demo for post-hoc demo capture against an already-shipped PR: runs the Step 2.4 login gate + Step 2.5 navigate+capture slice on an already-running device (path (a) only, no cold-boot; Step 2.4 auto-resolves + logs in with a Notion staging QA account, no demo_auth config required), writes only demo-files (NONE of the walker markers), and inverts the disposition to fail-LOUD (the demo is the whole deliverable). The 3 device-capture fixes (package-targeted ggv:// deep-link, screenrecord --size ladder, scaled Tier-2 taps) live in the shared Step 2.5 body, so the --auto path benefits too. Two-pass capture handles Tier-2 / long-async flows AND DRIVE=full typing/placement flows: rehearse the interaction with no recording (verifying the B8 crux and building a typed event script), reset, then record ONE smooth scripted replay with zero LLM round-trips in the recording window — Tier-1 single-action and pixel-verify colour tickets are exempt (single-pass); non-resettable / consumable-crux / transient-crux / auth-mutating flows fall back to single-pass. When a capture PLAN enumerates N scenarios (`.dev/ui-tweak/scenarios`), the capture loops per scenario — reset, drive, record its own clip, verify its own crux — and writes keyed `<scenario-key>\\t<path>` entries to demo-files."
 ---
 
 <!-- RULE: command content is English. Designer-facing CARD text may be Traditional Chinese. -->
@@ -11,10 +11,13 @@ description: "Phase-1 stage of the /ui-tweak pipeline — build + install + laun
 > **navigate to the target screen and capture it — screenshot + short recording — FOR
 > the designer** (Step 2.5), so they review the *result* instead of driving the device. This is the
 > **sole capture point** in the pipeline (there is no separate post-commit demo stage). Driving is
-> bounded to **navigation only** (deep-link + nav-only taps) — the agent never edits code and never taps
-> state-mutating controls. It does **not** log in either, except the one sanctioned exception: the
-> Step 2.4 login gate, which logs in with a staging QA automation account when the repo opts in via a
-> `demo_auth` selector (see the Drive policy in Step 2). If it cannot reach the
+> **capability-gated on the build (Step 2.4.4)**: on a confirmed **staging** build `DRIVE=full` — the
+> agent MAY type into fields and tap state-mutating controls (including placing an order) to reach the
+> demonstrated state, on a sanctioned staging QA account only; off-staging it fails closed to
+> `DRIVE=nav-only` — **navigation only** (deep-link + nav-only taps), the agent never taps state-mutating
+> controls and only types at the Step 2.4 login gate. In BOTH modes it never edits code. Login is always
+> the Step 2.4 login gate (a staging QA automation account, auto-resolved from Notion; the repo's
+> `demo_auth` selector only OVERRIDES which account — see the Drive policy in Step 2). If it cannot reach the
 > screen (no route / login wall it cannot pass) it **FAIL-SILENTs** — captures nothing and the designer is never asked
 > to drive (the C1 card simply shows no image). Reached when `.dev/ui-tweak/preview-requested` exists
 > (designer picked "I'm done — show me"). It does NOT run the LLM logic audit — that is Phase 2
@@ -191,11 +194,14 @@ already-shipped, already-reviewed PR, so there is no build gate to protect and n
   already foreground from a prior install on the same device, reuse it.) This is the same launch as
   Step 2's device path, minus the build-gate semantics — a launch/compile failure here is a capture
   failure (fail-LOUD), not a `repair-context`.
-- **Login gate then capture — run Step 2.4 + Step 2.5 verbatim.** First the Step 2.4 login gate
-  (always active — auto-resolves a staging QA account from Notion and logs in when the app is logged out;
-  no `demo_auth` config required, the 2.4.1 probe skips an already-logged-in session),
-  then Step 2.5 (Tier-1 deep-link → Tier-2 nav-only tap-through → screenshot + short recording → append
-  to `.dev/ui-tweak/demo-files`). The 3 device fixes baked into Step 2.5 (package-targeted deep-link,
+- **Login gate → staging assertion → capture — run Step 2.4, Step 2.4.4, Step 2.5 verbatim.** First the
+  Step 2.4 login gate (always active — auto-resolves a staging QA account from Notion and logs in when the
+  app is logged out; no `demo_auth` config required, the 2.4.1 probe skips an already-logged-in session),
+  then **Step 2.4.4 sets the `DRIVE` capability** (a `/ggx-demo` build is the staging flavor, so this
+  typically resolves `DRIVE=full` — the capture MAY type + place orders to reach the crux; it fails closed
+  to `nav-only` if staging cannot be confirmed), then Step 2.5 (Tier-1 deep-link → Tier-2 tap-through,
+  driving per `DRIVE` → screenshot + short recording, or the per-scenario loop → append keyed lines to
+  `.dev/ui-tweak/demo-files`). The 3 device fixes baked into Step 2.5 (package-targeted deep-link,
   `screenrecord --size` ladder, scaled taps) apply here too.
 - **WRITE NOTHING the walker reads.** Do **NOT** write `build-pass`, `preview-shown`, the `audit-files`
   freeze, `repair-context`, or `repair-count`. Do **NOT** run Step 0's `audit-files` freeze or Step 3's
@@ -299,24 +305,40 @@ iterations of `sleep 1`), so it is portable to stock macOS with no external depe
 > not by reading its UI). If the app crashes on launch or won't start, treat it like a build failure →
 > Step 4. Navigation + capture (Step 2.5) happens strictly AFTER this gate and can **never** flip it.
 
-> ### ⛔ Drive policy — navigation-only, never state-mutating
+> ### ⛔ Drive policy — capability-gated on the build (DRIVE=full | nav-only)
 > Step 2.5 lets the agent navigate the running app to the target screen so it can screenshot it FOR the
-> designer (the reorientation: don't make the designer drive). What it may do is bounded:
+> designer (the reorientation: don't make the designer drive). **What it may do is gated on the build's
+> `DRIVE` capability, set by Step 2.4.4 (staging-build assertion):**
+>
+> **`DRIVE=full` — confirmed staging build (Step 2.4.4 PASS).** Because a staging build on a sanctioned
+> QA automation account is not a safety-critical surface, the agent MAY drive the flow to reach the
+> demonstrated state:
+> - **Allowed**: deep-link fires; navigation taps; **typing into any field** (address search, contact /
+>   phone forms, notes — not only the login gate); and **tapping state-mutating controls, including
+>   placing an order** (confirm / submit / place-order), when required to reach the crux. One screenshot
+>   + short recording (or the per-scenario loop). The B9 rehearsal MUST confirm the flow reaches the
+>   target before any recording (bad takes are killed pre-record).
+> - **FORBIDDEN even under `DRIVE=full`**: editing code; using a REAL user or a PRODUCTION account (only
+>   the Step 2.4 staging QA automation account); gratuitous destruction unrelated to reaching the crux
+>   (deleting other data, cancelling unrelated orders). Placement/submit is allowed only as a step toward
+>   the demonstrated state, never as an end in itself.
+>
+> **`DRIVE=nav-only` — staging NOT confirmed (Step 2.4.4 FAIL / no marker) — the fail-closed default,
+> unchanged from the pre-existing policy:**
 > - **Allowed**: ONE deep-link fire (`am start` / `simctl openurl`), and a capped sequence of
 >   **navigation-only** taps (tabs, menu/drawer icons, list rows, back/close) via `adb shell input tap`
 >   / `idb ui tap`; one screenshot + short recording.
-> - **FORBIDDEN, always**: editing code; tapping confirm / submit / pay / place-order / delete or any
+> - **FORBIDDEN**: editing code; tapping confirm / submit / pay / place-order / delete or any
 >   state-mutating / destructive control; granting permission dialogs; typing into fields **except the
 >   sanctioned login gate below**.
-> - **Logging in — forbidden by default, with ONE sanctioned exception: the Step 2.4 login
->   gate.** When the app is **not already logged in**, Step 2.4 may type a **dedicated staging QA
->   _automation_ account**'s credentials (auto-resolved from Notion — no `demo_auth` config required;
->   `demo_auth` only OVERRIDES which account) into the login screen and submit — nothing else. This
->   establishes a throwaway QA session so login-gated target screens can be captured; it never uses a
->   real user or a production account, and is the only sanctioned text entry / submit. The 2.4.1 probe
->   ensures an already-logged-in session (e.g. the designer's own) is never touched.
-> Apart from that one gate, navigation is for a screenshot only — it never changes app, account, or repo
-> state, and never gates.
+>
+> **Logging in — the Step 2.4 login gate, in BOTH modes.** When the app is **not already logged in**,
+> Step 2.4 may type a **dedicated staging QA _automation_ account**'s credentials (auto-resolved from
+> Notion — no `demo_auth` config required; `demo_auth` only OVERRIDES which account) into the login screen
+> and submit. This establishes a throwaway QA session so login-gated target screens can be captured; it
+> never uses a real user or a production account. The 2.4.1 probe ensures an already-logged-in session
+> (e.g. the designer's own) is never touched. Under `DRIVE=nav-only` this is the ONLY sanctioned text
+> entry / submit; under `DRIVE=full` it is simply the login step of a wider allowed drive.
 
 ## Step 2.4 — login gate (auto-resolve) — fetch a staging account from Notion + log in iff needed
 
@@ -407,6 +429,67 @@ OTP/2FA wall), do NOT capture a misleading screen:
   The `login wall` token lets `/ggx-demo --batch` short-circuit the rest of a batch (one shared device =
   one shared login state).
 
+## Step 2.4.4 — staging-build assertion (sets the DRIVE capability)
+
+_Runs after the login gate (Step 2.4) and BEFORE Step 2.5, in **every** context that reaches a live app.
+It sets a single capability variable that the Drive policy (Step 2) and Step 2.5 read: `DRIVE=full` on a
+**confirmed staging build**, else `DRIVE=nav-only`. This is the ONLY gate on the loosened driving — the
+safety condition is the BUILD (staging + the sanctioned Step 2.4 QA automation account), not which skill
+invoked the capture, so `--capture-only` (`/ggx-demo`) and the forward device-preview path resolve
+`DRIVE` identically. **Fail closed**: anything short of a positive staging confirmation → `nav-only`._
+
+Confirm staging from evidence already on hand (never guess — an unconfirmed build must fall to
+`nav-only`). A repo MAY pin the tokens via `<repo>/.gogox-claude.yaml` (`staging_flavor:` — default
+`stag`; `staging_package_token:` — default the substring `stag` matched case-insensitively, which also
+covers `.staging`); otherwise the derived defaults stand:
+
+```bash
+# DRIVE capability — default fail-closed to nav-only; only a positive staging confirmation flips to full.
+DRIVE=nav-only
+STAGING_FLAVOR=$(yq -r '.staging_flavor // "stag"' "$WT/.gogox-claude.yaml" 2>/dev/null || echo stag)
+STAGING_PKG_TOKEN=$(yq -r '.staging_package_token // "stag"' "$WT/.gogox-claude.yaml" 2>/dev/null || echo stag)
+
+# (a) FLAVOR evidence — the flavor probed at Step 0 (.dev/ui-tweak/flavor: line1 name, line2 detected|missing).
+#     A build whose DETECTED flavor is the staging flavor is a staging build.
+FLAVOR_OK=0
+if [ -f "$WT/.dev/ui-tweak/flavor" ] \
+   && [ "$(sed -n 1p "$WT/.dev/ui-tweak/flavor")" = "$STAGING_FLAVOR" ] \
+   && [ "$(sed -n 2p "$WT/.dev/ui-tweak/flavor")" = "detected" ]; then
+  FLAVOR_OK=1
+fi
+
+# (b) PACKAGE evidence (Android) — the launched app's package id carries the staging token
+#     (e.g. hk.gogovan.GoGoVanClient2.staging). Reuse the same resumed-activity package probe as the
+#     Tier-1 deep-link. iOS: the running app's bundle id via the booted-app list. Best-effort — a probe
+#     that cannot read the package leaves PKG_OK=0 (it does not by itself prove non-staging).
+# NOTE: this step runs BEFORE Step 2.5 Tier-1 (where the shared PLATFORM_KIND is first set), so derive
+# the device kind LOCALLY here (`DEV_KIND`) rather than reading a not-yet-assigned variable.
+DEV_KIND=$($FLUTTER_BIN devices --machine 2>/dev/null \
+  | jq -r --arg d "$DEVICE" '.[] | select(.id==$d) | (.targetPlatform // "")' 2>/dev/null \
+  | grep -qi ios && echo ios || echo android)
+PKG_OK=0
+if [ "$DEV_KIND" = "android" ]; then
+  RUN_PKG=$(adb -s "$DEVICE" shell dumpsys activity activities 2>/dev/null \
+    | grep -m1 -oE '[a-zA-Z][a-zA-Z0-9_.]+/[a-zA-Z0-9_.]+' | cut -d/ -f1)
+  printf '%s' "$RUN_PKG" | grep -qiF "$STAGING_PKG_TOKEN" && PKG_OK=1
+fi
+
+# Positive staging confirmation = EITHER piece of evidence. (Flavor alone is authoritative when the
+# repo declares flavors; the package probe covers repos/devices where the flavor marker is absent.)
+if [ "$FLAVOR_OK" = "1" ] || [ "$PKG_OK" = "1" ]; then
+  DRIVE=full
+  echo "note: DRIVE=full — confirmed staging build (flavor_ok=$FLAVOR_OK pkg_ok=$PKG_OK); typing + state-mutating drive permitted on the staging QA account." >&2
+else
+  echo "note: DRIVE=nav-only — could not confirm a staging build (flavor='${STAGING_FLAVOR}' not detected, package token '${STAGING_PKG_TOKEN}' not seen); failing closed to navigation-only." >&2
+fi
+```
+
+`DRIVE` is read by the Step 2 Drive policy and by Step 2.5 (Tier-2 tap-through, the two-pass trigger,
+and the per-scenario loop). It never gates the build (Step 2 — exit code only) and never changes on a
+capture failure. On the `--capture-only` fail-LOUD disposition, a flow that needed `DRIVE=full` but
+resolved `nav-only` (e.g. a demo whose crux is behind order placement) simply cannot reach the crux and
+fail-LOUDs as an unreachable target — the honest outcome, not a silent nav-only capture of the wrong screen.
+
 ## Step 2.5 — navigate to the target + capture (the SOLE capture point)
 
 _Runs whenever Step 2 took the **device path** (an app is live on a device): the interactive device
@@ -417,8 +500,11 @@ separate post-commit capture stage; preview is the single place capture ever hap
 
 The agent navigates the running app to the target screen and captures it, so the designer reviews the
 **result** without driving (and so `--auto` PRs carry a real artifact). **Two tiers, tried in order,
-both best-effort.** Neither tier may EVER edit code or change app/account state — this is navigation
-for a screenshot only, strictly after the build gate (Step 2), and it can never flip the gate.
+both best-effort.** Neither tier may EVER edit code, and both run strictly after the build gate (Step 2)
+and can never flip it. Whether a tier may **type or mutate app state** is set by the Step 2.4.4 `DRIVE`
+capability: under `DRIVE=nav-only` this is navigation for a screenshot only (no typing beyond the Step
+2.4 gate, no state-mutating taps); under `DRIVE=full` (confirmed staging) the agent MAY type + place
+orders to reach the crux, per the Step 2 Drive policy.
 
 ### Tier 1 — deep-link (preferred: deterministic, one action)
 
@@ -459,13 +545,21 @@ for a screenshot only, strictly after the build gate (Step 2), and it can never 
 ### Tier 2 — codebase-planned, navigation-only tap-through (no deep-link route)
 
 For screens that are not URI-addressable (e.g. a side-menu drawer), navigate by driving the UI,
-**planned from the codebase**. Capped, per the Drive policy above (navigation affordances only — never
-confirm/submit/pay/delete, never grant permissions, never type, never log in).
+**planned from the codebase**. Capped, per the Drive policy above. Under `DRIVE=nav-only` this is
+navigation affordances only (never confirm/submit/pay/delete, never grant permissions, never type, never
+log in beyond the Step 2.4 gate). Under `DRIVE=full` (confirmed staging) the tap-through MAY additionally
+**type into fields and tap state-mutating controls (including placing an order)** to reach the crux — the
+`text` and state-mutating `tap` events are first-class in the typed event script below.
 
 1. **Plan the path from the codebase** (widget keys / semantics labels / route names) from the current
    screen (usually `/home`) to the target.
-2. **Observe → tap loop** (capped at `MAX_TAPS=6`): screenshot (read-only) → decide ONE navigation tap
-   → execute it. **Tap coordinates must be in DEVICE-DISPLAY space, not screenshot-pixel space.**
+2. **Observe → act loop** (capped at `MAX_TAPS=6` under `DRIVE=nav-only`; raised to `MAX_STEPS=20`
+   under `DRIVE=full`, since a full order flow — type pickup + drop-off, pick vehicle, place order —
+   needs more steps than a pure nav walk): screenshot (read-only) → decide ONE action → execute it.
+   Under `DRIVE=nav-only` the action is a navigation tap only; under `DRIVE=full` it may also be a
+   **text entry** (`adb shell input text` / `idb ui text`) or a **state-mutating tap** (confirm /
+   place-order), per the Drive policy. **Tap coordinates must be in DEVICE-DISPLAY space, not
+   screenshot-pixel space.**
    `screencap` returns the full native framebuffer (e.g. 1280×2856) while `input tap` / `idb ui tap`
    expect display coordinates (`wm size`, e.g. 720×1600) — passing raw screenshot pixels lands the tap
    in the wrong place. Read `wm size` once (`adb -s "$DEVICE" shell wm size` → `wm_w`×`wm_h`) and the
@@ -473,7 +567,8 @@ confirm/submit/pay/delete, never grant permissions, never type, never log in).
    `x = sx * wm_w / shot_w`, `y = sy * wm_h / shot_h`. Execute the scaled tap
    (`adb -s "$DEVICE" shell input tap <x> <y>` / `idb ui tap --udid "$DEVICE" <x> <y>` — iOS tap-through
    needs `idb`; `xcrun simctl` cannot tap) → re-screenshot; reached → capture; stuck /
-   looping / `MAX_TAPS` / `idb` absent → **could-not-reach** (→ fail-silent below, or fail-LOUD under
+   looping / the step cap (`MAX_TAPS` nav-only, `MAX_STEPS` under `DRIVE=full`) / `idb` absent →
+   **could-not-reach** (→ fail-silent below, or fail-LOUD under
    `--capture-only`, Step 0c).
 
 ### Capture scoping — decide WHAT the clip must span BEFORE recording
@@ -510,8 +605,10 @@ two-pass replay and the existing single-pass path, and owns the rehearsal / rese
 #### B9 — rehearse first (dry-run pass, no recording)
 
 **Trigger (scope guard) — rehearse ONLY when** the navigation above used **Tier-2 tap-through**, OR the
-flow contains a **measured async wait > ~5s** (an A3-style quotation / network render). **Exempt — go
-straight to single-pass, no rehearsal (AC7):**
+flow contains a **measured async wait > ~5s** (an A3-style quotation / network render), OR the flow drove
+**typing / a state-mutating action under `DRIVE=full`** (an order-flow demo: typing addresses + placing
+an order is many observe→decide round-trips — exactly the dead-air the two-pass replay exists to kill).
+**Exempt — go straight to single-pass, no rehearsal (AC7):**
 - **Tier-1 single-action captures** (deep-link → settle → shoot) — no dead-air problem; a rehearsal is
   pure added device time.
 - **pixel-verify colour tickets** (the stale-build guard trigger below fires) — the stale-build guard's
@@ -545,7 +642,12 @@ NOT a bare "tap + sleep" list — an ordered event table. Each step:
 - **`text` is a REQUIRED type** — auth-error demos are an explicitly RECORDABLE class (C10) and
   their **wrong-OTP / wrong-password typing IS the crux, inside the recording window** (the Step 2.4
   login gate stays *pre*-recording). A tap-only script would silently drop the keystrokes and record a
-  blank field.
+  blank field. Under `DRIVE=full`, `text` also carries the order-flow entries (pickup / drop-off
+  addresses, contact, notes) that reach the crux.
+- **State-mutating taps under `DRIVE=full`** (confirm / place-order / submit) are plain `tap` events —
+  no new schema. Immediately follow a placement `tap` with an `assert` step whose `expected-screen` is
+  the **post-placement crux** (e.g. "order confirmation with price breakdown"), so the A5/A7 tail-frame
+  check verifies the clip actually reached the post-fix state and not merely the review screen.
 - **`swipe`** covers scroll-to-crux flows; **`key`** covers hardware / back keys; **`wait`** is an
   explicit settle with no input; **`assert`** is a read-only expected-screen checkpoint used only during
   the rehearsal — it is compiled OUT of the replay (never issues an action).
@@ -570,7 +672,13 @@ cheapest first:
 
 The following classes are **NOT replayable — go straight to single-pass** (record during the exploratory
 drive; any consuming action then happens ONLY in that one recorded pass), with the reason logged (AC3):
-1. **Non-resettable** flows — one-shot state, consumable fixtures.
+1. **Non-resettable** flows — one-shot state, consumable fixtures. **A `DRIVE=full` order placement is
+   the canonical case**: a placed staging order persists server-side, so `force-stop` + relaunch clears
+   process state only and cannot un-place it. The B9 rehearsal STILL runs first to confirm the flow
+   reaches the crux (typing addresses → placing the order → the post-placement screen) — but because the
+   placement is not resettable, the recording is a **single-pass** live drive (reachability validated, yet
+   some observe→decide dead-air remains around the placement). This is the explicit limit on the "no
+   dead-air" guarantee: it holds fully only for **resettable** flows (which get the clean two-pass replay).
 2. **Consumable / one-time crux** — onboarding, coach-marks, "new" badges, staging backend state
    transitions: a rehearsal would consume the crux and nobody could record it afterwards.
 3. **Transient crux** — toasts / snackbars / auto-dismissing UI: a blind replay's fixed sleeps can miss
@@ -655,8 +763,53 @@ screenshot + a recording into `.dev/ui-tweak/demo`:
 - `ffmpeg` absent → skip post-processing with a one-line note (best-effort, like the pixel-verify
   sampler) and upload the raw SIGINT-flushed clip — it is valid, just untrimmed.
 
-Append the output paths to `.dev/ui-tweak/demo-files`. The screenshot is the C1 review surface; both
-screenshot + recording are embedded by `pr`.
+Append the output paths to `.dev/ui-tweak/demo-files`, **each line keyed by scenario**:
+`<scenario-key>\t<path>` (a literal TAB between key and path). For a single-clip capture (no scenario
+plan — the default) the key is `main`, so the line is `main\t<path>`. **Backward-compatible readers**:
+a line with NO tab is treated as key `main` with the whole line as the path — so an older bare-path
+`demo-files` still parses. The screenshot is the C1 review surface; both screenshot + recording are
+embedded by `pr` (which reads the path = field after the tab, grouping by key). See "Per-scenario
+capture loop" below for the multi-clip case.
+
+### Per-scenario capture loop (multi-clip output — N clips per PR)
+
+Some PRs' acceptance is **multi-scenario behaviour verification** — each scenario is its own demonstrable
+outcome (e.g. (a) blank field → inline error shown; (b) field filled → validation passes / order
+proceeds), and each needs its OWN clip. `/ggx-demo --plan` (see `ggx-demo.md`) enumerates those scenarios
+and writes them, once approved, to **`.dev/ui-tweak/scenarios`** — one scenario per line:
+
+```
+<scenario-key>\t<intent>\t<reset-method>\t<expected-crux>
+```
+
+`<scenario-key>` is a short kebab slug (e.g. `blank-error`, `filled-pass`) used to key demo-files and the
+attachments. This file is written by `/ggx-demo --plan` and is **git-ignored, NOT a walker marker**.
+
+**When `.dev/ui-tweak/scenarios` is present with N ≥ 1 lines** (N is already bounded by `/ggx-demo`'s
+`--max-scenarios`, default 3), run the navigate→scope→capture→verify body above **once per scenario**,
+in file order:
+
+1. **Reset to the recording start point** via the B10 ladder (the scenario's `<reset-method>` names which
+   rung: `in-flow undo` / `pop home + re-nav` / `force-stop + relaunch` / `n/a`). The FIRST scenario needs
+   no reset (fresh launch); each subsequent scenario resets from the prior one's end state.
+2. **D13 re-confirm** the logged-in account / fixtures still match the plan (the reset is one more state
+   transition) — re-run the Step 2.4 gate / re-seed source data on mismatch.
+3. **Drive this scenario's `<intent>`** — via the two-pass replay when replay-eligible, else single-pass
+   (the replay-eligibility test is per scenario, since reset method and crux differ).
+4. **Record its own clip + screenshot**, then **verify its own `<expected-crux>`** with the A5/A7
+   tail-frame B8 check.
+5. **Append keyed lines** for this scenario's artifacts: `<scenario-key>\t<screenshot-path>` and
+   `<scenario-key>\t<clip-path>`.
+
+**Per-scenario failure = LOUD-skip that scenario, never a silent empty (B-half AC).** If a scenario cannot
+reach its crux (unreachable, crux never renders, replay + single-pass fallback both fail), log ONE line
+`scenario <key>: SKIPPED — <reason>` to stderr and **continue to the next scenario** — do NOT emit an
+empty/blank clip for it and do NOT abort the whole capture. The run's overall disposition is unchanged: if
+AT LEAST ONE scenario captured, demo-files is non-empty (success); if EVERY scenario skipped, demo-files
+is empty → the normal fail-silent (forward) / fail-LOUD (`--capture-only`, Step 0c) disposition fires.
+
+**When `.dev/ui-tweak/scenarios` is absent** (the default — no `--plan`, or `--plan` enumerated a single
+scenario), this is exactly one capture keyed `main`, i.e. the pre-existing single-clip behaviour.
 
 ### Pixel-verify subtle colour/shade changes (stale-build guard)
 
