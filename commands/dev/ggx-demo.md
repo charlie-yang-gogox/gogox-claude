@@ -1,25 +1,37 @@
 ---
 name: ggx-demo
-argument-hint: "<TICKET|PR> | --batch"
+argument-hint: "<TICKET|PR> [--force] | --batch [--plan] [--draft]"
 description: >
   Post-hoc UI demo capture for already-shipped PRs with a recordable UI change.
   Operator skill with two modes — single (`<TICKET|PR>`) and self-discovering
   batch (`--batch`, which absorbed the former `/_ui-demo-batch`):
   `--batch` captures a demo for every open PR of yours that still lacks one
   (no JSON input, no class/title gate — a diff-first LLM recordability judge
-  decides which PRs open a device), serially on one device. Single mode:
+  decides which PRs open a device), serially on one device. Batch discovery may
+  be restricted to draft PRs with `--draft` (attach a demo before a PR leaves
+  draft), and gated for human review with `--plan` (build the whole plan —
+  discovery + recordability verdicts + navigation grounding + a data-prereq
+  probe against the CURRENT PR heads — present it, STOP; on approval capture
+  immediately in the SAME run, so the plan is never stale). The batch DEVICE
+  phase runs strictly one ticket at a time (single shared device, never two
+  actors), and each ticket's capture runs in its OWN serial sub-agent so the
+  ~150–180k of build/adb output stays out of the orchestrator context
+  (orchestrator holds only ≤2k summaries). Single mode:
   given a Linear
   ticket id OR a PR (number/URL), it resolves the PR's worktree, asserts the
   local HEAD matches the PR head (fail-loud — never demo a stale/unreviewed
   build), runs `/ui-tweak:preview --capture-only` (the SOLE capture point —
   navigate to the target screen on an already-running device, logging in via a
   staging QA account when the repo's `demo_auth` selector is set, and
-  record a screenshot + short clip), then idempotently attaches the result to
+  record a screenshot + short clip), asserts the capture actually shows the
+  target (non-blank frames / not stuck on the login screen — a file-exists check
+  is insufficient), then idempotently attaches the result to
   the Linear ticket and patches the PR body's `<!-- ui-tweak-demo -->` `## Demo`
   region (replace-between-markers, never append). REUSES the ui-tweak
   capture/upload machinery (does NOT reimplement it). Fails LOUD end-to-end
   (R13): no device / auto-login failed (login wall) / no route / head mismatch /
-  screenrecord-ladder exhausted → non-zero exit + deterministic stderr. Edits
+  screenrecord-ladder exhausted / content-assertion failed → non-zero exit +
+  deterministic stderr. Edits
   NOTHING in the codebase and writes NO walker markers (it never enters
   `/ui-tweak:ff` / `infer_ui_stage`), so it cannot mis-route a later
   `/ui-tweak` resume. Linear-only / flutter-only v1. NOT designer-facing —
@@ -62,12 +74,22 @@ description: >
   On a reused `../<ID>` worktree, `--force` also lets `preview` skip the rehearsal and replay a
   persisted `.dev/ui-tweak/replay-script` when its sha AND device `wm size` both still match (the
   replay fast-path); any mismatch rehearses fresh.
-- `/ggx-demo --batch` — **no argument**: self-discover every open PR of mine that still lacks a demo and
-  capture them serially on one device. See **Batch mode** below.
+- `/ggx-demo --batch` — **no ticket argument**: self-discover every open PR of mine that still lacks a
+  demo and capture them serially on one device. See **Batch mode** below. Accepts two optional modifiers:
+  - `--draft` — **restrict discovery to DRAFT PRs** (B1). Use to attach a demo before a PR leaves draft.
+    Without it, discovery is every open PR of mine (draft and ready alike). Batch-only.
+  - `--plan` — **HITL review gate** (B1.9). Build the entire plan — discovery + per-PR recordability
+    verdicts + navigation grounding + a data-prereq probe against the CURRENT PR heads — present it, and
+    STOP for human review. On approval, capture immediately in the SAME run (the plan is generated fresh
+    against the latest heads and consumed in the same session, so it is never stale — no persisted-plan
+    re-consumption, no version-drift handling). The plan is also written to a receipt file for
+    traceability, but that file is a record, NOT a re-consumed input. Without `--plan`, batch behaviour is
+    unchanged (the agent captures directly after B1.5). Batch-only; combinable with `--draft`.
 
-**Mode dispatch.** If the argument is `--batch`, run the **Batch mode** section (B1–B4) and STOP;
-otherwise run the single-ticket flow (Steps 0–5). Both share Step 0's env gate and the per-ticket
-Steps 1–5 (batch loops them).
+**Mode dispatch.** If the argument set contains `--batch`, run the **Batch mode** section (B1–B4) and
+STOP; otherwise run the single-ticket flow (Steps 0–5). `--plan` / `--draft` are batch-only modifiers —
+ignored (with a one-line warn) if passed to single-ticket mode. Both modes share Step 0's env gate and
+the per-ticket Steps 1–5 (batch runs each ticket's Steps 1–5 in its own serial sub-agent — see B3).
 
 ## Step 0 — resolve env (flutter-only / Linear-only gate)
 
@@ -196,6 +218,45 @@ if [ ! -s "$WT/.dev/ui-tweak/demo-files" ]; then
 fi
 ```
 
+## Step 3.5 — post-capture content assertion (gate the attach)
+
+A non-empty `.dev/ui-tweak/demo-files` proves a file was WRITTEN, not that it shows the target. A black
+frame, an all-white frame, or a screenshot **stuck on the login screen** all pass a file-exists /
+non-empty check yet are useless demos — and the login-screen case is the most common false pass (the
+Step 2.4 gate silently failed, capture ran anyway on the login wall). So before attaching, assert the
+capture actually shows the target screen:
+
+```bash
+# Content assertion over the captured artifacts listed in demo-files. This is a CONTENT check, distinct
+# from Step 3's existence check. Fail LOUD in single mode (batch B3 catches it fail-soft and counts it).
+SHOT=$(grep -E '\.(png|jpg|jpeg)$' "$WT/.dev/ui-tweak/demo-files" | head -1)
+```
+
+Then **you (the LLM executing this skill)** judge the primary captured screenshot (`$SHOT`; if the
+capture produced only a clip, sample its first/mid/last frame) with two gates:
+
+1. **Non-blank** — the frame is not a solid black / solid white / single-flat-colour surface (a crashed
+   launch, a not-yet-rendered frame, or a `screenrecord` that captured nothing). Read the image and
+   reject if it carries no rendered UI.
+2. **Not the login wall** — the frame is not the app's login / OTP / sign-in screen. Cross-check against
+   the repo's `demo_auth` login-screen signal (the same selector Step 2.4 uses) and the cached
+   `ticket.json` target: a capture that shows the login screen means the Step 2.4 gate did not actually
+   land on the target (a silent login-wall), NOT a real demo of the change.
+
+If BOTH gates pass → proceed to Step 4 (attach). If EITHER fails:
+
+```bash
+echo "GGX-DEMO FAIL: capture for $TICKET_ID did not show the target (blank frame or stuck on the login screen) — refusing to attach a useless demo." >&2
+[ -n "$THROWAWAY" ] && git worktree remove --force "$THROWAWAY" 2>/dev/null
+exit 1
+```
+
+This exit is a fail-LOUD non-zero (single mode). In batch, the B3 loop treats it exactly like any other
+per-ticket loud failure — counted as a capture-skip with its reason — and a `login screen` content
+failure is classified as a `login wall` for the B3 short-circuit (a silent login-wall recurs identically
+on the shared device). The assertion runs on EVERY path that would otherwise attach, including `--force`
+replace (never replace a good demo with a blank one).
+
 ## Step 4 — idempotent attach (the shared `ff.md` contract — do NOT re-derive)
 
 Run the **Idempotent attach** contract documented in `commands/design/ui-tweak/ff.md` ("Deliver PR body"
@@ -262,11 +323,24 @@ after a real capture** (`demo-files` non-empty); a fail-silent run produces no s
 the **same signal source** as Step 4's idempotent-attach dedup, so discovery and re-attach agree.
 
 ```bash
+# Batch modifiers (parse once, at the top of Batch mode). Both are batch-only and default OFF.
+PLAN=0;  printf '%s' "$ARGUMENTS" | grep -q -- '--plan'  && PLAN=1
+DRAFT=0; printf '%s' "$ARGUMENTS" | grep -q -- '--draft' && DRAFT=1
+
 # Every open PR of MINE. author=@me is a HARD limit (never touch others' PRs). NO class/title
 # gate (the old `^## UI Tweak` body filter was DROPPED; the dispatch finisher emits that title
 # unreliably). Recordability is judged per-PR in B1.5 (diff-first), before any device opens.
-PRS=$(gh pr list --author "@me" --state open --json number,headRefName,url,body,title)
-[ "$(printf '%s' "$PRS" | jq 'length')" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine."; exit 0; }
+# `isDraft` is always fetched so `--draft` can restrict the set without a second API call.
+PRS=$(gh pr list --author "@me" --state open --json number,headRefName,url,body,title,isDraft)
+
+# --draft: restrict discovery to DRAFT PRs (attach a demo before the PR leaves draft). Without the flag,
+# take every open PR (draft and ready alike). Filtering client-side keeps the one `gh pr list` call.
+if [ "$DRAFT" = 1 ]; then
+  PRS=$(printf '%s' "$PRS" | jq '[ .[] | select(.isDraft == true) ]')
+  [ "$(printf '%s' "$PRS" | jq 'length')" -gt 0 ] || { echo "ggx-demo --batch --draft: no open DRAFT PRs of mine."; exit 0; }
+else
+  [ "$(printf '%s' "$PRS" | jq 'length')" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine."; exit 0; }
+fi
 ```
 
 Then **you (the LLM executing this skill) build `CANDIDATES`** by excluding only PRs that already carry a
@@ -360,6 +434,64 @@ change is behavioural rather than pixel-static — that was the C9 over-conserva
 If `RECORDABLE` is empty → print the B4 summary form (all candidates diff-skipped) and **exit 0 without
 acquiring a device** (the whole point of judging before B2).
 
+### B1.9 — plan gate (`--plan` only) — HITL review before any device opens
+
+_Run this step ONLY when `PLAN == 1`. When `--plan` is absent, skip B1.9 entirely and fall straight
+through to B2 (batch behaviour is unchanged — the agent captures directly)._
+
+`--plan` turns the batch into a review-then-capture flow. Everything cheap and reversible (discovery,
+the recordability judgement, navigation grounding, and a data-prerequisite probe) runs FIRST against the
+**current PR heads**, the whole plan is presented, and the run STOPS for human review. On approval,
+capture proceeds in the SAME session against those same heads — so the plan is generated fresh and
+consumed immediately, never persisted-and-re-consumed, which is why no staleness / version-drift handling
+is needed.
+
+**1. Navigation grounding (per RECORDABLE PR, read-only, no device).** For each PR's capture plan
+(B1.5), confirm the target screen is plausibly reachable BEFORE committing a device to it: a known route
+/ `ggv://` deep-link host (from the cached target), or a described tap-through. Mark each PR
+`nav: grounded` or `nav: unresolved (<reason>)`. `nav: unresolved` PRs stay in the plan but are flagged —
+the human decides whether to keep or drop them.
+
+**2. Data-prerequisite probe (per RECORDABLE PR, launch-free, no device).** Some demos need specific
+staging state to exist (e.g. a recent delivered order with an assigned courier for a favourite-driver
+demo, or a Personal-type account for an FPS demo). Probe those prerequisites at plan time via a
+**launch-free backend/API query** where one is available (Tier-0), and record `data: ok` /
+`data: missing (<what>)` / `data: unprobeable (<why>)` per PR. A `data: missing` PR is surfaced so the
+human can seed the fixture or drop the PR rather than discover the gap only after a build+launch fails.
+
+> **Tiering (forward note, non-blocking):** the probe is Tier-0 (launch-free query at plan time). Facts
+> that go stale between plan and capture — a sliding "last 7 days" window, a consumable fixture — should
+> be RE-probed at capture start / post-login pre-record (Tier-1). Tier-1 re-probing lives with the
+> per-ticket capture (Step 2.5 / B3 re-confirmation) and is not required for this plan gate; record the
+> Tier-0 result here.
+
+**3. Write the plan receipt (record only — NOT re-consumed).** Write the plan to a receipt file for
+traceability. It is never read back as input (the same session captures directly on approval):
+
+```bash
+mkdir -p "$(cd .. && pwd)/.ggx-demo"
+PLAN_FILE="$(cd .. && pwd)/.ggx-demo/plan-$(git rev-parse --short HEAD 2>/dev/null || echo batch).md"
+# Write: the discovery filter (draft-only?), the RECORDABLE set with each PR's sha (current head),
+# recordability verdict, capture plan (trigger/source-data/auth-mutating/resettable/reset/replayable),
+# nav grounding, and the Tier-0 data-prereq result; plus the DIFF_SKIPPED list with reasons.
+# Keep it a human-readable record — do NOT design it to be parsed back in.
+```
+
+**4. Present + STOP for review.** Show the human, in the session:
+- the candidate set and the discovery filter (`--draft` on/off);
+- per RECORDABLE PR: `#<num> sha=<short> — <recordability one-liner> | nav: <grounded|unresolved> | data: <ok|missing|unprobeable>`;
+- the `DIFF_SKIPPED` non-recordable list with reasons;
+- the capture ORDER (auth-mutating PRs last, per B3).
+
+Then **STOP** and ask for approval via `AskUserQuestion`:
+- **Capture all now** — proceed to B2 → B3 for the full `RECORDABLE` set in the same run.
+- **Capture a subset** — the human names PRs to drop (typically `nav: unresolved` / `data: missing`);
+  narrow `RECORDABLE` to the kept set, then proceed to B2.
+- **Abort** — exit 0 without acquiring a device; the receipt file remains as a record.
+
+Because approval leads straight into B2/B3 in the SAME session against the heads just planned, there is
+no re-fetch and no plan-staleness window. A later `/ggx-demo --batch --plan` run re-plans fresh.
+
 ### B2 — acquire the device ONCE
 
 Reached only when B1.5 produced a non-empty `RECORDABLE`. Resolve the profile (Step 0). No `ui_preview_cmd` → `ggx-demo --batch: no device-preview command for
@@ -374,54 +506,79 @@ one, and pin it as `$DEV` for the whole pass (no lock because there is only one 
 - **(c)** none available → `ggx-demo --batch: no device available — skipping all demos (fail-soft).`
   exit 0.
 
-### B3 — serial loop (one ticket at a time on `$DEV`)
+### B3 — serial loop: ONE sub-agent per ticket on `$DEV` (context isolation)
 
-Run the per-ticket procedure (Steps 1–5 above) for each `RECORDABLE` PR (B1.5) — **ordered with every
-`auth-mutating: yes` PR LAST**. An auth-mutating demo (logout → signup, account switch)
-leaves the shared device in a different login state, and the login-wall short-circuit below never fires
-for it (that guard catches *failures*, not a self-inflicted logout) — so a logged-in demo scheduled
-after it silently captures the wrong state. Sort `RECORDABLE`: `auth-mutating: no` first, `yes` last.
-**After each auth-mutating demo, restore the login state** by re-running the Step 2.4 login gate
-(auto-resolve + login) before the next ticket — belt-and-braces even with the LAST ordering, since a
-batch can contain more than one auth-mutating demo.
+**Execution model — serial, single-tenant, one sub-agent per ticket.** The device phase runs strictly
+one ticket at a time (`$DEV` is a single shared device — NEVER two actors at once; this is true by
+construction, no lock, no TTL). Each ticket's capture runs in its OWN sub-agent, so the ~150–180k tokens
+of build logs + screenshots + adb output that a single capture generates stay OUT of the orchestrator's
+context. The orchestrator holds only a ≤2k structured summary per ticket (≈30k for a 15-PR batch,
+versus ≈1M if every capture ran inline in one session). This is **context isolation, NOT parallel
+fan-out** — the sub-agents run one after another, each awaited before the next opens the device.
 
-**Per-ticket state re-confirmation.** Login/session across a reinstall is unpredictable —
-a reinstall can come back logged into a *different* stored account (stale fixtures, old orders). At the
-START of each ticket (after its build+install, before capture), take one read-only screenshot and
-confirm the logged-in account / fixtures match what the capture plan needs; mismatch → run the Step 2.4
-gate (or re-seed source data per the plan) before recording. The per-ticket rebuild itself is correct
-and required (D12 confirmed: each diff must be in the binary) — do NOT "optimize" it away by reusing a
-prior ticket's build.
+**Spawn level (nested-spawn constraint).** The per-ticket sub-agent is the ONLY nested leg `/ggx-demo`
+introduces. Run the batch from an orchestrator context that can spawn a level-1 sub-agent: an operator
+session (top-level) or the `/ggx-dispatcher --demo` / `/ggx-on-duty --demo` **post-join** main session
+(the §5.2 join has completed — the demo batch is not itself inside the dispatcher's Workflow leg). Do
+NOT invoke `/ggx-demo --batch` from inside an already-nested worker leg, where a further spawn would be
+level-2 (unsupported — see `ARCHITECTURE.md` "Nested-spawn constraint"). The sub-agent itself performs
+NO further spawning: it runs Steps 1–5 directly (`preview --capture-only`'s own internal two-pass replay
+is not a sub-agent spawn).
 
-**Two-pass replay is internal to `preview`.** For a `replayable: yes` PR, `preview
---capture-only` rehearses (no recording) → resets → records ONE smooth scripted replay, killing the
-LLM-latency dead air that once inflated a clip to over two minutes. The batch does NOT orchestrate the two
-passes — it only carries the `replayable` / `reset` plan lines (B1.5) so the intent is legible. The
-D13 re-confirmation above still holds, and `preview` repeats it **after its reset, before the replay**
-(the reset is one more state transition since the last verify). Auth-mutating demos are a
-non-replayable class, so they stay single-pass AND keep their LAST ordering + re-login here.
+**Ordering — every `auth-mutating: yes` PR LAST.** An auth-mutating demo (logout → signup, account
+switch) leaves the shared device in a different login state, and the login-wall short-circuit below never
+fires for it (that guard catches *failures*, not a self-inflicted logout) — so a logged-in demo scheduled
+after it would silently capture the wrong state. Sort `RECORDABLE`: `auth-mutating: no` first, `yes`
+last. **After each auth-mutating ticket returns, restore the login state** before dispatching the next
+sub-agent (re-run the Step 2.4 login gate: auto-resolve + login) — belt-and-braces even with the LAST
+ordering, since a batch can contain more than one auth-mutating demo.
 
-Catch each loud failure fail-soft and count it; on a `login wall` failure **short-circuit** the rest
-(one shared device = one shared login state, so it recurs identically):
+**Each sub-agent reads device + login state LIVE off the device — it does NOT inherit it.** Because state
+lives on the shared device (not in orchestrator memory), a fresh sub-agent must OBSERVE it rather than
+trust a hand-off value. At the START of its ticket (after build+install, before capture) the sub-agent
+takes one read-only screenshot and confirms the logged-in account / fixtures match what its capture plan
+needs; mismatch → it runs the Step 2.4 gate (or re-seeds source data per the plan) before recording.
+Login/session across a reinstall is unpredictable — a reinstall can come back logged into a *different*
+stored account (stale fixtures, old orders). The per-ticket rebuild itself is correct and required (each
+diff must be in the binary) — do NOT "optimize" it away by reusing a prior ticket's build.
 
-```bash
-CAPTURED=0; SKIPPED=0; REASONS=""; LOGIN_WALL=0
-for PR in $(printf '%s' "$RECORDABLE" | jq -r '.[].number'); do
-  # Run Steps 1–5 for "$PR" (PR-number form). It is fail-LOUD; capture stderr to classify the reason.
-  ERRLINE=$( run_steps_1_to_5 "$PR" 2>&1 1>/dev/null ) && RC=0 || RC=$?
-  if [ "$RC" = 0 ]; then
-    CAPTURED=$((CAPTURED+1))
-  else
-    SKIPPED=$((SKIPPED+1)); REASONS="$REASONS #$PR"
-    echo "ggx-demo --batch: WARN — PR #$PR demo failed (see its GGX-DEMO FAIL line); continuing." >&2
-    if printf '%s' "$ERRLINE" | grep -qi 'login wall'; then
-      LOGIN_WALL=1
-      echo "ggx-demo --batch: login wall — short-circuiting remaining demos (shared device, same login state); configure demo_auth + a staging account on the Notion page." >&2
-      break
-    fi
-  fi
-done
+**Two-pass replay is internal to `preview` (inside the sub-agent).** For a `replayable: yes` PR,
+`preview --capture-only` rehearses (no recording) → resets → records ONE smooth scripted replay, killing
+the LLM-latency dead air that once inflated a clip to over two minutes. Neither the batch nor the
+orchestrator orchestrates the two passes — they only carry the `replayable` / `reset` plan lines (B1.5)
+so the intent is legible. The live state re-confirmation above still holds, and `preview` repeats it
+**after its reset, before the replay** (the reset is one more state transition since the last verify).
+Auth-mutating demos are a non-replayable class, so they stay single-pass AND keep their LAST ordering +
+re-login here.
+
+**Dispatch loop.** For each `RECORDABLE` PR in the sorted order, spawn ONE sub-agent, await it, then move
+on. The sub-agent's brief: "Run `/ggx-demo <PR-number>` (single-ticket Steps 1–5, including Step 3.5's
+content assertion) for exactly this one PR on the already-running device `$DEV`. Read device + login
+state live off the device; re-login only if logged out. Return ONLY a ≤2k structured summary — do NOT
+dump build logs, adb output, or screenshots into your reply." The summary MUST carry: `outcome` =
+`captured | skipped`, and on skip a one-phrase `reason` plus a `login_wall: yes|no` flag (a Step 3.5
+`login screen` content failure or a Step 2.4 login-wall counts as `login_wall: yes`). The orchestrator
+parses that summary — it never re-reads the sub-agent's device output.
+
 ```
+CAPTURED=0; SKIPPED=0; REASONS=""; LOGIN_WALL=0
+for PR in (RECORDABLE sorted: auth-mutating:no first, auth-mutating:yes last):
+    summary = spawn a serial sub-agent for THIS PR only, then await it   # single device, single actor
+    if summary.outcome == "captured":
+        CAPTURED += 1
+        if this PR was auth-mutating: re-run the Step 2.4 login gate to restore login state
+    else:  # skipped (the sub-agent's Steps 1–5 fail-LOUD; it reports the reason in its ≤2k summary)
+        SKIPPED += 1; REASONS += " #PR"
+        WARN "ggx-demo --batch: PR #PR demo failed (<summary.reason>); continuing." (fail-soft)
+        if summary.login_wall == "yes":
+            LOGIN_WALL = 1
+            WARN "ggx-demo --batch: login wall — short-circuiting remaining demos (shared device, same login state); configure demo_auth + a staging account on the Notion page."
+            break
+```
+
+The loop is fail-soft end to end (the `/_slack-notify` contract): a per-ticket loud failure inside the
+sub-agent degrades to one WARN line and continues; the batch never blocks/fails its caller. A `login
+wall` short-circuits the rest (one shared device = one shared login state, so it recurs identically).
 
 ### B4 — summary (always exit 0)
 
@@ -438,9 +595,11 @@ makes re-running safe — a re-run after fixing login picks up exactly the still
 
 Every failure path above emits ONE deterministic `GGX-DEMO FAIL: …` line to stderr and exits non-zero:
 unresolvable PR, `gh`/Linear unreachable, head mismatch, no device, auto-login failed (login wall), unreachable target screen,
-or `screenrecord` ladder exhausted. The throwaway worktree (if any) is removed on every exit
-path. **Batch mode (B3) catches this loud failure fail-soft** — counting it as a per-ticket skip and
-continuing (or short-circuiting on a `login wall`); the batch as a whole never fails its caller.
+`screenrecord` ladder exhausted, or the Step 3.5 content assertion failing (blank frame / stuck on the
+login screen). The throwaway worktree (if any) is removed on every exit
+path. **Batch mode (B3) catches this loud failure fail-soft** — the per-ticket sub-agent reports the
+reason in its ≤2k summary, the orchestrator counts it as a per-ticket skip and continues (or
+short-circuits on a `login wall`); the batch as a whole never fails its caller.
 
 The flutter-only / Linear-only no-op (Step 0) is the ONE exit-0 non-success case — there is simply
 nothing to capture on a build-only platform.
@@ -453,7 +612,15 @@ nothing to capture on a build-only platform.
 - Edits NO source, writes NO walker markers, never enters `/ui-tweak:ff`.
 - Reuses `preview --capture-only` (capture) + the `ff.md` Idempotent-attach contract (upload/embed) —
   it does NOT reimplement either. The only logic owned here is PR/worktree resolution, the head guard,
-  the fail-loud disposition, and (batch) device-once + self-discovery + the serial loop.
+  the post-capture content assertion, the fail-loud disposition, and (batch) device-once +
+  self-discovery + the optional `--plan` gate / `--draft` filter + the serial one-sub-agent-per-ticket loop.
+- Batch device phase is serial + single-tenant: one ticket at a time on one shared device, each in its
+  own sub-agent for context isolation (≤2k summary per ticket to the orchestrator). NOT parallel fan-out.
+- `--plan` (batch) = HITL review gate: plan built fresh against current heads, presented, STOP; on
+  approval capture in the SAME run (never stale). `--draft` (batch) restricts discovery to draft PRs.
+  Both default OFF; batch-only.
+- Post-capture content assertion (Step 3.5) gates every attach: a non-blank frame that is not the login
+  screen. A file-exists / non-empty check is explicitly insufficient. Runs on `--force` replace too.
 - Batch mode (`--batch`) absorbed the former `/_ui-demo-batch` — there is now ONE post-hoc demo
   skill. Self-discovers open PRs lacking a demo, filtered by a diff-first recordability judge; no JSON input.
 - Regression case: `/ggx-demo <ticket-id>` reproduces the equivalent manual post-hoc demo.
