@@ -548,11 +548,13 @@ target-reached capture or a designer-supplied file. The `pr` stage surfaces and 
 
 1. **Captured demo** (preferred — shows the *actual* result): if `.dev/ui-tweak/demo-files` exists
    (written by `preview`'s Step-2.5 navigate+capture, and/or designer-supplied via C1 Other),
-   upload each listed file to the ticket via the **Idempotent attach** contract below and reference each
-   returned `assetUrl` in the marker-wrapped `## Demo` block. (This upload is the one extra ticket write
-   the deliver path is allowed — see Constraints.) No relevance gate is needed: `preview` fail-silents
-   instead of capturing a wrong screen, so an empty `demo-files` simply falls through to bullets 2–4
-   (ticket visuals / Figma link / "No screenshot" line).
+   upload it to the ticket via the **Idempotent attach** contract below and reference the returned
+   `assetUrl`(s) in the marker-wrapped `## Demo` block. `demo-files` is **keyed by scenario**
+   (`<scenario-key>\t<path>`; a bare line = key `main`) — the contract groups by key and produces one
+   labeled link per key (a single `main` clip is one unlabeled link, unchanged). (This upload is the one
+   extra ticket write the deliver path is allowed — see Constraints.) No relevance gate is needed:
+   `preview` fail-silents instead of capturing a wrong screen, so an empty `demo-files` simply falls
+   through to bullets 2–4 (ticket visuals / Figma link / "No screenshot" line).
 2. **Ticket visuals** (shows the *target* design): read `.dev/ui-tweak/ticket.json` (cached by
    `start`) for image attachments and embed their URLs as markdown images. Add the grounded Figma
    node URL (from apply's figma grounding, when present) as a plain
@@ -578,32 +580,44 @@ Both the `pr` stage here and the post-hoc `/ggx-demo` operator skill upload + em
 upload is **not** filename-idempotent and a blind body append stacks `## Demo` sections, so BOTH callers
 MUST follow this contract verbatim (single source of truth — do not re-derive in `/ggx-demo`):
 
-- **Linear attachment dedupe — deterministic title, SKIP or REPLACE (E14).** Title each
-  uploaded attachment `ui-tweak-demo-<sha>` where `<sha>` is the short HEAD of the demoed commit
-  (`git rev-parse --short HEAD`). Before `create_attachment_from_upload`, list the ticket's existing
-  attachments (`get_issue` → `.attachments[]`) and check for that exact title —
-  `create_attachment_from_upload` is NOT idempotent on filename, so two runs would otherwise attach two
-  inline videos. On a title match:
-  - **Default — SKIP** the upload and reuse the existing attachment's `assetUrl` (idempotent re-run).
-  - **Replace mode** (caller passed `--force`, e.g. `/ggx-demo <id> --force` after a bad first
-    recording): `delete_attachment` the old attachment → upload the new capture under the same title →
-    use the NEW `assetUrl`. **The `assetUrl` changes on re-upload**, so the PR-body region write below
-    is mandatory in this mode (the old link dies with the deleted attachment). Never delete-then-upload
-    without `--force` — a plain re-run must stay a no-op.
+- **`demo-files` is a KEYED set — one entry per scenario (`<scenario-key>\t<path>`).** Each line is a
+  captured artifact keyed by scenario; a bare line with NO tab is treated as key `main` (backward-compatible
+  with pre-existing single-clip captures). Group the paths by key; each key is uploaded + embedded
+  independently (a key may have both a screenshot and a clip — the clip is the attached artifact, the
+  screenshot is the C1 surface). A single-clip capture is exactly the `main` key, so this collapses to the
+  pre-existing single-attachment behaviour.
+- **Linear attachment dedupe — deterministic PER-KEY title, SKIP or REPLACE (E14).** Title each scenario's
+  uploaded attachment `ui-tweak-demo-<sha>-<key>` where `<sha>` is the short HEAD of the demoed commit
+  (`git rev-parse --short HEAD`), **except the single/`main` key which keeps the bare `ui-tweak-demo-<sha>`**
+  (backward-compatible: existing single demos and the batch-discovery `startswith("ui-tweak-demo-")` dedup
+  both still match). Before `create_attachment_from_upload`, list the ticket's existing attachments
+  (`get_issue` → `.attachments[]`) and check for that exact per-key title — `create_attachment_from_upload`
+  is NOT idempotent on filename, so two runs would otherwise attach duplicate inline videos. On a per-key
+  title match:
+  - **Default — SKIP** that key's upload and reuse the existing attachment's `assetUrl` (idempotent re-run).
+  - **Replace mode** (caller passed `--force`, e.g. `/ggx-demo <id> --force` after a bad first recording):
+    `delete_attachment` the old attachment for THAT key → upload the new capture under the same per-key
+    title → use the NEW `assetUrl`. Replace is **per key** — only the keys re-captured this run are
+    replaced. **The `assetUrl` changes on re-upload**, so the PR-body region write below is mandatory in
+    this mode (the old link dies with the deleted attachment). Never delete-then-upload without `--force` —
+    a plain re-run must stay a no-op.
 - **Upload mechanics (F19).** The `prepare_attachment_upload` → `curl` PUT handoff is strict:
   send EVERY header the prepare call returns, verbatim (`content-type`, `cache-control`,
   `x-goog-content-length-range`, `Content-Disposition`) — a missing header is a signed-URL signature
   mismatch (403). The signed URL expires in ~60s: prepare and PUT in the same breath, never prepare
   early and upload after the capture.
-- **PR body — marker-delimited region, replace-between (never append, never to-EOF).** Wrap the demo
-  region in HTML-comment delimiters:
+- **PR body — ONE marker-delimited region, N labeled links, replace-between (never append, never to-EOF).**
+  Wrap the demo region in HTML-comment delimiters. It stays a SINGLE region even for a keyed multi-scenario
+  set — it lists **one labeled link per scenario key**:
   ```
   <!-- ui-tweak-demo -->
   ## Demo
-  <links / images>
+  - **blank-error**: <link>
+  - **filled-pass**: <link>
   <!-- /ui-tweak-demo -->
   ```
-  To write it: read the current PR body (`gh pr view <pr> --json body -q .body`); if the marker pair is
+  For a single-clip (`main`) demo, the region is the one link with no key label (unchanged from
+  pre-existing). To write it: read the current PR body (`gh pr view <pr> --json body -q .body`); if the marker pair is
   present, **replace only the text between the markers** (marker-to-marker — the closing
   `<!-- /ui-tweak-demo -->` is the hard boundary); else if an UNMARKED `## Demo` section exists,
   replace that section with a marked block, **bounded at the next `## ` heading or end-of-body —
