@@ -533,9 +533,13 @@ is not a sub-agent spawn).
 switch) leaves the shared device in a different login state, and the login-wall short-circuit below never
 fires for it (that guard catches *failures*, not a self-inflicted logout) — so a logged-in demo scheduled
 after it would silently capture the wrong state. Sort `RECORDABLE`: `auth-mutating: no` first, `yes`
-last. **After each auth-mutating ticket returns, restore the login state** before dispatching the next
-sub-agent (re-run the Step 2.4 login gate: auto-resolve + login) — belt-and-braces even with the LAST
-ordering, since a batch can contain more than one auth-mutating demo.
+last. Login-state restoration after an auth-mutating demo is NOT the orchestrator's job (driving a
+re-login from the orchestrator would pull device/adb output back into its context — the very isolation
+this model exists to preserve). It rides the NEXT sub-agent's live state re-confirmation below: a fresh
+sub-agent reads the device's login state live, sees the logged-out/switched state left by the prior
+auth-mutating demo, and re-runs the Step 2.4 gate itself before recording. The LAST ordering is the
+primary guard (at most the batch tail is auth-mutating); the per-sub-agent live re-confirmation is the
+belt-and-braces that also covers a batch with more than one auth-mutating demo.
 
 **Each sub-agent reads device + login state LIVE off the device — it does NOT inherit it.** Because state
 lives on the shared device (not in orchestrator memory), a fresh sub-agent must OBSERVE it rather than
@@ -570,7 +574,9 @@ for PR in (RECORDABLE sorted: auth-mutating:no first, auth-mutating:yes last):
     summary = spawn a serial sub-agent for THIS PR only, then await it   # single device, single actor
     if summary.outcome == "captured":
         CAPTURED += 1
-        if this PR was auth-mutating: re-run the Step 2.4 login gate to restore login state
+        # No orchestrator re-login: if this PR was auth-mutating, the NEXT sub-agent's live state
+        # re-confirmation detects the logged-out/switched device and re-runs the Step 2.4 gate itself
+        # (device I/O stays inside the sub-agent). Auth-mutating-LAST keeps this to the batch tail.
     else:  # skipped (the sub-agent's Steps 1–5 fail-LOUD; it reports the reason in its ≤2k summary)
         SKIPPED += 1; REASONS += " #PR"
         WARN "ggx-demo --batch: PR #PR demo failed (<summary.reason>); continuing." (fail-soft)
