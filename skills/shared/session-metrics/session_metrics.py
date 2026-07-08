@@ -1232,7 +1232,23 @@ def _bool01(v) -> str | int:
 
 
 def _num_or_blank(v) -> str | int | float:
-    return v if isinstance(v, (int, float)) else ""
+    """Coerce to a number for a CSV cell, else "". Accepts numeric STRINGS —
+    the finalize stage builds the outcome bundle via gh + shell, so numbers
+    routinely arrive as strings ("3600"); without this they'd be silently
+    dropped from the CSV (the SSOT) while still rendering in the report. bool
+    is excluded (True/False are not counts)."""
+    if isinstance(v, bool):
+        return ""
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        for cast in (int, float):
+            try:
+                return cast(s)
+            except ValueError:
+                pass
+    return ""
 
 
 def outcome_to_csv(outcome: dict | None) -> dict:
@@ -1263,17 +1279,23 @@ def format_outcome_section(outcome: dict | None, current_cost: float) -> list[st
     state = o.get("pr_state") or ("MERGED" if o.get("merged") else "?")
     merged = bool(o.get("merged"))
     lines.append(f"| PR | {state}{' ✅' if merged else ''} |")
-    if o.get("cycle_time_sec") is not None:
-        lines.append(f"| Cycle time (open→merge) | {format_duration(float(o['cycle_time_sec']))} |")
-    if o.get("review_rounds") is not None:
-        rr = o["review_rounds"]
+    # Coerce numerics through the same hardened path as the CSV (strings from
+    # gh are common); "" means absent/unparseable → omit the row (never float()
+    # a raw string, which would crash the whole metrics run mid-report).
+    cyc = _num_or_blank(o.get("cycle_time_sec"))
+    if cyc != "":
+        lines.append(f"| Cycle time (open→merge) | {format_duration(float(cyc))} |")
+    rr = _num_or_blank(o.get("review_rounds"))
+    if rr != "":
         fp = o.get("first_pass")
         note = " (first-pass ✅)" if (merged and (fp or rr == 0)) else ""
         lines.append(f"| Review rounds (changes-requested) | {rr}{note} |")
-    if o.get("reviewer_comments") is not None:
-        lines.append(f"| Reviewer comments | {o['reviewer_comments']} |")
-    if o.get("ci_fail_count") is not None:
-        lines.append(f"| CI failures (head) | {o['ci_fail_count']} |")
+    rc = _num_or_blank(o.get("reviewer_comments"))
+    if rc != "":
+        lines.append(f"| Reviewer comments | {rc} |")
+    cf = _num_or_blank(o.get("ci_fail_count"))
+    if cf != "":
+        lines.append(f"| CI failures (head) | {cf} |")
     # Cost→value: the honest ROI unit (cost is an INPUT, a merged PR is VALUE).
     if merged and current_cost > 0:
         lines.append(f"| **Cost per merged PR** | **{format_cost(current_cost)}** |")
