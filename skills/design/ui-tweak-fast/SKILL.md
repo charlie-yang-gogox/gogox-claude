@@ -1,19 +1,12 @@
 ---
 name: ui-tweak-fast
-description: "Self-contained, portable variant of /ui-tweak for UI-Designer-safe codebase edits. ONE file runs the whole flow (parse → worktree → triage → apply → iterate → preview → audit → ship) with every step's instructions inlined — an agent never has to read ff/start/detect/apply/preview/audit separately. Given a UI change as free text, a Linear/Jira ticket (ID/URL), and/or a Figma link, it edits ONLY the UI (visual values, layout, structure), confirms it compiles, and is blocked from touching logic by a deferred two-judge audit (kept model-agnostic so it runs under any host's own model). Three things make it 'fast': (1) one read instead of six; (2) device previews build+run from a PERSISTENT per-repo clone (changed files are synced in from the worktree) so .dart_tool/build caches survive across tickets instead of recompiling cold in every fresh worktree, and after the first preview a 'more changes' round HOT-RESTARTS the still-running app (~seconds) instead of cold-rebuilding; (3) the designer can pick a 'Show me on iPhone + Android' card answer to preview on an iOS simulator AND an Android emulator at once (no flag to type). Portable across hosts (no harness-specific tools or pinned models). Use when a designer says 'make the order-page button 5dp bigger', 'change this color', passes a ticket like <ticket-id> describing a UI tweak, or gives a Figma frame to match — and wants the fast, single-file, portable flow."
+description: "Self-contained, portable /ui-tweak variant for UI-Designer-safe codebase edits, runnable on any agent host (claude / codex / cursor). Given a UI change as free text, a Linear/Jira ticket (ID/URL), and/or a Figma link, it splits a worktree, edits ONLY the UI (visual values, layout, structure) plus the tests that track it, guides the designer with plain-language cards, previews on a phone on request (warm persistent build clone + hot restart), and ships a draft PR gated by a two-judge UI-only audit. Use when a designer says 'make the order-page button 5dp bigger', 'change this color', passes a ticket describing a UI tweak, or gives a Figma frame to match. Agents: read the ENTIRE SKILL.md before acting."
 ---
 
 <!--
-  RULE: all skill PROSE — including every designer-facing CARD — is written in English: no Chinese /
-  CJK / non-English text. The card emoji (📍 📦 👉 ⚠) and typographic symbols (— … → ≤ Δ) are fine, as
-  in /ui-tweak. But NEVER put a non-ASCII char inside a runnable shell line (e.g. a literal "…" in a
-  command is a glob/parse error) — use a real variable instead.
-
-  This is a SELF-CONTAINED peer of /ui-tweak. It deliberately INLINES the per-step logic that
-  /ui-tweak splits across commands/design/ui-tweak/{ff,start,apply,preview,audit}.md, so an agent
-  reads ONE file. It is a NEW skill — /ui-tweak and its 6 files are untouched, and this skill is NOT
-  wired into /route / /ggx-work / /ggx-dispatcher (those keep using /ui-tweak:ff for the `design bug`
-  lane). Run it directly: `/ui-tweak-fast …`.
+  Authoring rules: all prose + cards in English (emoji/typographic symbols fine); NEVER put a
+  non-ASCII char inside a runnable shell line. Self-contained peer of /ui-tweak (which is untouched
+  and stays wired into /route//ggx-*); run this one directly: `/ui-tweak-fast …`.
 -->
 
 # `/ui-tweak-fast`
@@ -24,38 +17,86 @@ description: "Self-contained, portable variant of /ui-tweak for UI-Designer-safe
 > build exist. It is the **fast, single-file, portable** cousin of `/ui-tweak`.
 
 ```
-/ui-tweak-fast <source> [figma-url] [--auto]
+/ui-tweak-fast <source> [figma-url]
 ```
 
-`--auto` → unattended, no cards. **There is no device flag** — when the designer asks to see the
-change, the "show me" card offers the device choice (one phone, or **iOS + Android at once**) as an
-answer; designers never type a flag (Step 5).
+**There are no flags.** When the designer asks to see the change, the "show me" card offers the
+device choice (one phone, or **iOS + Android at once**) as an answer; designers never type a flag
+(Step 5). There is no unattended mode — this skill is always card-driven.
+
+## ⛔ Execution contract — read this FIRST; it binds every host
+
+**Rule 0 — read this ENTIRE file before doing anything.** It is ~1,150 lines. If your file reader
+paginates or truncates, keep reading in chunks until you have seen the LAST line. Acting from a
+partial read is the #1 way this skill fails on any host: the back half holds the cards you must
+show, the audit that gates shipping, and the loops that make re-runs safe. If you cannot retain the
+whole file, re-read each step's full section immediately before executing that step.
+
+**Rule 1 — the flow at a glance** (a map, NOT a substitute for the step sections below):
+
+| # | Step | The turn ends with |
+|---|------|--------------------|
+| 0 | parse `<source>` | garbled/empty → card **C0** ⛔ |
+| 1 | fetch ticket (read-only) + split worktree `../<ticket-id>` | no work-item id → card **C-WT** ⛔ · ticket unreadable → card **C-TICKET** ⛔ · worktree creation fails → STOP ⛔ |
+| 2 | resolve flutter/fvm + flavor once | (markers written; no card) |
+| 3 | triage pure-visual vs needs-logic — READ the real widget first | needs-logic → card **C6** ⛔ |
+| 4 | apply ONE UI diff + update affected tests — no build, no suite run | card **C1 show-me** ⛔ ALWAYS (or a plan-confirm card first, 4d) |
+| 5 | designer answers C1: show me / both phones / ship as-is / more changes | route their answer |
+| 6 | preview (only if asked): build from warm clone, launch, capture | card **C1 looks-good** ⛔ |
+| 7 | audit (only after "Ship it"): 2-judge UI-only gate + affected tests | BLOCKED → agent repair (≤3) |
+| 8 | ship: commit → draft PR → ticket comment | card **C5** (done, no question) |
+
+**Rule 2 — cards are turn-enders.** A "card" is a question to the designer. If your host has a
+question/option UI, use it. Otherwise print the card text with its options as a NUMBERED LIST as
+the last thing in your reply, then **END YOUR TURN and wait**. Never pick an option on the
+designer's behalf, never "assume they'd say yes", never keep working past a card in the same turn.
+This holds in non-interactive/print mode too: the card is the final output; the designer re-invokes
+with their answer and the Step-1 markers resume the flow exactly where it stopped. A turn that
+should end in a card and instead ends in a prose summary is a FAILED run — even if the edit is
+perfect.
+
+**Rule 3 — hard invariants (no host is exempt):**
+- **Every edit happens inside the `../<ticket-id>` worktree.** If `git worktree add` fails
+  (sandbox, permissions, anything), ⛔ STOP and tell the designer what to fix (e.g. re-run with
+  workspace write access) — NEVER fall back to editing the checkout you were launched in.
+- **Never invent ticket content.** Can't read the ticket → card **C-TICKET** (Step 1). The URL
+  slug is a title at best, never a description; fabricating one into `ticket.json` poisons every
+  downstream gate.
+- **No commit, push, PR, or ticket write before Step 8**, and Step 8 is reached ONLY through an
+  explicit "Ship it" answer. Terminal is a **draft PR** — never mark ready, never merge.
+- **Update tests alongside the UI change** (Step 4f): finders/expectations pointing at a moved or
+  restyled widget are part of the change — test-file edits never count against "UI-only". But do
+  NOT add production code beyond the checklist, and do NOT run formatters/analyzers/test suites
+  during iteration — affected tests run once on the ship path (Step 7a.0), format at Step 7a.
+- **Never delete `.dev/ui-tweak-fast/` markers** except exactly where a step says to — they are
+  the resume state machine; tidying them up breaks the next invocation.
+- **No subagent mechanism on your host?** Run the two Step-7 judge lenses yourself, inline and
+  sequentially, each as a self-contained evaluation of the diff (write each verdict file before
+  starting the other lens). Same for the optional Figma fetch (4b): fetch inline.
+- **If your host has a plan/todo facility, load it with Steps 0–8 up front** and keep it current —
+  it is the designer's progress view and your own guard against skipping steps.
 
 ## What these instructions mean operationally — read once, applies everywhere below
 
-This file is written **harness-agnostic**: it never names a host or a host-specific tool. Map each phrase
-below to whatever your host environment provides.
+This file is harness-agnostic; map its phrases to whatever your host provides. Two mappings the
+Execution contract doesn't already cover:
 
-| This skill says | What to do (any host) |
-|---|---|
-| "spawn a subagent / a judge" | Use your host's subagent mechanism with a **generic** read-only type and **no model override** (inherits the session model). Never spawn a preset/named subagent type whose definition pins a specific model (see rule 1). |
-| "ask the designer (a card)" | Use your host's question/card UI; if it has none, ask the designer in plain chat. |
-| worktree / preview-clone paths | If your host moves the session into the worktree on `cd`, later relative paths work. If it does NOT, resolve **absolute** paths and pass them to every Read/Write/Edit and `working_directory`, and after creating the worktree tell the designer its path (best UX: open that folder). |
-| fan-out / parallel orchestration | **never used here** — this skill has no fan-out. |
-| an MCP tool (Linear / Notion / Figma) | Use your host's MCP for that service (resolve the ticket MCP via `_ticket-lib.md`). If a referenced MCP is **absent**, take the step's documented degrade (ticket fetch → ask in chat; Figma → DEGRADED; Notion login → fail-silent login wall) — never hard-error. |
-| reasoning model for judges | **never pin a model** — decorrelation is by *lens*, not tier (see Step 7). |
+- **worktree / preview-clone paths** — if your host moves the session into the worktree on `cd`,
+  later relative paths work. If it does NOT, resolve **absolute** paths and pass them to every
+  Read/Write/Edit and shell `working_directory`, and after creating the worktree tell the designer
+  its path (best UX: open that folder).
+- **an MCP tool (Linear / Notion / Figma)** — use your host's MCP for that service. If it is
+  **absent**, take the step's documented degrade (ticket fetch → card C-TICKET; Figma → DEGRADED;
+  Notion login → fail-silent login wall) — never hard-error. (No fan-out/orchestration tooling is
+  ever used here.)
 
 **Three execution rules that make this file portable:**
 
-1. **No model is ever pinned.** Everywhere a model would be chosen, do not choose one — let the host
-   use its default. The two judges are decorrelated by their **prompts/lenses** (UI-completeness vs
-   program-behavior). This is a deliberate trade: it is portable but **weaker than tier-decorrelation** —
-   under one host model, two prompts can share blind spots that two different model tiers would not. If
-   your host lets you choose models you MAY *optionally* run the two judges on different models for extra
-   decorrelation (opt-in only — never required). **Do NOT spawn a preset/named subagent type whose
-   definition pins a specific model** — that re-introduces a host-specific model pin this skill promises
-   to avoid. Spawn **generic** read-only subagents and paste the lens prompts inline (Step 7c / 4b already
-   contain them).
+1. **No model is ever pinned.** Let the host use its default everywhere. The two judges are
+   decorrelated by their **prompts/lenses**, not model tiers (you MAY optionally run them on
+   different models if your host allows — never required). Spawn **generic** read-only subagents
+   with the lens prompts pasted inline (Step 7c / 4b contain them); never a preset/named subagent
+   type whose definition pins a model.
 2. **Shell state does NOT persist between separate command/bash invocations** (true on every host). So
    **every bash block re-derives the vars it needs at its top** — do not assume
    `$WT` / `$BASE` / `$PLATFORM` / `$FLUTTER_BIN` / `$FRESH_CLONE` survived from an earlier block. The
@@ -109,6 +150,7 @@ Use the right column, never the left:
 | build / compile | confirm it still works |
 | emulator / simulator / run | see it on a phone screen |
 | marker / base_ref / SHA / diff / worktree | (don't surface) |
+| file paths / class or widget names / test names | (don't surface; say the screen + component in plain words) |
 | ticket | work-item number |
 | revert | take the change back / put it back |
 | judge / logic / behavior | check / the part about how the program runs |
@@ -154,10 +196,10 @@ Re-running with no new argument **resumes** from the markers; re-running with a 
 .dev/dev-reviewer-pass.md             # behavior-lens judge verdict (Status: CLEAR|BLOCKED)
 ```
 
-`--auto` (unattended): render no cards; after the single apply, auto-take the direct-ship path
-(build-only gate → audit → commit → draft PR). On any blocked/exhausted state, print ONE deterministic
-stderr line and exit non-zero. (This skill is not wired into the dispatcher; `--auto` exists for
-direct headless invocation and parity.)
+⚠ These markers are the resume state machine — **never delete or "clean up" any of them except
+exactly where a step instructs** (the correction/repair loops list precisely which ones they clear).
+A run that ends at a card leaves its markers in place ON PURPOSE, so the next invocation resumes
+instead of restarting.
 
 ## Step 0 — first contact / parse
 
@@ -168,13 +210,13 @@ direct headless invocation and parity.)
   👉 e.g.  /ui-tweak-fast "make the order-page primary button a bit taller"  <ticket-id>
            /ui-tweak-fast <ticket-id>   (a Figma link can go at the end)
   ```
-- **Otherwise** → strip the `--auto` flag from `<source>` (⇒ unattended), then continue to Step 1.
+- **Otherwise** → continue to Step 1.
   (There is no device flag — dual-device is a Step-5 card choice, recorded as the `dual-device` marker.)
 
 ## Step 1 — workspace: resolve profile, fetch ticket (read-only), split the worktree
 
 A work-item number is **required** (every change is tracked under one and handed to an engineer that
-way) — exactly like `/dev:ff` / `/port:ff`. There is **no in-place edit path**.
+way). There is **no in-place edit path**.
 
 ```bash
 echo "{\"skill\":\"ui-tweak-fast\",\"ts\":\"$(date -u +%FT%TZ)\"}" >> ~/.gogox-claude-usage.jsonl 2>/dev/null || true
@@ -201,54 +243,64 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
   re-triages — idempotent and cheap.)
 - `SPLIT_DONE=0` → parse a work-item id from `<source>` (`[A-Z]+-[0-9]+`, or a
   `linear.app/<org>/issue/<ID>/...` URL; first match).
-  - **No id (pure free text)**:
-    - interactive → render **card C-WT** (header `Work-item no.`):
+  - **No id (pure free text)** → render **card C-WT** (header `Work-item no.`):
       > Before I start, what's the work-item number for this (like <ticket-id>)? I use it to keep your
       > change in its own space and to hand it over later. Pick **Other** and paste the number to begin.
 
+      (⛔ a card — END YOUR TURN after rendering it.)
       A number (via Other) → continue with it. "I don't have one yet" → STOP, change nothing, and say:
       *"Every change needs a work-item number so it can be tracked and handed to an engineer. Create one
       (or ask your PM/engineer), then run `/ui-tweak-fast` again with that number."*
-    - `--auto` → print `FAIL: /ui-tweak-fast --auto needs a work-item id in <source>.` to stderr, STOP.
 
 **Resolve the platform profile** (note the friendly repo/screen name for cards). Bind it to a shell
 var — `PLATFORM=$(sed -n 's/^platform:[[:space:]]*//p' "$REPO_ROOT/.gogox-claude.yaml" | head -1)`;
-fallback to the profile registry under your install root
-(`~/.claude/commands/profiles/registry/<basename>.yaml` or `~/.cursor/commands/profiles/registry/<basename>.yaml`).
-The platform decides build/preview commands:
+if the file is absent, infer from the repo (`pubspec.yaml` → flutter; `build.gradle*` at root →
+android; an `.xcodeproj` → ios). The platform decides build/preview commands:
 - `flutter` → `ui_build_cmd: flutter build apk --debug --flavor stag` (or iOS),
   `ui_preview_cmd: flutter run -d {device} --debug --flavor stag` (covers Android emulators **and** iOS
   simulators). A repo override in `<repo>/.gogox-claude.yaml` wins.
 - `android` → `ui_build_cmd` is gradlew (build-only; no flutter tooling).
 - `ios` → `ui_build_cmd` is xcodebuild (build-only).
 
-**Fetch the ticket, read-only** (never change status/assignee, never comment) via your host's Linear MCP
-`get_issue` (or ask in chat if absent — read-only either way) or Jira per `_ticket-lib.md`; derive the
-requirement from
+**Fetch the ticket, read-only** (never change status/assignee, never comment) via your host's Linear
+MCP `get_issue` (or the Jira equivalent); derive the requirement from
 title + description + comments. **Capture the fetched issue JSON into `TICKET_JSON`** (it is written to
 `ticket.json` below). Free-text runs skip the fetch and write `TICKET_JSON='{}'`.
+
+**If the ticket cannot be read** — no ticket MCP on this host, auth failure, or the fetch errors
+(do NOT try to scrape `linear.app` with curl/web tools; it is auth-walled) — **never fabricate a
+description** (Execution-contract rule 3). Render card **C-TICKET** (header `Ticket details`) and
+⛔ END YOUR TURN:
+  > I can't open <ID> from here myself. Paste the ticket's title + description (and any comments
+  > that matter), or tell me to go with just the title from the link.
+
+  Options: **`Paste the ticket text`** *(recommended — designer pastes it via Other/free text)* /
+  **`Use the link title`** — proceed with the URL-slug title as the entire requirement.
+  Either way set `TICKET_JSON='{"id":"<ID>","title":"<title>","note":"ticket-unavailable"}'` (with
+  the pasted content added as `description`/`comments` when provided) and stamp the Step-4b receipt
+  provenance `⚠ ticket-unavailable` when only the slug title was available (like
+  `⚠ comments-unavailable`, it blocks a trusted earned no-op in 4d).
+- On the designer's answer, continue Step 1 from here with the provided content as the ticket —
+  do NOT re-attempt the fetch, and do NOT restart from Step 0.
 
 **Also fetch the comment THREAD, not just the description.** The `get_issue` snapshot carries
 the description + attachments but **NOT** the Linear comment thread — so a follow-up comment that
 refines or reverses the spec is invisible to a description-only read, and an earned no-op grounded off
 it then validates against a *stale* spec. Fetch the thread read-only via your host's Linear MCP
-`list_comments` ordered by `createdAt` (or Jira per `_ticket-lib.md` — Jira embeds comments in the
+`list_comments` ordered by `createdAt` (Jira embeds comments in the
 issue snapshot, so derive them from `TICKET_JSON`). **Capture it into `COMMENTS_JSON`** (cached to
 `comments.json` below; normalize to `{"comments":[…]}`). This is **fail-soft and never blocks the
 split**: if the Linear MCP is absent or the fetch fails, leave `COMMENTS_JSON` unset — the block below
 caches an empty array + a `note`, and Step 3a re-fetches/degrades. Free-text runs skip it.
 
-**Create + enter the worktree** (mirrors `/add-worktree`; off latest trunk). Inlined so this file is
-self-contained:
+**Create + enter the worktree** (off latest trunk). Inlined so this file is self-contained:
 
 ```bash
-source "$HOME/.claude/lib/dev-mode.sh" 2>/dev/null || source "$HOME/.cursor/lib/dev-mode.sh" 2>/dev/null || true
 TRUNK_DIR="$REPO_ROOT"                                  # the main checkout we are splitting from
 TICKET_ID="<parsed id>"
 TYPE=fix                                                # design bug → fix; else feat
-DEFAULT_BRANCH=$( (command -v default_branch >/dev/null 2>&1 && default_branch) \
-  || git -C "$TRUNK_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' \
-  || echo main )
+DEFAULT_BRANCH=$(git -C "$TRUNK_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
 git -C "$TRUNK_DIR" fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null || true
 WT="$(cd "$TRUNK_DIR/.." && pwd)/$TICKET_ID"
 BRANCH="$TYPE/$TICKET_ID"
@@ -256,8 +308,14 @@ if ! git -C "$TRUNK_DIR" worktree list --porcelain | grep -qxF "worktree $WT"; t
   git -C "$TRUNK_DIR" worktree add -b "$BRANCH" "$WT" "origin/$DEFAULT_BRANCH" \
     || git -C "$TRUNK_DIR" worktree add "$WT" "$BRANCH"   # branch already exists → check it out
 fi
+# HARD GATE (Execution-contract rule 3): the split MUST have worked before anything is edited.
+git -C "$TRUNK_DIR" worktree list --porcelain | grep -qxF "worktree $WT" \
+  || { echo "FAIL: could not create worktree $WT — STOP; never edit the launch checkout instead." >&2; exit 1; }
 cd "$WT"   # If your host moves the session into the worktree on `cd`, later relative paths work. If it
            # does NOT, treat "$WT" as the absolute root for ALL later Read/Write/Edit + git/shell working_directory.
+# (If the HARD GATE above fired: tell the designer the workspace could not be split — quote the git
+#  error, suggest re-running once the agent has write access to the parent folder — and ⛔ END YOUR
+#  TURN. Editing the launch checkout "just this once" is the one unrecoverable mistake here.)
 mkdir -p "$WT/.dev/ui-tweak-fast"
 printf '%s\n' "${TICKET_JSON:-{\}}" > "$WT/.dev/ui-tweak-fast/ticket.json"  # read-only snapshot (skip refetch)
 # comments.json — the comment THREAD. Fail-soft (mirrors the ticket fetch): on any miss, cache
@@ -274,6 +332,11 @@ Do **not** call `/_ticket-init` — ticket reads stay read-only (the PR-open tra
 only lifecycle write).
 
 ## Step 2 — resolve build tooling once (flutter only; skip on android/ios)
+
+Run this on every flutter run-through **even when no preview has been requested yet** — Steps 5/6
+read the `flutter-bin`/`flavor` markers this step writes, and a designer's later "show me" lands in
+a fresh invocation that expects them. (Generally: if a later step needs a marker that is missing,
+go back and run the step that writes it — never improvise the value inline.)
 
 Resolve the flutter binary (fvm-aware) and the flavor ONCE so no later step rediscovers them. Define a
 reusable resolver — it is called for the **worktree** here and for the **preview clone** in Step 6.
@@ -323,7 +386,7 @@ fi
 
 ## Step 3 — triage: pure-visual vs needs-logic (read-only, BEFORE any edit)
 
-> The upfront, read-only visual-vs-logic gate (mirrors `/ui-tweak:detect`). It runs BEFORE any
+> The upfront, read-only visual-vs-logic gate. It runs BEFORE any
 > edit, grounding, or build, so a misrouted `design bug` that really needs logic/behaviour changes is
 > caught **here** — not after a whole apply + build + 3× repair cycle ends at the late Step-7 dual-judge
 > BLOCK. Middle tier of a 3-tier cascade, cheap → expensive: an upstream text-only ticket gate → **this**
@@ -344,7 +407,7 @@ distinct; never collapse them into one.
 - **Read `comments.json` (don't trust the comment-less `ticket.json` alone).** If it is absent, or its
   `comments` array is empty with a `note` (a fetch failure at split time), **re-fetch the thread
   yourself, read-only** — via your host's Linear MCP `list_comments` ordered by `createdAt`, or from
-  `ticket.json` for Jira (per `_ticket-lib.md`) — and refresh the cache.
+  `ticket.json` for Jira — and refresh the cache.
 - **If comments still cannot be read** (MCP absent / re-fetch failed) → proceed on the **description
   alone** and stamp the grounding provenance `⚠ comments-unavailable` on the receipt
   (`figma-context.md`), so the no-op verdict in 4d and the audit downstream are not trusted as
@@ -388,12 +451,11 @@ the logic dependency is CLEAR from the requirement + the widget you just read.
   > re-filing this as a normal bug so an engineer can pick it up. Or describe it a different way and I'll
   > take another look? (Or pick **Other**.)
 
+  (⛔ a card — END YOUR TURN after rendering it; nothing has been edited.)
   The recommended choice is to re-file it for an engineer; "Describe it differently" / **Other** re-runs
   **this triage** on the new wording (it may now read pure-visual). The recommendation is **human-owned**
-  — this skill NEVER changes the work-item's type itself. Under `--auto`, print
-  `UI-TWEAK-FAST NEEDS-ENGINEER: <one-line plain reason> — needs an engineer; recommend re-filing as a normal bug; no change made.`
-  to stderr and exit non-zero (no label is flipped). **C6 is defined here and reused by Step 4c** (its
-  forbidden-file / not-found stop).
+  — this skill NEVER changes the work-item's type itself. **C6 is defined here and reused by Step 4c**
+  (its forbidden-file / not-found stop).
 
 ## Step 4 — apply: produce ONE UI diff (no build, no audit)
 
@@ -438,9 +500,9 @@ screen/component, record `{Ti, file, current, target}`, classify the file UI-eli
 - A value living **only** in a forbidden file (ViewModel / Repository / build config / a referenced
   `@+id`/function name) → this is **not** a pure-UI change → STOP and render card **C6** (defined in
   Step 3 — the "can't find that place / it's really about how the program runs" card). Remove any
-  `base_ref` you wrote. Under `--auto`, print the question to stderr and stop. (A *clear needs-logic*
-  verdict is already caught upfront in Step 3 before any worktree edit; this 4c stop is the locate-time
-  forbidden-file / not-found backstop for what slips through to apply.)
+  `base_ref` you wrote. (A *clear needs-logic* verdict is already caught upfront in Step 3 before any
+  worktree edit; this 4c stop is the locate-time forbidden-file / not-found backstop for what slips
+  through to apply.)
 
 **4d — coverage gate (bidirectional) + quality bar.**
 - Forward: every `Ti` resolves to a planned edit, `ALREADY-MATCHES` (with the matched site), or
@@ -458,15 +520,17 @@ screen/component, record `{Ti, file, current, target}`, classify the file UI-eli
   - a comment introduced a **state** the reference image/description did not cover (an `ALREADY-MATCHES`
     against one state, e.g. en-route, says nothing about a later-comment state, e.g. completed).
   On a refused no-op, do **not** earn it — change nothing, and surface it for a human (render card **C6**
-  — defined in Step 3; under `--auto` print the reason to stderr and stop).
+  — defined in Step 3).
 - **Present the plan** (table: `Ti | property | target | code site | current | new | shared? | status`).
-  Default mode takes ONE plan confirmation — **except** skip it when exactly ONE target resolved AND its
-  source is the ticket (not `⚠ estimated`): the next card's Other field is already the correction escape,
-  so a separate confirm is one prompt too many. Keep the confirm for ≥2 targets, any `⚠ estimated`, or
-  free-text. `--auto` skips the interactive confirm but records the plan.
+  Default mode takes ONE plan confirmation — **except** skip it when ALL THREE hold: exactly ONE target
+  resolved, AND its source is the ticket (not `⚠ estimated`), AND the receipt carries no `⚠` provenance
+  stamp (`ticket-unavailable` / `comments-unavailable`): the next card's Other field is already the
+  correction escape, so a separate confirm is one prompt too many. For ≥2 targets, any `⚠` flag, or
+  free-text: the plan confirm is a **card** — render the table with `Proceed` / `Adjust the plan`
+  options and ⛔ END YOUR TURN.
 
-**4e — record `base_ref` (clean-trunk-anchored) — guard against a poisoned baseline.** (Full rationale —
-the cross-worktree contamination case — is in `commands/design/ui-tweak/apply.md` Step 5.)
+**4e — record `base_ref` (clean-trunk-anchored) — guard against a poisoned baseline** (a `base_ref`
+taken from a non-trunk HEAD makes every later no-op/diff verdict invalid):
 
 ```bash
 WT=$(git rev-parse --show-toplevel)                                                  # re-derive (rule 2)
@@ -487,18 +551,28 @@ fi
 (A correction/repair re-run keeps the original `base_ref` — never overwrite it, so preview/audit always
 diff the **cumulative** change.)
 
-**4f — edit, value/UI-only.** Make the change with `Edit`/`Write` (inspect with `Read`/`Grep`/`Glob`).
-Keep the diff to **pure-visual values, layout, and structure — no logic, no build config, no source
-rewrites**. There is no edit-time hook; the Step-7 panel reverts the whole run on any logic finding
-(max 3 agent repairs). Prefer the narrowest change that satisfies the targets. Never route an edit
-through Bash.
+**4f — edit, value/UI-only (+ keep the tests tracking it).** Make the change with `Edit`/`Write`
+(inspect with `Read`/`Grep`/`Glob`). Keep the **production** diff to pure-visual values, layout, and
+structure — no logic, no build config, no source rewrites. There is no edit-time hook; the Step-7
+panel reverts the whole run on any logic finding (max 3 agent repairs). Prefer the narrowest change
+that satisfies the targets. Never route an edit through Bash.
 
-Then STOP and render the iteration card (Step 5). (`--auto`: skip the card — go to "Auto path" below.)
+**Update the affected tests in the same pass.** A moved/renamed/restyled widget usually has test
+finders or expectations pointing at its old home — update them so the suite stays consistent with
+the new UI. This is expected, not scope creep: test-file edits never count against "UI-only" (the
+Step-7 judges know this). Two bounds: never add production code just to satisfy a test, and do NOT
+run the suite / analyzer / formatter now — iteration stays edit-only; the affected tests run once on
+the ship path (Step 7a.0).
+
+Then render the iteration card **C1 (show-me)** (Step 5) and ⛔ END YOUR TURN — the apply turn
+ALWAYS ends at C1, never at a prose summary of what was edited.
 
 ## Step 5 — iteration card C1 (show-me)
 
-Render **C1 (show-me)** (header `Next step`). The build has NOT run — do not claim
-it compiles:
+Render **C1 (show-me)** (header `Next step`) and ⛔ END YOUR TURN — this card is the only correct
+ending of an apply turn. The build has NOT run — do not claim it compiles. Card language rules
+apply: component + visual property + old→new only; no file paths, class names, branch names, or
+test talk in the card body:
 > I made the change (look-and-feel values only).
 > What changed: order-page primary button — height 44→48dp, corner 4→8dp.
 > [source: Figma-confirmed / from the work-item / ⚠ estimated]
@@ -777,21 +851,21 @@ never error.**
   tap); if `idb` is absent, Tier-2 is unavailable on iOS → fail-silent.
 - **Capture mechanics:** screenshot + a recording that spans the CRUX into
   `.dev/ui-tweak-fast/demo`. Scope before recording: start on the TRIGGER control for
-  reuse/button-triggered behaviours (B6), keep recording until the crux UI has RENDERED — async loads
-  can show a placeholder 10s+ (A3) — and screenshot-verify the post-fix state before finalizing (B8).
+  reuse/button-triggered behaviours, keep recording until the crux UI has RENDERED — async loads
+  can show a placeholder 10s+ — and screenshot-verify the post-fix state before finalizing.
   - Recording is a backgrounded SHELL job with a generous safety cap, stopped by SIGINT — never a
     fixed short window (the clip must contain the crux, whatever its length), and on Android NEVER
-    the MCP `adb_shell` tool (its schema has no `run_in_background`; the file is never produced — A1):
+    an MCP `adb_shell`-style tool (no backgrounding; the file is never produced):
     `adb -s "$id" shell screenrecord --size 720x1280 --time-limit 180 /sdcard/uitw.mp4 &` … act …
-    `adb -s "$id" shell pkill -INT screenrecord` (SIGINT flushes a valid mp4 — A2), then pull.
+    `adb -s "$id" shell pkill -INT screenrecord` (SIGINT flushes a valid mp4), then pull.
   - iOS: `xcrun simctl io "$id" screenshot after-<id>.png`; record `xcrun simctl io "$id" recordVideo
     --codec h264 after-<id>.mp4` backgrounded, SIGINT-stopped after the crux renders.
   - Android screenshot: `adb -s "$id" exec-out screencap -p > after-<id>.png`; the `--size` ladder
     still applies (`--size 720x1280` → `--size 540x1140` → device-native) — a sizeless `screenrecord`
     throws codec error -22 on large native resolutions and produces a 0-byte file.
   - Post-process: normalize VFR→CFR before any trim (`ffmpeg -i in.mp4 [-t N] -r 15 -vsync cfr -c:v
-    libx264 -pix_fmt yuv420p -movflags +faststart out.mp4` — A4) and verify the final clip's last
-    frame is the crux (`ffmpeg -sseof -1 -i out.mp4 -frames:v 1 last.png` — A5); no `ffmpeg` → skip
+    libx264 -pix_fmt yuv420p -movflags +faststart out.mp4`) and verify the final clip's last
+    frame is the crux (`ffmpeg -sseof -1 -i out.mp4 -frames:v 1 last.png`); no `ffmpeg` → skip
     with a one-line note and upload the raw SIGINT-flushed clip.
   Append each output path to `.dev/ui-tweak-fast/demo-files`.
 - **Pixel-verify subtle colours (stale-build guard).** Only when the checklist names a colour
@@ -832,8 +906,7 @@ rm -f "$WT/.dev/ui-tweak-fast/repair-count"                           # clean bu
   { echo "kind: build"; echo "error:"; echo "<one-line compile error>"; } > "$WT/.dev/ui-tweak-fast/repair-context"
   rm -f "$WT/.dev/ui-tweak-fast/build-pass" "$WT/.dev/ui-tweak-fast/preview-shown"
   ```
-  Go to the repair loop (max 3, then engineer card Ce). Under `--auto`, print
-  `UI-TWEAK-FAST BUILD-FAIL: <reason> — repair attempt <n>/3.` to stderr.
+  Go to the repair loop (max 3, then engineer card Ce).
 
 After a successful **interactive** preview (`DIRECT_SHIP=0`) → render **C1 (looks-good)**
 (header `Next step`): show the captured screenshot(s) (one per device when the
@@ -842,6 +915,7 @@ dual-device choice was picked) if any, else an honest *"I confirmed it compiles 
 > Here's <screen> with your change, on <device(s)>:  [screenshot]
 > (What changed: <plain summary>.)  Does it look right?
 
+(⛔ a card — END YOUR TURN after rendering it.)
 - options: **`Ship it`** *(recommended)* — "Run the full check + open a draft PR with a link on the
   work item." / **`I want more changes`** — "Tell me what to adjust; I'll redo and re-show it."
 - routing: `Ship it` → write `deliver` → Step 7. `I want more changes` / Other → Correction loop. Other
@@ -867,6 +941,13 @@ WT=$(git rev-parse --show-toplevel)
 grep -q '^Status: PASS' "$WT/.dev/ui-tweak-fast/build-pass" 2>/dev/null || { echo "FAIL: build did not pass — run preview first." >&2; exit 1; }
 BASE=$(cat "$WT/.dev/ui-tweak-fast/base_ref")
 ```
+
+**7a.0 — run the affected tests ONCE (ship path only).** Derive the affected test files from the
+frozen audit set: every edited file under `test/`, plus existing tests whose path mirrors an edited
+`lib/` file. Run just those (`$FLUTTER_BIN test <files>` on flutter; the platform test runner
+otherwise; none affected → skip). A failure is treated exactly like a build FAIL (6f): NUL-safe
+whole-edit revert, `repair-context` `kind: build` with the one-line failure, repair loop (max 3).
+This is the once-per-ship test gate that iteration deliberately skips.
 
 **7a — format first**, then compute the diff ONCE. Run the profile `format_cmd` (e.g.
 `/format --skip-commit`, or inline `dart format .`) so the judges see exactly what will ship. Then:
@@ -900,9 +981,7 @@ tokens (`App*` accessors), and generic shapes (`=>`, `return`, `if (`, `for (`) 
 ```bash
 ADDED=$(printf '%s\n' "$DIFF_TEXT" | grep -E '^\+' | grep -vE '^\+\+\+')
 # Unambiguous runtime-behavior signals only (macOS/BSD grep -E safe; no \b).
-# KEEP IN SYNC with commands/design/ui-tweak/audit.md's BEHAVIOR_RE (the canonical copy; there is no
-# automated byte-equal lint covering THIS file — the prompt-lint gate only binds audit.md ↔ the
-# dispatcher workflow). If you tune one, tune both.
+# Maintainers: keep in sync with /ui-tweak audit.md's BEHAVIOR_RE if you tune it.
 BEHAVIOR_RE='(initState|dispose|didChangeDependencies|didUpdateWidget|deactivate|setState|notifyListeners|addListener|removeListener)\(|GestureRecognizer|await |async[ ({]|\.then\(|ref\.(read|watch|listen)\(|Navigator\.|GoRouter|context\.(go|push|pop)|\.pushNamed\(|\.pushReplacement|StreamSubscription|StreamController'
 STRUCTURAL_HIT=$(printf '%s\n' "$ADDED" | grep -cE "$BEHAVIOR_RE")
 ```
@@ -922,13 +1001,22 @@ bindings):
 - **Judge A — behavior lens**: *"Here
   is a diff that is supposed to be UI-only (visual values, layout, structure). Decide whether it changes
   any PROGRAM BEHAVIOR — control flow, data/state, side effects, evaluation order, contracts, defaults,
-  interaction wiring, navigation. Default to BLOCKED if uncertain. Return first line `Status: CLEAR` or
-  `Status: BLOCKED` + one sentence."*
+  interaction wiring, navigation. Changes under `test/` (or `*_test.dart`) that merely track the UI
+  change — updated finders, expectations, goldens — are acceptable and never a reason to block; block a
+  test change only if it masks a production behavior change. Default to BLOCKED if uncertain. Return
+  first line `Status: CLEAR` or `Status: BLOCKED` + one sentence."*
 - **Judge B — UI-completeness lens**: *"Here
-  is a diff. Confirm every change is purely visual/layout/structure, AND read
+  is a diff. Confirm every PRODUCTION change is purely visual/layout/structure (test-file updates that
+  track the UI change are expected — don't block on them), AND read
   `.dev/ui-tweak-fast/figma-context.md` and assert the diff covers every WILL-EDIT target row (a miss →
   BLOCKED; when `Fetched: DEGRADED/SKIPPED`, judge on UI-vs-logic merits only). Return first line
   `Status: CLEAR` or `Status: BLOCKED` + one sentence."*
+
+**No subagent mechanism on your host?** (Execution-contract rule 3) Run the two lenses yourself,
+inline and SEQUENTIALLY — complete lens A against the diff and write `.dev/dev-reviewer-pass.md`
+BEFORE starting lens B, so each verdict is a self-contained evaluation rather than one blended
+opinion. The decorrelation is weaker than two independent contexts; do not weaken it further by
+answering both lenses in one breath.
 
 Persist each judge's returned text: Judge A → `.dev/dev-reviewer-pass.md`, Judge B →
 `.dev/ui-verify-pass.md` (first line `Status: CLEAR|BLOCKED`).
@@ -945,9 +1033,7 @@ git -C "$WT" diff "$BASE" -z --name-only | xargs -0 git -C "$WT" checkout --   #
 n=$(cat "$WT/.dev/ui-tweak-fast/repair-count" 2>/dev/null || echo 0); echo $((n+1)) > "$WT/.dev/ui-tweak-fast/repair-count"
 { echo "kind: audit"; echo "finding:"; echo "<one-line plain summary of what touched logic>"; } > "$WT/.dev/ui-tweak-fast/repair-context"
 ```
-Go to the repair loop. Under `--auto`, audit BLOCKED is **loud-fail with NO repair loop** (a logic
-finding is not a mechanical fix): still run the revert, then print
-`UI-TWEAK-FAST BLOCKED (<judge>): <reason> — reverted, no changes kept.` to stderr and exit non-zero.
+Go to the repair loop.
 
 ## Step 8 — ship: commit, draft PR, ticket transition (inline; no `/commit` / `/pull-request` read)
 
@@ -961,8 +1047,8 @@ PR body's `### Formatter-only changes`). No extra confirm — "Ship it" already 
 > `[ui-tweak]`, so this skill presents itself outwardly as plain `/ui-tweak`; the "fast" variant is
 > never surfaced on the commit, PR, or work item. This is deliberate — **do NOT "correct" the prefix
 > back to `[ui-tweak-fast]`.** (Internal-only references keep the real name on purpose because they are
-> never published: the `.dev/ui-tweak-fast/` markers, the `~/.cache/ui-tweak-fast/` clone, the Step-1
-> usage-telemetry line, and the `--auto` stderr diagnostics.) The PR body header, the ticket PR-link
+> never published: the `.dev/ui-tweak-fast/` markers, the `~/.cache/ui-tweak-fast/` clone, and the
+> Step-1 usage-telemetry line.) The PR body header, the ticket PR-link
 > comment, and the `ui-tweak-demo` markers below already say "UI tweak" / "ui-tweak-demo" — keep them.
 
 ```bash
@@ -1009,7 +1095,6 @@ the device and the detached `flutter run` processes (best-effort; `kill_run` is 
 📦 Link: <url>  (draft — an engineer reviews it; it won't go live automatically.)
 👉 Your part is finished. Want more changes? Just tell me.
 ```
-Under `--auto`, instead print `Ticket <id>: ui-tweak-fast shipped — draft PR open.` and exit 0.
 
 ## Correction & repair loops
 
@@ -1043,39 +1128,19 @@ Both keep the original `base_ref` (the diff is always cumulative).
   > an engineer. Everything's back to how it was. (Or pick Other to describe it differently and I'll
   > start fresh, which resets my attempts.)
 
-  Under `--auto`, at `repair-count >= 3` print
-  `FAIL: /ui-tweak-fast --auto — repair budget exhausted (3); needs an engineer.` to stderr, exit
-  non-zero.
-
-## Auto path (no cards)
-
-Under `--auto`: Step 0 (parse) → Step 1 (worktree; id required) → Step 2 → Step 3 (triage; a clear
-needs-logic verdict loud-fails with `UI-TWEAK-FAST NEEDS-ENGINEER: …` and exits non-zero **before any
-edit**) → Step 4 (single apply, no
-plan confirm) → write `deliver` + `direct-ship` (skip the device preview; if `.not-deliverable` exists,
-fail with `… change is partial …` to stderr) → Step 6 build-only compile gate → Step 7 (both judges,
-loud-fail on BLOCKED, no repair loop) → Step 8 (commit → draft PR → transition). The draft PR an
-engineer reviews is the human gate that replaces the cards. Every failure prints ONE deterministic
-stderr line and exits non-zero.
+  (⛔ a card — END YOUR TURN after rendering it.)
 
 ## Constraints
 
 - Terminal is always a **draft PR** — never draft→ready, never merge. Allowed ticket writes: the
   PR-link comment, attaching a captured/handed-in demo, and the PR-open transition (status → In Review +
   drop `ready-to-dev`, Linear-only). `assignee` is never touched.
-- The change set is **UI-only** (visual values / layout / structure). Logic, build config
-  (`build.gradle`, `pubspec.yaml`, `Info.plist`, `AndroidManifest.xml`), referenced `@+id`/function
-  renames → blocked by the Step-7 panel.
+- The **production** change set is **UI-only** (visual values / layout / structure). Logic, build
+  config (`build.gradle`, `pubspec.yaml`, `Info.plist`, `AndroidManifest.xml`), referenced
+  `@+id`/function renames → blocked by the Step-7 panel. **Test files are the one carve-out**:
+  updating tests to track the UI change is expected (Step 4f) and never blocks.
 - The persistent preview clone is an **optimization, not a requirement** — if it can't be created, fall
   back to building from the worktree with a WARN. Never run `git clean -x` in it (that would wipe the
   warm caches that are the whole point). It is created off trunk and re-aligned to `base_ref` each run;
   it never holds uncommitted ticket state that matters (the worktree is the source of truth).
 - No fan-out/orchestration tooling, no pinned models — runs identically on any host.
-
-## Install / availability
-
-This skill is picked up automatically by the repo's install scripts (`./install.sh` and
-`./install-cursor.sh`) the next time either is run, since both symlink every `skills/<category>/<name>/`
-directory. No new install-script wiring is needed. If your host maps tools via a rules file, ensure it
-maps the generic operations used here (spawn a subagent, ask the designer, the worktree absolute-path
-rule) to the host's own tool names.
