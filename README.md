@@ -16,6 +16,16 @@ cd gogox-claude
 
 Skills appear in `~/.claude/skills/`, commands in `~/.claude/commands/`, and agents in `~/.claude/agents/`. All are symlinked — `git pull` is the upgrade, no need to re-run `install.sh`.
 
+#### Just want one skill? (e.g. `ui-tweak-fast`)
+
+You don't need to clone the whole repo. `ui-tweak-fast` is self-contained and installable on its own via the [Skills CLI](https://skills.sh/):
+
+```bash
+npx skills add charlie-yang-gogox/gogox-claude/skills/design/ui-tweak-fast
+```
+
+This drops just that skill into `~/.claude/skills/` — no `install.sh`, no other gogox-claude assets. `npx skills update` upgrades it later.
+
 ### 2. Set up a project (once per project)
 
 In any project repo, run:
