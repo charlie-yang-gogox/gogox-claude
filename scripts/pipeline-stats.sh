@@ -90,6 +90,7 @@ def num(v):
 # summed per run; per-run scalars read from whichever row carries them (they are
 # written on the first model row only, so "first non-blank wins" is exact).
 runs = OrderedDict()  # key -> aggregate dict
+excluded_unknown = {"runs": set(), "cost": 0.0}  # interactive / non-pipeline rows
 
 SCALAR_NUM = [
     "wall_clock_sec", "active_sec", "active_proxy_sec", "total_turns",
@@ -99,8 +100,28 @@ SCALAR_NUM = [
 
 with open(csv_path, newline="") as f:
     for row in csv.DictReader(f):
-        key = (row.get("run_stem") or "").strip() or (row.get("session_id") or "").strip()
+        run_stem = (row.get("run_stem") or "").strip()
+        ticket = (row.get("ticket_id") or "").strip()
+        session_id = (row.get("session_id") or "").strip()
+        # A dispatcher batch shares ONE run_stem across N tickets (each ticket is
+        # its own upsert row — write_csv keys on (ticket_id, run_stem)). So the
+        # run key MUST include ticket_id on the batch path; keying on run_stem
+        # alone collapses the whole batch to one ticket and silently drops the
+        # rest (confirmed: 15 run_stems in the live CSV span >1 ticket). Standalone
+        # rows have no run_stem and a unique session_id per (session, ticket).
+        if run_stem:
+            key = run_stem + "\t" + ticket
+        else:
+            key = session_id
         if not key:
+            continue
+        # UNKNOWN-ticket rows are interactive / dev sessions where no ticket was
+        # inferred — not pipeline deliveries. Exclude them from the pipeline fleet
+        # trend, but report the excluded count + cost so the omission is visible
+        # (never silently folded into "runs").
+        if ticket == "UNKNOWN" or ticket == "":
+            excluded_unknown["runs"].add(key)
+            excluded_unknown["cost"] += num(row.get("estimated_cost")) or 0.0
             continue
         r = runs.get(key)
         if r is None:
@@ -219,7 +240,12 @@ generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 md = []
 md.append("# Pipeline stats — fleet trend")
 md.append("")
-md.append(f"_Generated {generated_at} from `{csv_path}` · {len(runs)} runs across {len(by_month)} month(s)._")
+md.append(f"_Generated {generated_at} from `{csv_path}` · {len(runs)} pipeline runs across {len(by_month)} month(s)._")
+n_excl = len(excluded_unknown["runs"])
+if n_excl:
+    md.append("")
+    md.append(f"_Excluded {n_excl} UNKNOWN-ticket (interactive / non-pipeline) run(s), "
+              f"${excluded_unknown['cost']:.2f} — not part of the pipeline fleet trend._")
 md.append("")
 md.append("> Report-only, advisory. A **run** is deduped by `run_stem`/`session_id`; "
           "per-run scalars are read-first (never summed across model rows). "
@@ -257,7 +283,9 @@ with open(jsonl_path, "w") as f:
     for r in rows_out:
         f.write(json.dumps({**r, "generated_at": generated_at}) + "\n")
 
-print(f"pipeline-stats: wrote {md_path} and {jsonl_path} ({len(runs)} runs, {len(by_month)} months).")
+print(f"pipeline-stats: wrote {md_path} and {jsonl_path} "
+      f"({len(runs)} pipeline runs, {len(by_month)} months; "
+      f"excluded {len(excluded_unknown['runs'])} UNKNOWN-ticket runs).")
 if to_stdout:
     print()
     print(md_text)
