@@ -128,6 +128,11 @@ CSV_FIELDS = [
     "first_pass_accepted",  # 1 if merged with zero CHANGES_REQUESTED, else 0
     "reviewer_comments",    # review/issue comments not authored by the PR author
     "ci_fail_count",        # failed check-runs on the head sha (best-effort)
+    # Which denominator time_saved_multiplier used: active | active_proxy | "".
+    # Without it, a consumer that averages the multiplier across rows mixes
+    # turn-duration-based (main loop) and gap-proxy-based (batch) denominators —
+    # different quantities. Written on the first model row only (see write_csv).
+    "multiplier_basis",
 ]
 
 
@@ -264,14 +269,6 @@ def find_jsonl_by_session_id(session_id: str):
 
 TICKET_RE = re.compile(r"([A-Z]{2,}-\d+)", re.IGNORECASE)
 
-# Matches the Agent tool_use `description` field that /ggx-dispatcher emits
-# when spawning a per-ticket subagent. Format defined in commands/dev/ggx-dispatcher.md §5.3:
-#   description: `Dispatch <ticket-id> via <port|dev>:ff`
-DISPATCHER_DESC_RE = re.compile(
-    r"^\s*Dispatch\s+([A-Z]+-\d+)\s+via\s+(port|dev):ff\b",
-    re.IGNORECASE,
-)
-
 
 def anchored_ticket_re(ticket_id: str) -> re.Pattern:
     """Anchored, case-insensitive matcher for a ticket id so `GGC-7` never
@@ -337,195 +334,6 @@ def get_agent_model(session_dir: Path, agent_id: str) -> str:
     except Exception:
         pass
     return "unknown"
-
-
-# ===================================================================
-# Dispatcher contribution lookup
-# ===================================================================
-
-
-def find_dispatcher_contribution(
-    ticket_id: str,
-    current_session_id: str,
-    lookback_days: int = 7,
-) -> list[dict]:
-    """Find /ggx-dispatcher subagent runs that targeted this ticket and return
-    one synthetic agent entry per run (shape compatible with ``metrics["agents"]``).
-
-    Background-spawned Agents (``run_in_background: true`` — what dispatcher uses)
-    do NOT write a ``totalDurationMs`` / ``totalTokens`` rollup back to the parent
-    JSONL — the parent only sees an ``isAsync: true`` ack. The actual work lives in
-    ``<project>/<session-id>/subagents/agent-<agentId>.jsonl``. So we cross-reference:
-
-      1. Scan parent JSONLs for Agent ``tool_use`` blocks whose ``description`` matches
-         ``Dispatch <ticket-id> via (port|dev):ff``.
-      2. Find each tool_use's matching ``tool_result`` to recover the ``agentId``.
-      3. Parse the subagent JSONL with ``parse_session`` to get model usage + nested
-         agents, then aggregate into a single rollup entry with pre-computed cost.
-
-    Bounded by ``lookback_days`` so we don't re-scan years of JSONLs every run.
-    """
-    if not PROJECTS_DIR.exists() or ticket_id == "UNKNOWN":
-        return []
-    cutoff = time.time() - lookback_days * 86400
-    target = ticket_id.upper()
-    out: list[dict] = []
-
-    for project in PROJECTS_DIR.iterdir():
-        if not project.is_dir():
-            continue
-        for jsonl in project.glob("*.jsonl"):
-            if jsonl.stem == current_session_id:
-                continue
-            try:
-                if jsonl.stat().st_mtime < cutoff:
-                    continue
-            except OSError:
-                continue
-
-            try:
-                lines = jsonl.read_text(errors="replace").splitlines()
-            except OSError:
-                continue
-
-            # Pass 1: tool_use_id -> (lane, description) for matching dispatcher spawns
-            matching: dict[str, tuple[str, str]] = {}
-            for line in lines:
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                msg = data.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get("content", [])
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if not (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                        and block.get("name") == "Agent"
-                    ):
-                        continue
-                    inp = block.get("input") or {}
-                    if not isinstance(inp, dict):
-                        continue
-                    desc = inp.get("description", "")
-                    if not isinstance(desc, str):
-                        continue
-                    m = DISPATCHER_DESC_RE.match(desc)
-                    if not m or m.group(1).upper() != target:
-                        continue
-                    tu_id = block.get("id", "")
-                    if tu_id:
-                        matching[tu_id] = (m.group(2).lower(), desc.strip())
-
-            if not matching:
-                continue
-
-            # Pass 2: tool_use_id -> agentId via tool_result (even the async-start
-            # ack carries agentId).
-            tu_to_agent: dict[str, str] = {}
-            for line in lines:
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                tur = data.get("toolUseResult")
-                if not isinstance(tur, dict):
-                    continue
-                agent_id = tur.get("agentId")
-                if not agent_id:
-                    continue
-                msg = data.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get("content", [])
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_result"
-                    ):
-                        tu_id = block.get("tool_use_id", "")
-                        if tu_id in matching and tu_id not in tu_to_agent:
-                            tu_to_agent[tu_id] = agent_id
-                            break
-
-            # Pass 3: aggregate each subagent jsonl into one synthetic agent entry.
-            session_dir = jsonl.parent / jsonl.stem
-            for tu_id, agent_id in tu_to_agent.items():
-                sub_jsonl = session_dir / "subagents" / f"agent-{agent_id}.jsonl"
-                if not sub_jsonl.exists():
-                    continue
-                try:
-                    sub_metrics = parse_session(sub_jsonl)
-                except Exception:
-                    continue
-
-                sub_durations = compute_durations(sub_metrics)
-
-                direct_cost = 0.0
-                direct_tokens = 0
-                dominant_model = "unknown"
-                dominant_tokens = -1
-                for model_name, u in sub_metrics["model_usage"].items():
-                    family = get_model_family(model_name)
-                    model_tokens = sum(u.values())
-                    direct_tokens += model_tokens
-                    direct_cost += calculate_cost(
-                        {
-                            "input_tokens": u["input_tokens"],
-                            "output_tokens": u["output_tokens"],
-                            "cache_creation_input_tokens": u["cache_write_tokens"],
-                            "cache_read_input_tokens": u["cache_read_tokens"],
-                        },
-                        family,
-                        model_name,
-                    )
-                    if model_tokens > dominant_tokens:
-                        dominant_tokens = model_tokens
-                        dominant_model = model_name
-
-                nested_cost = sum(
-                    calculate_cost(
-                        a["usage"], get_model_family(a["model"]), a["model"]
-                    )
-                    for a in sub_metrics["agents"]
-                )
-                nested_tokens = sum(
-                    a.get("total_tokens", 0) for a in sub_metrics["agents"]
-                )
-
-                lane, desc = matching[tu_id]
-                out.append(
-                    {
-                        "agent_type": "dispatcher-spawn",
-                        "agent_id": agent_id,
-                        "description": desc,
-                        "total_duration_ms": int(
-                            sub_durations["wall_clock_sec"] * 1000
-                        ),
-                        "active_duration_ms": int(
-                            sub_durations["active_sec"] * 1000
-                        ),
-                        "total_tokens": direct_tokens + nested_tokens,
-                        "total_tool_use_count": sub_metrics["tool_calls"],
-                        # `usage` is unused when `precomputed_cost` is set, but
-                        # kept empty for shape compatibility with regular agents.
-                        "usage": {},
-                        "tool_stats": {},
-                        "model": dominant_model,
-                        "precomputed_cost": direct_cost + nested_cost,
-                        "source_session": jsonl.stem,
-                        "lane": lane,
-                        "nested_agent_count": len(sub_metrics["agents"]),
-                    }
-                )
-
-    return out
 
 
 # ===================================================================
@@ -1296,9 +1104,12 @@ def format_outcome_section(outcome: dict | None, current_cost: float) -> list[st
     cf = _num_or_blank(o.get("ci_fail_count"))
     if cf != "":
         lines.append(f"| CI failures (head) | {cf} |")
-    # Cost→value: the honest ROI unit (cost is an INPUT, a merged PR is VALUE).
-    if merged and current_cost > 0:
-        lines.append(f"| **Cost per merged PR** | **{format_cost(current_cost)}** |")
+    # NOTE: the cost→value ROI ratio (cost per merged PR) is deliberately NOT
+    # computed here — it is a FLEET aggregate (a ratio over many runs) that
+    # belongs in the GGC-54 roll-up, not in a single per-run report where n=1
+    # would masquerade as a rate. The raw inputs it needs — this run's cost (the
+    # report header) and pr_merged (the CSV column) — are both emitted; the
+    # aggregator divides.
     return lines
 
 
@@ -1545,6 +1356,42 @@ def write_csv(
                 for a in agents
             )
 
+            # Per-(session|run) SCALARS — identical across this run's model rows.
+            # active_sec: prefer real turn-duration active; fall back to the
+            # busy-time proxy when active is structurally 0 (batch scan path) so
+            # the multiplier is populated there too. multiplier_basis records
+            # which denominator was used (active | active_proxy) so a consumer
+            # never conflates the two.
+            sp_sec = story_point_seconds(story_points)
+            active_basis = (
+                durations["active_sec"] if durations["active_sec"] > 0
+                else durations.get("active_proxy_sec", 0)
+            )
+            multiplier = (
+                round(sp_sec / active_basis, 1)
+                if (sp_sec is not None and active_basis > 0) else ""
+            )
+            multiplier_basis = ""
+            if multiplier != "":
+                multiplier_basis = "active" if durations["active_sec"] > 0 else "active_proxy"
+            est_manual = round(sp_sec) if sp_sec is not None else ""
+            outcome_cols = outcome_to_csv(outcome)
+
+            # These SESSION-SCALAR columns are written ONLY on the first model
+            # row of the run; subsequent model rows carry "". This stops a naive
+            # aggregator (the GGC-54 grep/awk fleet roll-up) from N×-counting a
+            # per-run fact across a run's sonnet+haiku+opus rows (e.g. summing
+            # pr_merged to 3). Read-first / dedup-by-(session_id|run_stem) before
+            # aggregating; the pre-existing per-session columns (wall/active/
+            # tokens/…) remain duplicated per row for backward-compat, so those
+            # too must be dedup'd, not summed.
+            session_scalars = {
+                "time_saved_multiplier": multiplier,
+                "multiplier_basis": multiplier_basis,
+                "active_proxy_sec": round(durations.get("active_proxy_sec", 0)),
+                **outcome_cols,
+            }
+
             # Build new rows for this session
             new_rows: list[dict] = []
             for model in sorted(metrics["model_usage"]):
@@ -1561,6 +1408,10 @@ def write_csv(
                     family,
                     model,
                 )
+                # Session-scalar columns only on the first model row (see above).
+                scalars = session_scalars if not new_rows else {
+                    k: "" for k in session_scalars
+                }
                 new_rows.append(
                     {
                         "timestamp": now,
@@ -1587,20 +1438,13 @@ def write_csv(
                         "agent_total_cost": round(agent_cost, 4),
                         "story_points": story_points if story_points is not None else "",
                         "manual_hours": manual_hours if manual_hours is not None else "",
-                        "estimated_manual_sec": round(sp_sec) if (sp_sec := story_point_seconds(story_points)) is not None else "",
-                        # Prefer real active_sec (turn_durations); fall back to the
-                        # busy-time proxy when active is structurally 0 (batch scan
-                        # path) so the multiplier is populated there too. The
-                        # denominator basis is disclosed by which of active_sec /
-                        # active_proxy_sec is non-zero in the row.
-                        "time_saved_multiplier": round(sp_sec / _active_basis, 1) if sp_sec is not None and (_active_basis := (durations["active_sec"] if durations["active_sec"] > 0 else durations.get("active_proxy_sec", 0))) > 0 else "",
+                        "estimated_manual_sec": est_manual,
                         "claude_code_version": metrics.get(
                             "claude_code_version", ""
                         ),
                         "run_stem": run_stem or "",
                         "metrics_provenance": metrics_provenance,
-                        "active_proxy_sec": round(durations.get("active_proxy_sec", 0)),
-                        **outcome_to_csv(outcome),
+                        **scalars,
                     }
                 )
 
@@ -2001,23 +1845,6 @@ def main():
         action="store_true",
         help="Hook mode: read context from stdin, CSV only, no Linear",
     )
-    parser.add_argument(
-        "--include-dispatcher",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Pull in metrics from /ggx-dispatcher subagent runs that targeted "
-            "the current ticket within the last 7 days (when the dispatcher "
-            "session and the current session are separate Claude Code sessions). "
-            "Default: on. Use --no-include-dispatcher to disable."
-        ),
-    )
-    parser.add_argument(
-        "--dispatcher-lookback-days",
-        type=int,
-        default=7,
-        help="Lookback window for --include-dispatcher (default: 7)",
-    )
     # ---- GGC-74: batch dispatcher finalize mode ----
     # Scan a parent session's sibling subagent transcripts for one ticket and
     # aggregate (SUM) their cost/tokens/durations into a single synthetic
@@ -2179,35 +2006,6 @@ def main():
         write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points, args.manual_hours, outcome=outcome)
         print(f"\nCSV updated at {CSV_PATH}", file=sys.stderr)
 
-    # ---- Enrich agents with /ggx-dispatcher contribution ----
-    # Done AFTER write_csv so the CSV row remains a clean per-session ledger;
-    # the dispatcher agents are surfaced only in the human-readable report and
-    # the JSON output.
-    dispatcher_agents: list[dict] = []
-    if args.include_dispatcher:
-        dispatcher_agents = find_dispatcher_contribution(
-            ticket_id, session_id, lookback_days=args.dispatcher_lookback_days,
-        )
-        if dispatcher_agents:
-            metrics["agents"].extend(dispatcher_agents)
-            print(
-                f"Included {len(dispatcher_agents)} dispatcher subagent run(s) "
-                f"for {ticket_id} (lookback {args.dispatcher_lookback_days}d).",
-                file=sys.stderr,
-            )
-        elif ticket_id == "UNKNOWN":
-            print(
-                "Warning: --include-dispatcher set but ticket id could not be "
-                "detected from cwd/branch; skipped.",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"No dispatcher subagent runs found for {ticket_id} within "
-                f"{args.dispatcher_lookback_days}d.",
-                file=sys.stderr,
-            )
-
     # ---- Output ----
     if args.json:
         output = {
@@ -2231,17 +2029,6 @@ def main():
                     "model": a["model"],
                 }
                 for a in metrics["agents"]
-            ],
-            "dispatcher_contribution": [
-                {
-                    "description": a["description"],
-                    "lane": a.get("lane"),
-                    "duration_sec": a["total_duration_ms"] / 1000,
-                    "tokens": a["total_tokens"],
-                    "model": a["model"],
-                    "source_session": a.get("source_session"),
-                }
-                for a in dispatcher_agents
             ],
             "message_counts": {
                 "user": metrics["user_msgs"],

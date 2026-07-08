@@ -18,8 +18,11 @@ Collect raw metrics from the current Claude Code session, optionally compare AI 
 - (none): full flow — metrics + AI summary + post to Linear
 - `--no-linear`: skip posting to Linear
 - `--no-csv`: skip CSV output
-- `--include-dispatcher` / `--no-include-dispatcher`: attribute /ggx-dispatcher subagent runs that targeted this ticket within the last 7 days. **Default: on** — covers the typical flow where the dispatcher ran in the main-repo session and the per-ticket work happened in a separate worktree session. The dispatcher's subagent JSONL is parsed in full, so its direct token usage AND any nested figma/verify/dev-agent work is included. **CSV is unaffected** (it stays a per-session ledger); the additions appear in the report and Linear comment only. Pass `--no-include-dispatcher` to disable.
-- `--dispatcher-lookback-days N`: tune the lookback window (default 7).
+- `--outcome-json <file>`: ingest PR-outcome signals (merged?, cycle time, review rounds, first-pass, reviewer comments, CI fails) gathered from the ticket's PR; they are stored to the CSV outcome columns and rendered as an `### Outcome` report table. Fail-soft: absent/unreadable → metrics still post, outcome columns blank.
+
+**Report/CSV notes.** The report's Time-Analysis "AI Active" is real turn-duration time on this standalone path. `active_proxy_sec` (summed capped inter-record gaps — a busy-time proxy that INCLUDES tool wall time) is a distinct column that only substitutes for active time on the batch path below; `multiplier_basis` records which basis the speed multiplier used. Per-run scalar columns (outcome, proxy, multiplier) are written on the first model row of a run only — dedup / read-first by `session_id` (or `run_stem`) before aggregating, never naive-sum across model rows.
+
+**Batch finalize mode (internal — not for direct user use).** `--scan-subagents --ticket-id … --parent-session … --run-ts … --run-stem …` sums a dispatcher run's sibling subagent transcripts for one ticket into a single CSV row + one upserted "AI Session Report" comment. It is invoked by the `/ggx-dispatcher --metric` finalize stage, not by a human running `/session-metrics`. Subagent transcripts carry no turn-duration records, so this path reports `active_proxy_sec` in place of real active time.
 
 ## Steps
 
