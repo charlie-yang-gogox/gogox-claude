@@ -984,8 +984,11 @@ verdict / Coverage table with `shared?`), then a marker-wrapped `## Demo`:
 Demo content, in priority order:
 1. **Captured demo** (`demo-files`, preferred — the actual result): a Linear `assetUrl` is a
    **deterministic 401 to GitHub** on a private repo, so in the PR body it is **always a plain link**,
-   never `![](…)`; upload the file to the ticket and reference the returned `assetUrl`. Dedupe by titling
-   the attachment `ui-tweak-demo-<short-HEAD>` and skipping the upload if that title already exists.
+   never `![](…)`. Publish via the **`/ggx-attach` Attach core** (`commands/dev/ggx-attach.md` — the
+   single source of truth; do NOT re-derive) with `namespace: "ui-tweak-demo"`,
+   `sha: $(git -C "$WT" rev-parse --short HEAD)`, and `pr` absent (the PR doesn't exist yet): the core
+   writes ONE marked inline-rendered Linear comment (`<!-- ggx-attach:ui-tweak-demo -->`, idempotent by
+   marker + sha; never a download-card attachment) and returns the `assetUrl`(s) to reference here.
 2. **Ticket visuals**: image attachments from `ticket.json` embedded as `![]()` only if publicly
    fetchable (`curl -fsI <url>` → 200); the Figma node URL is a page → always a plain
    `Target design (Figma): <url>` link, never `![]()`.
