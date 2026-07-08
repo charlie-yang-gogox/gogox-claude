@@ -115,6 +115,19 @@ CSV_FIELDS = [
     # path where active_sec is structurally 0 (no turn_duration in subagent
     # transcripts). Distinct from active_sec: includes tool wall time.
     "active_proxy_sec",
+    # Outcome signals (PR2): value-delivered dimensions gathered at done-time
+    # from the ticket's PR (gh) by the finalize stage and passed via
+    # --outcome-json. These convert the cost columns above into ROI: cost is an
+    # INPUT, a merged PR is delivered VALUE. All empty when no PR/outcome is
+    # available (standalone runs, non-shipping tickets) — never fabricated.
+    "pr_url",
+    "pr_merged",            # 1 / 0 / "" — the one hard-to-fake value signal
+    "pr_state",             # MERGED | OPEN | CLOSED | DRAFT
+    "cycle_time_sec",       # PR createdAt -> mergedAt (or now if open)
+    "review_rounds",        # count of CHANGES_REQUESTED review submissions
+    "first_pass_accepted",  # 1 if merged with zero CHANGES_REQUESTED, else 0
+    "reviewer_comments",    # review/issue comments not authored by the PR author
+    "ci_fail_count",        # failed check-runs on the head sha (best-effort)
 ]
 
 
@@ -1193,6 +1206,81 @@ def get_ticket_cumulative(ticket_id: str, current_session_id: str, cwd: str) -> 
 
 
 # ===================================================================
+# Outcome signals (PR2)
+# ===================================================================
+
+
+def load_outcome_json(path: str | None) -> dict | None:
+    """Read the outcome bundle the finalize stage gathered from the ticket's PR.
+    Fail-soft: any read/parse error → None (metrics still post without outcomes)."""
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except Exception as e:
+        print(f"Warning: --outcome-json unreadable ({e}); continuing without outcomes", file=sys.stderr)
+        return None
+
+
+def _bool01(v) -> str | int:
+    """Normalize a truthy/None into 1 / 0 / "" for a CSV cell."""
+    if v is None or v == "":
+        return ""
+    return 1 if v in (True, 1, "1", "true", "True", "yes", "YES") else 0
+
+
+def _num_or_blank(v) -> str | int | float:
+    return v if isinstance(v, (int, float)) else ""
+
+
+def outcome_to_csv(outcome: dict | None) -> dict:
+    """Map an outcome dict (finalize-gathered) to the CSV outcome columns —
+    every field "" when absent, never fabricated."""
+    o = outcome or {}
+    return {
+        "pr_url": o.get("pr_url", "") or "",
+        "pr_merged": _bool01(o.get("merged")),
+        "pr_state": o.get("pr_state", "") or "",
+        "cycle_time_sec": _num_or_blank(o.get("cycle_time_sec")),
+        "review_rounds": _num_or_blank(o.get("review_rounds")),
+        "first_pass_accepted": _bool01(o.get("first_pass")),
+        "reviewer_comments": _num_or_blank(o.get("reviewer_comments")),
+        "ci_fail_count": _num_or_blank(o.get("ci_fail_count")),
+    }
+
+
+def format_outcome_section(outcome: dict | None, current_cost: float) -> list[str]:
+    """Render the '### Outcome' report block. Returns [] when no outcome data —
+    the section is simply omitted (no misleading zeros)."""
+    o = outcome or {}
+    if not o or not (o.get("pr_url") or o.get("pr_state") or o.get("merged") is not None):
+        return []
+    lines = ["", "### Outcome"]
+    lines.append("| Signal | Value |")
+    lines.append("|--------|-------|")
+    state = o.get("pr_state") or ("MERGED" if o.get("merged") else "?")
+    merged = bool(o.get("merged"))
+    lines.append(f"| PR | {state}{' ✅' if merged else ''} |")
+    if o.get("cycle_time_sec") is not None:
+        lines.append(f"| Cycle time (open→merge) | {format_duration(float(o['cycle_time_sec']))} |")
+    if o.get("review_rounds") is not None:
+        rr = o["review_rounds"]
+        fp = o.get("first_pass")
+        note = " (first-pass ✅)" if (merged and (fp or rr == 0)) else ""
+        lines.append(f"| Review rounds (changes-requested) | {rr}{note} |")
+    if o.get("reviewer_comments") is not None:
+        lines.append(f"| Reviewer comments | {o['reviewer_comments']} |")
+    if o.get("ci_fail_count") is not None:
+        lines.append(f"| CI failures (head) | {o['ci_fail_count']} |")
+    # Cost→value: the honest ROI unit (cost is an INPUT, a merged PR is VALUE).
+    if merged and current_cost > 0:
+        lines.append(f"| **Cost per merged PR** | **{format_cost(current_cost)}** |")
+    return lines
+
+
+# ===================================================================
 # Report formatter
 # ===================================================================
 
@@ -1210,6 +1298,7 @@ def format_report(
     current_cost: float = 0.0,
     run_stem: str | None = None,
     provenance: list[dict] | None = None,
+    outcome: dict | None = None,
 ) -> str:
     lines: list[str] = []
     prior = cumulative if cumulative and cumulative.get("prior_session_count", 0) > 0 else None
@@ -1341,6 +1430,9 @@ def format_report(
             multiplier = manual_sec / cum_wall
             lines.append(f"| **Speed** | **~{multiplier:.1f}x** vs AI-estimated manual (wall-clock basis) |")
 
+    # ---- Outcome signals (PR2): value delivered, next to the Speed above ----
+    lines.extend(format_outcome_section(outcome, current_cost))
+
     # ---- Provenance (GGC-74 batch scan) — list each summed subagent so an
     # accidental double-count is visible, not hidden in a summed scalar. ----
     if provenance:
@@ -1388,6 +1480,7 @@ def write_csv(
     manual_hours: float | None = None,
     run_stem: str | None = None,
     metrics_provenance: str = "",
+    outcome: dict | None = None,
 ):
     METRICS_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = CSV_PATH.with_suffix(".lock")
@@ -1485,6 +1578,7 @@ def write_csv(
                         "run_stem": run_stem or "",
                         "metrics_provenance": metrics_provenance,
                         "active_proxy_sec": round(durations.get("active_proxy_sec", 0)),
+                        **outcome_to_csv(outcome),
                     }
                 )
 
@@ -1732,6 +1826,7 @@ def run_scan_subagents_mode(args) -> None:
         sys.exit(2)
     ticket_id = args.ticket_id.upper()
     run_stem = args.run_stem
+    outcome = load_outcome_json(args.outcome_json)
 
     agg = scan_subagents_aggregate(
         args.parent_session,
@@ -1779,6 +1874,7 @@ def run_scan_subagents_mode(args) -> None:
             args.manual_hours,
             run_stem=run_stem,
             metrics_provenance=prov_str,
+            outcome=outcome,
         )
         print(f"\nCSV updated at {CSV_PATH} (run_stem={run_stem})", file=sys.stderr)
 
@@ -1787,7 +1883,7 @@ def run_scan_subagents_mode(args) -> None:
         metrics, durations, ticket_id, session_number, git_branch,
         session_label, args.summary_file, args.story_points,
         cumulative, current_total_cost,
-        run_stem=run_stem, provenance=provenance,
+        run_stem=run_stem, provenance=provenance, outcome=outcome,
     )
 
     if args.json:
@@ -1867,6 +1963,16 @@ def main():
         "--manual-hours",
         type=float,
         help="LLM-estimated pure-manual hours; snapped to the nearest story-point bucket. Ignored if --story-points is given.",
+    )
+    parser.add_argument(
+        "--outcome-json",
+        help=(
+            "Path to a JSON file of PR outcome signals gathered by the finalize "
+            "stage (keys: pr_url, merged, pr_state, cycle_time_sec, review_rounds, "
+            "first_pass, reviewer_comments, ci_fail_count). Stored to the CSV "
+            "outcome columns and rendered as an '### Outcome' report section. "
+            "Absent/unreadable → metrics still post, outcome columns blank."
+        ),
     )
     parser.add_argument(
         "--hook",
@@ -2043,9 +2149,12 @@ def main():
             model,
         )
 
+    # ---- Outcome signals (PR2) ----
+    outcome = load_outcome_json(args.outcome_json)
+
     # ---- CSV (raw session metrics, pre-enrichment) ----
     if not args.no_csv:
-        write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points, args.manual_hours)
+        write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points, args.manual_hours, outcome=outcome)
         print(f"\nCSV updated at {CSV_PATH}", file=sys.stderr)
 
     # ---- Enrich agents with /ggx-dispatcher contribution ----
@@ -2148,7 +2257,7 @@ def main():
         report = format_report(
             metrics, durations, ticket_id, session_number, git_branch,
             session_id, args.summary_file, args.story_points,
-            cumulative, current_total_cost,
+            cumulative, current_total_cost, outcome=outcome,
         )
         print(report)
 
@@ -2160,7 +2269,7 @@ def main():
             report_md = report if not args.json else format_report(
                 metrics, durations, ticket_id, session_number, git_branch,
                 session_id, args.summary_file, args.story_points,
-                cumulative, current_total_cost,
+                cumulative, current_total_cost, outcome=outcome,
             )
             ok = post_to_linear(ticket_id, report_md, api_key, session_id)
             if ok:

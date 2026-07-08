@@ -55,7 +55,7 @@ export const meta = {
     { title: "ui-judge", detail: "ui-tweak lane: apply/preview, dual-judge panel, finisher" },
     { title: "evidence", detail: "Cross-check terminal evidence for each success row (GGC-21)" },
     { title: "fallback", detail: "Triage each failure (classify, bounded-retry, comment per class)" },
-    { title: "metric", detail: "Per-done-ticket session-metrics finalize (scan sibling subagents, sum, post Linear)" },
+    { title: "metric", detail: "Per-done-ticket session-metrics finalize (scan sibling subagents, sum cost/proxy + PR outcome signals, post Linear)" },
     { title: "aggregate", detail: "Collect structured outcomes into summary" },
   ],
 };
@@ -1364,10 +1364,14 @@ async function triageUnknownFallback(res) {
 //   (b) dry-scans session_metrics.py --scan-subagents --json for the numbers,
 //       writes a 3-5 bullet "### Summary" (GGC-89 — parity with a manual
 //       /session-metrics run, which the batch path previously dropped),
-//   (c) runs session_metrics.py --scan-subagents --summary-file to SUM this
-//       ticket's sibling subagents (scoped by parentSessionId + the run-ts
-//       cutoff) into one CSV row + one "AI Session Report" Linear comment
-//       (now including the Summary) keyed on (run_stem,ticket).
+//   (c) gathers OUTCOME signals from the ticket's PR via gh (merged?, cycle
+//       time, review rounds, first-pass, reviewer comments, CI fails) — value
+//       delivered, to complement the cost numbers (PR2),
+//   (d) runs session_metrics.py --scan-subagents --summary-file --outcome-json
+//       to SUM this ticket's sibling subagents (scoped by parentSessionId + the
+//       run-ts cutoff) into one CSV row (incl. outcome columns) + one "AI
+//       Session Report" Linear comment (Summary + Outcome) keyed on
+//       (run_stem,ticket).
 // Fully fail-soft: ANY throw / null / error just logs a WARN. ALWAYS returns the
 // ORIGINAL `res` unchanged — never mutates outcome, never fails the batch.
 async function finalizeMetrics(res, item) {
@@ -1414,17 +1418,37 @@ async function finalizeMetrics(res, item) {
         `insight. Save with:  SUMMARY_FILE=$(mktemp -t metric-summary.XXXXXX)`,
         `and write the bullets into it.`,
         ``,
-        `STEP 4 — run the real scan + post WITH the summary. Run EXACTLY:`,
+        `STEP 3.5 — gather OUTCOME signals from the ticket's PR (value delivered,`,
+        `to complement the cost numbers). Fail-soft: if gh errors or there is no PR,`,
+        `SKIP this step entirely and do NOT pass --outcome-json in STEP 4.`,
+        `PR url hint: ${res.prUrl || "(unknown)"}. If unknown, discover it:`,
+        `  gh pr list --search "${res.ticketId}" --state all --json number,url,state --limit 1`,
+        `Then fetch outcome facts:`,
+        `  gh pr view <pr-url-or-number> --json state,createdAt,mergedAt,reviews,comments,author`,
+        `Write OUTCOME_FILE=$(mktemp -t metric-outcome.XXXXXX.json) as a JSON object,`,
+        `including ONLY keys you could actually compute (never guess a value):`,
+        `  pr_url (string), pr_state (the state), merged (true iff state=="MERGED"),`,
+        `  cycle_time_sec (mergedAt−createdAt in seconds; if not merged, now−createdAt),`,
+        `  review_rounds (number of reviews whose state is CHANGES_REQUESTED),`,
+        `  first_pass (true iff merged AND review_rounds==0),`,
+        `  reviewer_comments (count of reviews+comments whose author != the PR author),`,
+        `  ci_fail_count (from  gh pr checks <pr>  — count FAIL/failing rows; omit if unavailable).`,
+        ``,
+        `STEP 4 — run the real scan + post WITH the summary. Run EXACTLY (append`,
+        `\`--outcome-json "$OUTCOME_FILE"\` ONLY if STEP 3.5 created it; otherwise omit`,
+        `that line):`,
         `python3 ~/.claude/skills/session-metrics/session_metrics.py \\`,
         `  --scan-subagents --ticket-id ${res.ticketId} \\`,
         `  --parent-session ${parentSessionId} \\`,
         `  --run-ts ${runTs} --run-stem ${runStem} \\`,
         `  --manual-hours <N> --cwd ${worktree} \\`,
-        `  --summary-file "$SUMMARY_FILE"`,
+        `  --summary-file "$SUMMARY_FILE" \\`,
+        `  --outcome-json "$OUTCOME_FILE"`,
         `It re-scans this ticket's sibling subagent transcripts, SUMS their`,
-        `cost/tokens/durations, writes ONE CSV row, and upserts ONE "AI Session`,
-        `Report" Linear comment keyed on (run_stem, ticket) — now including the`,
-        `### Summary. Then rm "$SUMMARY_FILE".`,
+        `cost/tokens/durations, writes ONE CSV row (incl. outcome columns), and`,
+        `upserts ONE "AI Session Report" Linear comment keyed on (run_stem, ticket)`,
+        `— now including the ### Summary and an ### Outcome table. Then`,
+        `rm -f "$SUMMARY_FILE" "$OUTCOME_FILE".`,
         ``,
         `STEP 5 — report whether the script wrote a CSV row + posted/updated Linear`,
         `(read its stderr lines "CSV updated…" / "Posted to Linear…"). If STEP 4`,
