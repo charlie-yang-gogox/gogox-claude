@@ -110,6 +110,24 @@ CSV_FIELDS = [
     # subagent transcripts so a double-count is visible, not hidden in a scalar.
     "run_stem",
     "metrics_provenance",
+    # Appended at END (DictWriter backfills empty for old rows). active_proxy_sec
+    # = summed capped inter-record gaps — a busy-time proxy for the batch scan
+    # path where active_sec is structurally 0 (no turn_duration in subagent
+    # transcripts). Distinct from active_sec: includes tool wall time.
+    "active_proxy_sec",
+    # Outcome signals (PR2): value-delivered dimensions gathered at done-time
+    # from the ticket's PR (gh) by the finalize stage and passed via
+    # --outcome-json. These convert the cost columns above into ROI: cost is an
+    # INPUT, a merged PR is delivered VALUE. All empty when no PR/outcome is
+    # available (standalone runs, non-shipping tickets) — never fabricated.
+    "pr_url",
+    "pr_merged",            # 1 / 0 / "" — the one hard-to-fake value signal
+    "pr_state",             # MERGED | OPEN | CLOSED | DRAFT
+    "cycle_time_sec",       # PR createdAt -> mergedAt (or now if open)
+    "review_rounds",        # count of CHANGES_REQUESTED review submissions
+    "first_pass_accepted",  # 1 if merged with zero CHANGES_REQUESTED, else 0
+    "reviewer_comments",    # review/issue comments not authored by the PR author
+    "ci_fail_count",        # failed check-runs on the head sha (best-effort)
 ]
 
 
@@ -710,6 +728,10 @@ def scan_subagents_aggregate(
     provenance: list[dict] = []
     total_cost = 0.0
     total_tokens = 0
+    # Per-subagent active-time proxy, accumulated across matching transcripts.
+    # Summed per-transcript (NOT on the merged combined["timestamps"], which
+    # interleaves parallel agents and distorts the gaps).
+    active_proxy_total = 0.0
     matched = 0
 
     for sub in sub_files:
@@ -734,7 +756,19 @@ def scan_subagents_aggregate(
         if mapped_ticket is not None:
             if mapped_ticket != ticket_id:
                 continue
+        elif wf_ticket_map:
+            # Workflow run WITH a journal: attribution is journal-authoritative.
+            # An agent absent from the journal is a non-work stage agent (e.g.
+            # review/verify, whose result carries no ticketId) — its cost is
+            # attributed once dispatcher-side result-tagging lands; until then it
+            # is correctly excluded. The old cwd/gitBranch fallback below matched
+            # NOTHING on this path anyway (every Workflow agent records cwd=main
+            # repo / gitBranch=trunk), so skipping it here only strips latent
+            # risk of a false match, never removes a real one.
+            continue
         else:
+            # Legacy (non-Workflow) path: no journal, so fall back to the
+            # first-record cwd/gitBranch ticket match.
             branch = head.get("gitBranch") or ""
             cwd_field = head.get("cwd") or ""
             if not (tre.search(branch) or tre.search(cwd_field)):
@@ -806,8 +840,16 @@ def scan_subagents_aggregate(
                 model_name,
             )
 
+        sub_active_proxy = compute_active_proxy(sub_metrics["timestamps"])
+        active_proxy_total += sub_active_proxy
+
         provenance.append(
-            {"stem": sub.stem, "cost": round(sub_cost, 4), "tokens": sub_tokens}
+            {
+                "stem": sub.stem,
+                "cost": round(sub_cost, 4),
+                "tokens": sub_tokens,
+                "active_proxy_sec": round(sub_active_proxy),
+            }
         )
         total_cost += sub_cost
         total_tokens += sub_tokens
@@ -817,6 +859,9 @@ def scan_subagents_aggregate(
         return None
 
     durations = compute_durations(combined)
+    # Override the envelope-based proxy that compute_durations() computed on the
+    # merged timestamps with the per-subagent accumulation (envelope-safe).
+    durations["active_proxy_sec"] = active_proxy_total
     return {
         "metrics": combined,
         "durations": durations,
@@ -998,11 +1043,43 @@ def parse_session(jsonl_path: Path) -> dict:
 # Durations
 # ===================================================================
 
+# Per-gap cap for the active-time PROXY. `turn_duration` system records exist
+# ONLY in the main interactive loop, never in subagent transcripts (a harness
+# fact), so the summed dispatcher-scan path has no real active signal and its
+# `active_sec` is always 0. The proxy fills that gap: it sums the wall-time gaps
+# between consecutive transcript records, capping each gap so a long idle stretch
+# (the model waiting on a human, or between-stage dead time) contributes at most
+# CAP rather than inflating "busy" time. It is a DIFFERENT quantity from
+# `active_sec` (turn_durations): the proxy INCLUDES tool-execution wall time (a
+# 3-minute flutter build counts as "busy"), so the two must never share a "Speed"
+# cell. CAP is a lopsided knob — too low truncates legitimate long tool runs
+# (undercount), too high leaks idle. 120s is chosen as a balance: longer than
+# almost any single model turn, shorter than typical between-stage idle.
+ACTIVE_PROXY_GAP_CAP_SEC = 120
+
+
+def compute_active_proxy(timestamps: list, cap_sec: float = ACTIVE_PROXY_GAP_CAP_SEC) -> float:
+    """Sum of capped gaps between consecutive record timestamps — a proxy for
+    model+tool busy time when real `turn_duration` records are absent (every
+    subagent transcript). MUST be computed per-transcript and accumulated by the
+    caller; computing it on a merged multi-agent timestamp pool interleaves
+    parallel agents and distorts the gaps."""
+    parsed = sorted(dt for ts in timestamps if (dt := parse_ts(ts)) is not None)
+    if len(parsed) < 2:
+        return 0.0
+    total = 0.0
+    for a, b in zip(parsed, parsed[1:]):
+        gap = (b - a).total_seconds()
+        if gap > 0:
+            total += min(gap, cap_sec)
+    return total
+
 
 def compute_durations(metrics: dict) -> dict:
     result = {
         "wall_clock_sec": 0,
         "active_sec": 0,
+        "active_proxy_sec": 0,
         "idle_sec": 0,
         "start_time": None,
         "end_time": None,
@@ -1022,6 +1099,10 @@ def compute_durations(metrics: dict) -> dict:
 
     active_ms = sum(metrics["turn_durations_ms"])
     result["active_sec"] = active_ms / 1000
+    # Single-transcript proxy (envelope-safe here: one transcript, no parallel
+    # interleave). On the batch scan path the caller OVERRIDES this with a
+    # per-subagent accumulation (see scan_subagents_aggregate).
+    result["active_proxy_sec"] = compute_active_proxy(metrics["timestamps"])
     result["idle_sec"] = max(0, result["wall_clock_sec"] - result["active_sec"])
     return result
 
@@ -1063,6 +1144,7 @@ def get_ticket_cumulative(ticket_id: str, current_session_id: str, cwd: str) -> 
         return None
 
     total_active = 0.0
+    total_active_proxy = 0.0
     total_wall = 0.0
     total_cost = 0.0
     session_ids: set[str] = set()
@@ -1084,9 +1166,11 @@ def get_ticket_cumulative(ticket_id: str, current_session_id: str, cwd: str) -> 
                 if sid == current_session_id:
                     continue  # exclude current for aggregation — caller merges it
                 if sid not in session_ids:
-                    # Per-session fields (same across model rows): take first
-                    total_active += float(row.get("active_sec", 0))
-                    total_wall += float(row.get("wall_clock_sec", 0))
+                    # Per-session fields (same across model rows): take first.
+                    # `or 0` guards empty cells (old rows lack active_proxy_sec).
+                    total_active += float(row.get("active_sec") or 0)
+                    total_active_proxy += float(row.get("active_proxy_sec") or 0)
+                    total_wall += float(row.get("wall_clock_sec") or 0)
                     session_ids.add(sid)
                 # Cost is per-model row, always sum
                 total_cost += float(row.get("estimated_cost", 0))
@@ -1113,11 +1197,109 @@ def get_ticket_cumulative(ticket_id: str, current_session_id: str, cwd: str) -> 
     return {
         "prior_session_count": len(session_ids),
         "prior_active_sec": total_active,
+        "prior_active_proxy_sec": total_active_proxy,
         "prior_wall_sec": total_wall,
         "prior_cost": total_cost,
         "stored_story_points": stored_sp,
         "prior_agents": prior_agents,
     }
+
+
+# ===================================================================
+# Outcome signals (PR2)
+# ===================================================================
+
+
+def load_outcome_json(path: str | None) -> dict | None:
+    """Read the outcome bundle the finalize stage gathered from the ticket's PR.
+    Fail-soft: any read/parse error → None (metrics still post without outcomes)."""
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except Exception as e:
+        print(f"Warning: --outcome-json unreadable ({e}); continuing without outcomes", file=sys.stderr)
+        return None
+
+
+def _bool01(v) -> str | int:
+    """Normalize a truthy/None into 1 / 0 / "" for a CSV cell."""
+    if v is None or v == "":
+        return ""
+    return 1 if v in (True, 1, "1", "true", "True", "yes", "YES") else 0
+
+
+def _num_or_blank(v) -> str | int | float:
+    """Coerce to a number for a CSV cell, else "". Accepts numeric STRINGS —
+    the finalize stage builds the outcome bundle via gh + shell, so numbers
+    routinely arrive as strings ("3600"); without this they'd be silently
+    dropped from the CSV (the SSOT) while still rendering in the report. bool
+    is excluded (True/False are not counts)."""
+    if isinstance(v, bool):
+        return ""
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        for cast in (int, float):
+            try:
+                return cast(s)
+            except ValueError:
+                pass
+    return ""
+
+
+def outcome_to_csv(outcome: dict | None) -> dict:
+    """Map an outcome dict (finalize-gathered) to the CSV outcome columns —
+    every field "" when absent, never fabricated."""
+    o = outcome or {}
+    return {
+        "pr_url": o.get("pr_url", "") or "",
+        "pr_merged": _bool01(o.get("merged")),
+        "pr_state": o.get("pr_state", "") or "",
+        "cycle_time_sec": _num_or_blank(o.get("cycle_time_sec")),
+        "review_rounds": _num_or_blank(o.get("review_rounds")),
+        "first_pass_accepted": _bool01(o.get("first_pass")),
+        "reviewer_comments": _num_or_blank(o.get("reviewer_comments")),
+        "ci_fail_count": _num_or_blank(o.get("ci_fail_count")),
+    }
+
+
+def format_outcome_section(outcome: dict | None, current_cost: float) -> list[str]:
+    """Render the '### Outcome' report block. Returns [] when no outcome data —
+    the section is simply omitted (no misleading zeros)."""
+    o = outcome or {}
+    if not o or not (o.get("pr_url") or o.get("pr_state") or o.get("merged") is not None):
+        return []
+    lines = ["", "### Outcome"]
+    lines.append("| Signal | Value |")
+    lines.append("|--------|-------|")
+    state = o.get("pr_state") or ("MERGED" if o.get("merged") else "?")
+    merged = bool(o.get("merged"))
+    lines.append(f"| PR | {state}{' ✅' if merged else ''} |")
+    # Coerce numerics through the same hardened path as the CSV (strings from
+    # gh are common); "" means absent/unparseable → omit the row (never float()
+    # a raw string, which would crash the whole metrics run mid-report).
+    cyc = _num_or_blank(o.get("cycle_time_sec"))
+    if cyc != "":
+        lines.append(f"| Cycle time (open→merge) | {format_duration(float(cyc))} |")
+    rr = _num_or_blank(o.get("review_rounds"))
+    if rr != "":
+        fp = o.get("first_pass")
+        note = " (first-pass ✅)" if (merged and (fp or rr == 0)) else ""
+        lines.append(f"| Review rounds (changes-requested) | {rr}{note} |")
+    rc = _num_or_blank(o.get("reviewer_comments"))
+    if rc != "":
+        lines.append(f"| Reviewer comments | {rc} |")
+    cf = _num_or_blank(o.get("ci_fail_count"))
+    if cf != "":
+        lines.append(f"| CI failures (head) | {cf} |")
+    # Cost→value: the honest ROI unit (cost is an INPUT, a merged PR is VALUE).
+    if merged and current_cost > 0:
+        lines.append(f"| **Cost per merged PR** | **{format_cost(current_cost)}** |")
+    return lines
 
 
 # ===================================================================
@@ -1138,6 +1320,7 @@ def format_report(
     current_cost: float = 0.0,
     run_stem: str | None = None,
     provenance: list[dict] | None = None,
+    outcome: dict | None = None,
 ) -> str:
     lines: list[str] = []
     prior = cumulative if cumulative and cumulative.get("prior_session_count", 0) > 0 else None
@@ -1232,15 +1415,19 @@ def format_report(
     if manual_sec is not None:
         ai_sec = durations["active_sec"]
         wall_sec = durations["wall_clock_sec"]
+        proxy_sec = durations.get("active_proxy_sec", 0)
         cum_ai = (prior["prior_active_sec"] + ai_sec) if prior else ai_sec
         cum_wall = (prior["prior_wall_sec"] + wall_sec) if prior else wall_sec
-        # GGC-89: active time is unavailable on the summed scan path (no
-        # turn_duration records in subagent transcripts). When it is missing,
-        # don't render "0s" as if real — drop the active row and compute Speed
-        # against WALL CLOCK (a genuine measurement) so the headline
-        # AI-vs-manual multiplier is preserved on a defensible basis rather
-        # than silently suppressed.
+        cum_proxy = (prior.get("prior_active_proxy_sec", 0) + proxy_sec) if prior else proxy_sec
+        # Basis for the Speed multiplier, in order of fidelity:
+        #   1. real active_sec (turn_durations) — main interactive loop only;
+        #   2. active_proxy_sec (summed capped inter-record gaps) — the batch
+        #      scan path, where turn_duration is structurally absent. Includes
+        #      tool wall time, so it is labeled "approx"; still a real measurement
+        #      of elapsed busy time, unlike the 0 it replaces;
+        #   3. wall clock — last-resort basis when neither is available.
         active_available = cum_ai > 0
+        proxy_available = (not active_available) and cum_proxy > 0
 
         lines.append("")
         lines.append("### ⏱ Time Analysis")
@@ -1250,15 +1437,23 @@ def format_report(
         lines.append(f"| Story Points (AI-estimated) | **{story_points}** (≈ {format_duration(manual_sec)} manual) |")
         if active_available:
             lines.append(f"| AI Active Time{sess_label} | {format_duration(cum_ai)} |")
+        elif proxy_available:
+            lines.append(f"| AI Active Time{sess_label} | ≈ {format_duration(cum_proxy)} (approx, incl. tool time) |")
         else:
-            lines.append(f"| AI Active Time{sess_label} | n/a (summed subagent transcripts carry no turn-duration records) |")
+            lines.append(f"| AI Active Time{sess_label} | n/a (no turn-duration records; proxy unavailable) |")
         lines.append(f"| Wall Clock{sess_label} | {format_duration(cum_wall)} |")
         if active_available:
             multiplier = manual_sec / cum_ai
             lines.append(f"| **Speed** | **~{multiplier:.1f}x** vs AI-estimated manual |")
+        elif proxy_available:
+            multiplier = manual_sec / cum_proxy
+            lines.append(f"| **Speed** | **~{multiplier:.1f}x** vs AI-estimated manual (approx active basis) |")
         elif cum_wall > 0:
             multiplier = manual_sec / cum_wall
             lines.append(f"| **Speed** | **~{multiplier:.1f}x** vs AI-estimated manual (wall-clock basis) |")
+
+    # ---- Outcome signals (PR2): value delivered, next to the Speed above ----
+    lines.extend(format_outcome_section(outcome, current_cost))
 
     # ---- Provenance (GGC-74 batch scan) — list each summed subagent so an
     # accidental double-count is visible, not hidden in a summed scalar. ----
@@ -1307,6 +1502,7 @@ def write_csv(
     manual_hours: float | None = None,
     run_stem: str | None = None,
     metrics_provenance: str = "",
+    outcome: dict | None = None,
 ):
     METRICS_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = CSV_PATH.with_suffix(".lock")
@@ -1392,12 +1588,19 @@ def write_csv(
                         "story_points": story_points if story_points is not None else "",
                         "manual_hours": manual_hours if manual_hours is not None else "",
                         "estimated_manual_sec": round(sp_sec) if (sp_sec := story_point_seconds(story_points)) is not None else "",
-                        "time_saved_multiplier": round(sp_sec / durations["active_sec"], 1) if sp_sec is not None and durations["active_sec"] > 0 else "",
+                        # Prefer real active_sec (turn_durations); fall back to the
+                        # busy-time proxy when active is structurally 0 (batch scan
+                        # path) so the multiplier is populated there too. The
+                        # denominator basis is disclosed by which of active_sec /
+                        # active_proxy_sec is non-zero in the row.
+                        "time_saved_multiplier": round(sp_sec / _active_basis, 1) if sp_sec is not None and (_active_basis := (durations["active_sec"] if durations["active_sec"] > 0 else durations.get("active_proxy_sec", 0))) > 0 else "",
                         "claude_code_version": metrics.get(
                             "claude_code_version", ""
                         ),
                         "run_stem": run_stem or "",
                         "metrics_provenance": metrics_provenance,
+                        "active_proxy_sec": round(durations.get("active_proxy_sec", 0)),
+                        **outcome_to_csv(outcome),
                     }
                 )
 
@@ -1645,6 +1848,7 @@ def run_scan_subagents_mode(args) -> None:
         sys.exit(2)
     ticket_id = args.ticket_id.upper()
     run_stem = args.run_stem
+    outcome = load_outcome_json(args.outcome_json)
 
     agg = scan_subagents_aggregate(
         args.parent_session,
@@ -1692,6 +1896,7 @@ def run_scan_subagents_mode(args) -> None:
             args.manual_hours,
             run_stem=run_stem,
             metrics_provenance=prov_str,
+            outcome=outcome,
         )
         print(f"\nCSV updated at {CSV_PATH} (run_stem={run_stem})", file=sys.stderr)
 
@@ -1700,7 +1905,7 @@ def run_scan_subagents_mode(args) -> None:
         metrics, durations, ticket_id, session_number, git_branch,
         session_label, args.summary_file, args.story_points,
         cumulative, current_total_cost,
-        run_stem=run_stem, provenance=provenance,
+        run_stem=run_stem, provenance=provenance, outcome=outcome,
     )
 
     if args.json:
@@ -1726,6 +1931,7 @@ def run_scan_subagents_mode(args) -> None:
                 "total_tokens": agg["total_tokens"],
                 "total_turns": metrics["total_turns"],
                 "wall_clock_sec": round(durations["wall_clock_sec"]),
+                "active_proxy_sec": round(durations.get("active_proxy_sec", 0)),
                 "tokens": {
                     "input": j_in,
                     "output": j_out,
@@ -1779,6 +1985,16 @@ def main():
         "--manual-hours",
         type=float,
         help="LLM-estimated pure-manual hours; snapped to the nearest story-point bucket. Ignored if --story-points is given.",
+    )
+    parser.add_argument(
+        "--outcome-json",
+        help=(
+            "Path to a JSON file of PR outcome signals gathered by the finalize "
+            "stage (keys: pr_url, merged, pr_state, cycle_time_sec, review_rounds, "
+            "first_pass, reviewer_comments, ci_fail_count). Stored to the CSV "
+            "outcome columns and rendered as an '### Outcome' report section. "
+            "Absent/unreadable → metrics still post, outcome columns blank."
+        ),
     )
     parser.add_argument(
         "--hook",
@@ -1955,9 +2171,12 @@ def main():
             model,
         )
 
+    # ---- Outcome signals (PR2) ----
+    outcome = load_outcome_json(args.outcome_json)
+
     # ---- CSV (raw session metrics, pre-enrichment) ----
     if not args.no_csv:
-        write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points, args.manual_hours)
+        write_csv(metrics, durations, ticket_id, session_id, git_branch, args.story_points, args.manual_hours, outcome=outcome)
         print(f"\nCSV updated at {CSV_PATH}", file=sys.stderr)
 
     # ---- Enrich agents with /ggx-dispatcher contribution ----
@@ -1999,6 +2218,7 @@ def main():
             "durations": {
                 "wall_clock_sec": durations["wall_clock_sec"],
                 "active_sec": durations["active_sec"],
+                "active_proxy_sec": round(durations.get("active_proxy_sec", 0)),
                 "idle_sec": durations["idle_sec"],
             },
             "model_usage": {k: dict(v) for k, v in metrics["model_usage"].items()},
@@ -2033,12 +2253,16 @@ def main():
         manual_sec = story_point_seconds(args.story_points)
         if manual_sec is not None:
             ai_sec = durations["active_sec"]
+            proxy_sec = durations.get("active_proxy_sec", 0)
+            basis = ai_sec if ai_sec > 0 else proxy_sec
             ta: dict = {
                 "story_points": args.story_points,
                 "story_points_from_history": args.story_points == (cumulative or {}).get("stored_story_points"),
                 "estimated_manual_sec": manual_sec,
                 "ai_active_sec": ai_sec,
-                "multiplier": round(manual_sec / ai_sec, 1) if ai_sec > 0 else None,
+                "ai_active_proxy_sec": round(proxy_sec),
+                "multiplier": round(manual_sec / basis, 1) if basis > 0 else None,
+                "multiplier_basis": "active" if ai_sec > 0 else ("active_proxy" if proxy_sec > 0 else None),
             }
             if cumulative and cumulative["prior_session_count"] > 0:
                 cum_ai = cumulative["prior_active_sec"] + ai_sec
@@ -2055,7 +2279,7 @@ def main():
         report = format_report(
             metrics, durations, ticket_id, session_number, git_branch,
             session_id, args.summary_file, args.story_points,
-            cumulative, current_total_cost,
+            cumulative, current_total_cost, outcome=outcome,
         )
         print(report)
 
@@ -2067,7 +2291,7 @@ def main():
             report_md = report if not args.json else format_report(
                 metrics, durations, ticket_id, session_number, git_branch,
                 session_id, args.summary_file, args.story_points,
-                cumulative, current_total_cost,
+                cumulative, current_total_cost, outcome=outcome,
             )
             ok = post_to_linear(ticket_id, report_md, api_key, session_id)
             if ok:
