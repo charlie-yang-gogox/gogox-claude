@@ -37,7 +37,7 @@ whole file, re-read each step's full section immediately before executing that s
 | # | Step | The turn ends with |
 |---|------|--------------------|
 | 0 | parse `<source>` | garbled/empty → card **C0** ⛔ |
-| 1 | fetch ticket (read-only) + split worktree `../<ticket-id>` | no work-item id → card **C-WT** ⛔ · ticket unreadable → card **C-TICKET** ⛔ · worktree creation fails → STOP ⛔ |
+| 1 | fetch ticket (read-only) + adopt the current worktree or split `../<ticket-id>` | no work-item id → card **C-WT** ⛔ · ticket unreadable → card **C-TICKET** ⛔ · worktree creation fails → STOP ⛔ |
 | 2 | resolve flutter/fvm + flavor once | (markers written; no card) |
 | 3 | triage pure-visual vs needs-logic — READ the real widget first | needs-logic → card **C6** ⛔ |
 | 4 | apply ONE UI diff + update affected tests — no build, no suite run | card **C1 show-me** ⛔ ALWAYS (or a plan-confirm card first, 4d) |
@@ -56,9 +56,11 @@ should end in a card and instead ends in a prose summary is a FAILED run — eve
 perfect.
 
 **Rule 3 — hard invariants (no host is exempt):**
-- **Every edit happens inside the `../<ticket-id>` worktree.** If `git worktree add` fails
-  (sandbox, permissions, anything), ⛔ STOP and tell the designer what to fix (e.g. re-run with
-  workspace write access) — NEVER fall back to editing the checkout you were launched in.
+- **Every edit happens inside a dedicated worktree** — the one the session was launched in when the
+  host already provides one (adopt-in-place, Step 1), else a fresh `../<ticket-id>` split. If the
+  split fails (sandbox, permissions, anything), ⛔ STOP and tell the designer what to fix (re-run
+  with write access, or re-launch in their editor's worktree mode) — NEVER fall back to editing a
+  main checkout.
 - **Never invent ticket content.** Can't read the ticket → card **C-TICKET** (Step 1). The URL
   slug is a title at best, never a description; fabricating one into `ticket.json` poisons every
   downstream gate.
@@ -168,7 +170,7 @@ Re-running with no new argument **resumes** from the markers; re-running with a 
 **correction** (see "Correction & repair loops"). Markers used:
 
 ```
-.dev/ui-tweak-fast/worktree-ready     # Step 1 done (idempotency; never re-split)
+.dev/ui-tweak-fast/worktree-ready     # Step 1 done (idempotency; never re-split). line2 adopted=0|1
 .dev/ui-tweak-fast/ticket.json        # read-only ticket snapshot (no re-fetch)
 .dev/ui-tweak-fast/comments.json      # read-only comment-THREAD snapshot (union'd into the requirement, no re-fetch)
 .dev/ui-tweak-fast/flutter-bin        # resolved flutter binary (flutter platform only)
@@ -216,7 +218,8 @@ instead of restarting.
 ## Step 1 — workspace: resolve profile, fetch ticket (read-only), split the worktree
 
 A work-item number is **required** (every change is tracked under one and handed to an engineer that
-way). There is **no in-place edit path**.
+way). Edits only ever happen in a **dedicated worktree** — one the host already launched the session
+in (adopted), or a fresh `../<ticket-id>` split; a main checkout is never edited.
 
 ```bash
 echo "{\"skill\":\"ui-tweak-fast\",\"ts\":\"$(date -u +%FT%TZ)\"}" >> ~/.gogox-claude-usage.jsonl 2>/dev/null || true
@@ -293,29 +296,47 @@ issue snapshot, so derive them from `TICKET_JSON`). **Capture it into `COMMENTS_
 split**: if the Linear MCP is absent or the fetch fails, leave `COMMENTS_JSON` unset — the block below
 caches an empty array + a `note`, and Step 3a re-fetches/degrades. Free-text runs skip it.
 
-**Create + enter the worktree** (off latest trunk). Inlined so this file is self-contained:
+**Adopt the worktree you're in, or create one.** Hosts have their own worktree modes (codex and
+cursor can launch the session already inside a fresh linked worktree) — a session that is ALREADY in
+a linked worktree adopts it instead of nesting a second one. Detection is trivial: in a linked
+worktree `.git` is a FILE; in a main checkout it is a directory. Adopt only when it is clean (dirty
+without our marker = someone else's half-done work → split a fresh one as usual):
 
 ```bash
-TRUNK_DIR="$REPO_ROOT"                                  # the main checkout we are splitting from
+TRUNK_DIR="$REPO_ROOT"
 TICKET_ID="<parsed id>"
 TYPE=fix                                                # design bug → fix; else feat
 DEFAULT_BRANCH=$(git -C "$TRUNK_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
 DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
 git -C "$TRUNK_DIR" fetch --quiet origin "$DEFAULT_BRANCH" 2>/dev/null || true
-WT="$(cd "$TRUNK_DIR/.." && pwd)/$TICKET_ID"
-BRANCH="$TYPE/$TICKET_ID"
-if ! git -C "$TRUNK_DIR" worktree list --porcelain | grep -qxF "worktree $WT"; then
-  git -C "$TRUNK_DIR" worktree add -b "$BRANCH" "$WT" "origin/$DEFAULT_BRANCH" \
-    || git -C "$TRUNK_DIR" worktree add "$WT" "$BRANCH"   # branch already exists → check it out
-fi
-# HARD GATE (Execution-contract rule 3): the split MUST have worked before anything is edited.
-git -C "$TRUNK_DIR" worktree list --porcelain | grep -qxF "worktree $WT" \
-  || { echo "FAIL: could not create worktree $WT — STOP; never edit the launch checkout instead." >&2; exit 1; }
-cd "$WT"   # If your host moves the session into the worktree on `cd`, later relative paths work. If it
+ADOPT=0
+if [ -f "$TRUNK_DIR/.git" ] && [ -z "$(git -C "$TRUNK_DIR" status --porcelain)" ]; then ADOPT=1; fi
+if [ "$ADOPT" = 1 ]; then
+  # ---- adopt-in-place: the host already gave us a dedicated worktree ----
+  WT="$TRUNK_DIR"
+  CUR=$(git -C "$WT" branch --show-current)
+  if [ -z "$CUR" ] || [ "$CUR" = "$DEFAULT_BRANCH" ]; then     # detached / on trunk → own branch
+    git -C "$WT" checkout -b "$TYPE/$TICKET_ID" 2>/dev/null \
+      || echo "WARN: could not create branch $TYPE/$TICKET_ID — continuing on ${CUR:-detached HEAD}." >&2
+  fi                                                           # a host-named branch (codex/…, cursor/…) is kept as-is
+else
+  # ---- split a fresh worktree off latest trunk (the launch checkout is a main checkout) ----
+  WT="$(cd "$TRUNK_DIR/.." && pwd)/$TICKET_ID"
+  BRANCH="$TYPE/$TICKET_ID"
+  if ! git -C "$TRUNK_DIR" worktree list --porcelain | grep -qxF "worktree $WT"; then
+    git -C "$TRUNK_DIR" worktree add -b "$BRANCH" "$WT" "origin/$DEFAULT_BRANCH" \
+      || git -C "$TRUNK_DIR" worktree add "$WT" "$BRANCH"   # branch already exists → check it out
+  fi
+  # HARD GATE (Execution-contract rule 3): the split MUST have worked before anything is edited.
+  git -C "$TRUNK_DIR" worktree list --porcelain | grep -qxF "worktree $WT" \
+    || { echo "FAIL: could not create worktree $WT — STOP; never edit the launch checkout instead." >&2; exit 1; }
+  cd "$WT" # If your host moves the session into the worktree on `cd`, later relative paths work. If it
            # does NOT, treat "$WT" as the absolute root for ALL later Read/Write/Edit + git/shell working_directory.
+fi
 # (If the HARD GATE above fired: tell the designer the workspace could not be split — quote the git
-#  error, suggest re-running once the agent has write access to the parent folder — and ⛔ END YOUR
-#  TURN. Editing the launch checkout "just this once" is the one unrecoverable mistake here.)
+#  error, suggest re-running once the agent has write access to the parent folder, OR re-launching in
+#  their editor's worktree mode (codex/cursor `-w`), which this skill adopts — then ⛔ END YOUR TURN.
+#  Editing a main checkout "just this once" is the one unrecoverable mistake here.)
 mkdir -p "$WT/.dev/ui-tweak-fast"
 printf '%s\n' "${TICKET_JSON:-{\}}" > "$WT/.dev/ui-tweak-fast/ticket.json"  # read-only snapshot (skip refetch)
 # comments.json — the comment THREAD. Fail-soft (mirrors the ticket fetch): on any miss, cache
@@ -323,7 +344,7 @@ printf '%s\n' "${TICKET_JSON:-{\}}" > "$WT/.dev/ui-tweak-fast/ticket.json"  # re
 # was normalized from TICKET_JSON above; Linear: from the host list_comments call.)
 printf '%s\n' "${COMMENTS_JSON:-{\"comments\":[],\"note\":\"comment fetch failed at split — apply may re-fetch\"\}}" \
   > "$WT/.dev/ui-tweak-fast/comments.json"
-printf 'ticket=%s\n' "$TICKET_ID" > "$WT/.dev/ui-tweak-fast/worktree-ready"
+printf 'ticket=%s\nadopted=%s\n' "$TICKET_ID" "$ADOPT" > "$WT/.dev/ui-tweak-fast/worktree-ready"
 ```
 (Deps are installed in Step 2 once `$FLUTTER_BIN` is resolved — not here, since the binary is not known
 yet.)
@@ -540,10 +561,17 @@ if [ "$PLATFORM" = flutter ]; then git -C "$WT" checkout -- pubspec.lock 2>/dev/
 if [ ! -f "$WT/.dev/ui-tweak-fast/base_ref" ]; then
   EXPECTED_TIP=$(git -C "$WT" rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || true)
   ACTUAL_HEAD=$(git -C "$WT" rev-parse HEAD)
+  ADOPTED=$(sed -n 's/^adopted=//p' "$WT/.dev/ui-tweak-fast/worktree-ready" 2>/dev/null)
   if [ -n "$EXPECTED_TIP" ] && [ "$ACTUAL_HEAD" != "$EXPECTED_TIP" ]; then
-    echo "FAIL: refusing to record base_ref — HEAD ($ACTUAL_HEAD) != fresh origin/$DEFAULT_BRANCH ($EXPECTED_TIP)." >&2
-    echo "A no-op/diff computed against a non-trunk base is invalid. Recreate the worktree off clean trunk and re-run." >&2
-    exit 1
+    # An ADOPTED worktree may sit a little behind the fresh trunk tip (the host created it off a
+    # stale local trunk). Any clean trunk ANCESTOR is still a valid, uncontaminated baseline.
+    if [ "$ADOPTED" = 1 ] && git -C "$WT" merge-base --is-ancestor "$ACTUAL_HEAD" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+      :  # ok — older trunk point, still clean
+    else
+      echo "FAIL: refusing to record base_ref — HEAD ($ACTUAL_HEAD) is not on fresh origin/$DEFAULT_BRANCH ($EXPECTED_TIP)." >&2
+      echo "A no-op/diff computed against a non-trunk base is invalid. Recreate the worktree off clean trunk and re-run." >&2
+      exit 1
+    fi
   fi
   git -C "$WT" rev-parse HEAD > "$WT/.dev/ui-tweak-fast/base_ref"
 fi
@@ -608,7 +636,8 @@ test talk in the card body:
 > designer. The build gate keys on **exit code / successful install+launch**, never on log text.
 > `flutter run` = build + install + launch in one. Skip the device cascade in **direct-ship build-only**
 > mode (no device, just compile). On `android`/`ios` platforms there is no `flutter run` — run the
-> build-only `ui_build_cmd` and skip all flutter device steps.
+> build-only `ui_build_cmd` and skip all flutter device steps. If the `flutter-bin`/`flavor` markers
+> are missing when you get here (an earlier round skipped Step 2), run Step 2 NOW before anything below.
 
 **6a — freeze the audited file set** (the build mutates the tree — codegen, registrants; those
 side-effects must never widen what Step 7 judges):
