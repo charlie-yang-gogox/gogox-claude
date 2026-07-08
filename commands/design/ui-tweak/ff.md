@@ -548,13 +548,17 @@ target-reached capture or a designer-supplied file. The `pr` stage surfaces and 
 
 1. **Captured demo** (preferred — shows the *actual* result): if `.dev/ui-tweak/demo-files` exists
    (written by `preview`'s Step-2.5 navigate+capture, and/or designer-supplied via C1 Other),
-   upload it to the ticket via the **Idempotent attach** contract below and reference the returned
-   `assetUrl`(s) in the marker-wrapped `## Demo` block. `demo-files` is **keyed by scenario**
-   (`<scenario-key>\t<path>`; a bare line = key `main`) — the contract groups by key and produces one
-   labeled link per key (a single `main` clip is one unlabeled link, unchanged). (This upload is the one
-   extra ticket write the deliver path is allowed — see Constraints.) No relevance gate is needed:
-   `preview` fail-silents instead of capturing a wrong screen, so an empty `demo-files` simply falls
-   through to bullets 2–4 (ticket visuals / Figma link / "No screenshot" line).
+   publish it via the **`/ggx-attach` Attach core** (see "Idempotent attach" below) with
+   `namespace: "ui-tweak-demo"`, `sha: $(git rev-parse --short HEAD)`, and **`pr` ABSENT** — the PR does
+   not exist yet at this stage, so the core writes the Linear side only (ONE marked inline-rendered
+   comment, `<!-- ggx-attach:ui-tweak-demo -->`; never a download-card attachment) and returns the
+   `assetUrls`, which this stage embeds in the marker-wrapped `## Demo` block of the body it pre-builds.
+   `demo-files` is **keyed by scenario** (`<scenario-key>\t<path>`; a bare line = key `main`) — the core
+   groups by key and produces one labeled link per key (a single `main` clip is one unlabeled link,
+   unchanged). (This publish is the one extra ticket write the deliver path is allowed — see
+   Constraints.) No relevance gate is needed: `preview` fail-silents instead of capturing a wrong
+   screen, so an empty `demo-files` simply falls through to bullets 2–4 (ticket visuals / Figma link /
+   "No screenshot" line).
 2. **Ticket visuals** (shows the *target* design): read `.dev/ui-tweak/ticket.json` (cached by
    `start`) for image attachments and embed their URLs as markdown images. Add the grounded Figma
    node URL (from apply's figma grounding, when present) as a plain
@@ -574,63 +578,24 @@ target-reached capture or a designer-supplied file. The `pr` stage surfaces and 
 
 Never reuse `/pull-request`'s empty placeholder.
 
-### Idempotent attach (shared contract — reused by `/ggx-demo`)
+### Idempotent attach (moved — see the `/ggx-attach` Attach core, the single source of truth)
 
-Both the `pr` stage here and the post-hoc `/ggx-demo` operator skill upload + embed demo artifacts. The
-upload is **not** filename-idempotent and a blind body append stacks `## Demo` sections, so BOTH callers
-MUST follow this contract verbatim (single source of truth — do not re-derive in `/ggx-demo`):
+The full contract that used to live here (upload mechanics F19, the Linear-side publish, per-key
+SKIP/REPLACE idempotency E14, and the PR-body `<!-- ui-tweak-demo -->` marker-region write with the
+E15 never-replace-to-EOF and F17 absolute-`--body-file` rules) now lives in
+**`commands/dev/ggx-attach.md` → "Attach core"**. Do NOT re-derive any of it here or in `/ggx-demo` —
+both delegate to the core.
 
-- **`demo-files` is a KEYED set — one entry per scenario (`<scenario-key>\t<path>`).** Each line is a
-  captured artifact keyed by scenario; a bare line with NO tab is treated as key `main` (backward-compatible
-  with pre-existing single-clip captures). Group the paths by key; each key is uploaded + embedded
-  independently (a key may have both a screenshot and a clip — the clip is the attached artifact, the
-  screenshot is the C1 surface). A single-clip capture is exactly the `main` key, so this collapses to the
-  pre-existing single-attachment behaviour.
-- **Linear attachment dedupe — deterministic PER-KEY title, SKIP or REPLACE (E14).** Title each scenario's
-  uploaded attachment `ui-tweak-demo-<sha>-<key>` where `<sha>` is the short HEAD of the demoed commit
-  (`git rev-parse --short HEAD`), **except the single/`main` key which keeps the bare `ui-tweak-demo-<sha>`**
-  (backward-compatible: existing single demos and the batch-discovery `startswith("ui-tweak-demo-")` dedup
-  both still match). Before `create_attachment_from_upload`, list the ticket's existing attachments
-  (`get_issue` → `.attachments[]`) and check for that exact per-key title — `create_attachment_from_upload`
-  is NOT idempotent on filename, so two runs would otherwise attach duplicate inline videos. On a per-key
-  title match:
-  - **Default — SKIP** that key's upload and reuse the existing attachment's `assetUrl` (idempotent re-run).
-  - **Replace mode** (caller passed `--force`, e.g. `/ggx-demo <id> --force` after a bad first recording):
-    `delete_attachment` the old attachment for THAT key → upload the new capture under the same per-key
-    title → use the NEW `assetUrl`. Replace is **per key** — only the keys re-captured this run are
-    replaced. **The `assetUrl` changes on re-upload**, so the PR-body region write below is mandatory in
-    this mode (the old link dies with the deleted attachment). Never delete-then-upload without `--force` —
-    a plain re-run must stay a no-op.
-- **Upload mechanics (F19).** The `prepare_attachment_upload` → `curl` PUT handoff is strict:
-  send EVERY header the prepare call returns, verbatim (`content-type`, `cache-control`,
-  `x-goog-content-length-range`, `Content-Disposition`) — a missing header is a signed-URL signature
-  mismatch (403). The signed URL expires in ~60s: prepare and PUT in the same breath, never prepare
-  early and upload after the capture.
-- **PR body — ONE marker-delimited region, N labeled links, replace-between (never append, never to-EOF).**
-  Wrap the demo region in HTML-comment delimiters. It stays a SINGLE region even for a keyed multi-scenario
-  set — it lists **one labeled link per scenario key**:
-  ```
-  <!-- ui-tweak-demo -->
-  ## Demo
-  - **blank-error**: <link>
-  - **filled-pass**: <link>
-  <!-- /ui-tweak-demo -->
-  ```
-  For a single-clip (`main`) demo, the region is the one link with no key label (unchanged from
-  pre-existing). To write it: read the current PR body (`gh pr view <pr> --json body -q .body`); if the marker pair is
-  present, **replace only the text between the markers** (marker-to-marker — the closing
-  `<!-- /ui-tweak-demo -->` is the hard boundary); else if an UNMARKED `## Demo` section exists,
-  replace that section with a marked block, **bounded at the next `## ` heading or end-of-body —
-  NEVER a replace-to-EOF (E15)**: a mid-body `## Demo` with sections after it would otherwise
-  have its siblings silently eaten (the bug only stays invisible while Demo happens to be the last
-  section); else append a marked block. Then `gh pr edit <pr> --body <new>`. This is a surgical
-  read-modify-write of one region — it preserves any reviewer edits elsewhere in the body, unlike a
-  blind `gh pr edit --body` overwrite, and it guarantees re-runs never stack a second `## Demo`. The
-  `pr` stage emits the markers at PR-open so post-hoc `/ggx-demo` finds them; if the PR shipped before
-  this landed (no markers), `/ggx-demo`'s replace-or-append still produces exactly one marked block.
-  **Run `gh pr edit` from inside the repo directory with an absolute `--body-file` path
-  (F17)** — the Bash tool's cwd resets between calls (often to a non-repo scratchpad), and `gh` needs a
-  repo cwd to resolve the PR.
+What a `pr`-stage implementer still needs to know locally:
+
+- **Presentation changed with the move**: the Linear side is now ONE marked **inline comment**
+  (`<!-- ggx-attach:ui-tweak-demo -->`, images render / videos autoplay inline) — the core never calls
+  `create_attachment_from_upload`, so no download-card attachment is created anymore.
+- **The PR-body marker stays `<!-- ui-tweak-demo -->`** (never renamed — open PRs already carry it).
+  This stage emits the marker-wrapped `## Demo` block in the body it pre-builds (bullet 1 above:
+  the core is called with `pr` absent since the PR does not exist yet; the returned `assetUrls` are
+  embedded here as plain links). Post-hoc `/ggx-attach` / `/ggx-demo` then find that marker and
+  surgically replace between it.
 - **PR link form.** Inside the marked block, a Linear `assetUrl` is ALWAYS a plain link (bullet 3's
   deterministic-401 rule). The inline render is on the Linear ticket only.
 

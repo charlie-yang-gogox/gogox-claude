@@ -25,10 +25,11 @@ description: >
   staging QA account when the repo's `demo_auth` selector is set, and
   record a screenshot + short clip), asserts the capture actually shows the
   target (non-blank frames / not stuck on the login screen — a file-exists check
-  is insufficient), then idempotently attaches the result to
-  the Linear ticket and patches the PR body's `<!-- ui-tweak-demo -->` `## Demo`
+  is insufficient), then delegates the whole upload+embed back-half to the
+  `/ggx-attach` attach core: ONE marked inline-rendered Linear comment (never a
+  download-card attachment) plus the PR body's `<!-- ui-tweak-demo -->` `## Demo`
   region (replace-between-markers, never append). REUSES the ui-tweak
-  capture/upload machinery (does NOT reimplement it). Fails LOUD end-to-end
+  capture machinery and the /ggx-attach publish engine (does NOT reimplement either). Fails LOUD end-to-end
   (R13): no device / auto-login failed (login wall) / no route / head mismatch /
   screenrecord-ladder exhausted / content-assertion failed → non-zero exit +
   deterministic stderr. Edits
@@ -75,11 +76,12 @@ description: >
 - `/ggx-demo <TICKET>` — e.g. `/ggx-demo <ticket-id>`. Resolves the ticket's open PR.
 - `/ggx-demo <PR>` — a PR number (`#610` / `610`) or full URL.
 - `/ggx-demo <TICKET|PR> --force` — **replace mode**: re-record and REPLACE an existing
-  demo on the same commit. Without `--force`, the Step-4 dedup SKIPs any ticket that already carries a
-  `ui-tweak-demo-<sha>` attachment for the current sha — correct for idempotent re-runs, wrong when the
-  existing demo is bad (wrong flow / expired clip) and needs replacing. With `--force`, Step 4 runs the
-  attach contract's REPLACE path (delete the old attachment → upload the new capture → rewrite the
-  PR-body link; the `assetUrl` changes on re-upload). Single-ticket mode only; batch never forces.
+  demo on the same commit. Without `--force`, the Step-4 dedup SKIPs any key already published for the
+  current sha in the ticket's `<!-- ggx-attach:ui-tweak-demo -->` demo comment — correct for idempotent
+  re-runs, wrong when the existing demo is bad (wrong flow / expired clip) and needs replacing. With
+  `--force`, Step 4 runs the attach core's per-key REPLACE path (re-upload the captured keys → rewrite
+  their comment sections + PR-body links; the `assetUrl` changes on re-upload). Single-ticket mode only;
+  batch never forces.
   On a reused `../<ID>` worktree, `--force` also lets `preview` skip the rehearsal and replay a
   persisted `.dev/ui-tweak/replay-script` when its sha AND device `wm size` both still match (the
   replay fast-path); any mismatch rehearses fresh.
@@ -130,8 +132,8 @@ each ticket's Steps 1–5 in its own serial sub-agent — see B3).
 ## Step 1 — resolve the PR + ticket id
 
 ```bash
-# --force = replace mode (Step 4 takes the attach contract's REPLACE path on a same-title
-# match instead of SKIP). Parse + strip it before the TICKET|PR resolution below. Single mode only.
+# --force = replace mode (Step 4 takes the attach core's per-key REPLACE path instead of
+# SKIP). Parse + strip it before the TICKET|PR resolution below. Single mode only.
 FORCE=0; printf '%s' "$ARGUMENTS" | grep -q -- '--force' && FORCE=1
 ARG="<TICKET|PR, --force stripped>"
 # PR form: a bare number, #NNN, or a github URL → resolve directly.
@@ -180,7 +182,7 @@ on staging, mark the target `nav: grounded` / `nav: unresolved`, and record `dat
 enumerate the **distinct demonstrable outcomes** — each its own clip. The canonical trigger is
 multi-scenario behaviour verification: e.g. (a) blank field → inline error; (b) filled field → validation
 passes / order proceeds. Each scenario is `{key, intent, reset-method, expected-crux}`:
-- `key` — a short kebab slug (`blank-error`, `filled-pass`) used to key demo-files + attachments.
+- `key` — a short kebab slug (`blank-error`, `filled-pass`) used to key demo-files + published demos.
 - `intent` — the typed-event drive to perform (what to type / tap / place, per the DRIVE=full policy).
 - `reset-method` — how to return to the recording start point for the NEXT scenario (the B10 ladder rung:
   `in-flow undo` / `pop home + re-nav` / `force-stop + relaunch` / `n/a`).
@@ -359,29 +361,29 @@ on the shared device). The assertion runs on EVERY key on EVERY path that would 
 including `--force` replace (never replace a good demo with a blank one). For a single-clip capture there
 is exactly one key (`main`), so this collapses to the pre-existing single-gate behaviour.
 
-## Step 4 — idempotent attach (the shared `ff.md` contract — do NOT re-derive)
+## Step 4 — publish (delegate to the `/ggx-attach` attach core — do NOT re-derive)
 
-Run the **Idempotent attach** contract documented in `commands/design/ui-tweak/ff.md` ("Deliver PR body"
-→ "Idempotent attach (shared contract …)") against `$TICKET_ID` / PR `$PR`, using the files listed in
-`$WT/.dev/ui-tweak/demo-files` — which are **keyed by scenario** (`<scenario-key>\t<path>`; a bare line =
-key `main`). The contract is the single source of truth for the keyed-set behaviour; do NOT re-derive it
-here. In brief:
+Publishing is fully delegated to the **Attach core** in `commands/dev/ggx-attach.md` (the single source
+of truth for upload mechanics, the marked Linear inline comment, idempotency, and the PR-body demo
+region). This step owns ONLY the demo-files → keyed-set conversion:
 
-1. **Linear attachment dedupe — PER KEY.** Title each scenario's attachment `ui-tweak-demo-<sha>-<key>`
-   (`<sha> = git -C "$WT" rev-parse --short HEAD`), except the single/`main` key stays the bare
-   `ui-tweak-demo-<sha>` (backward-compatible with pre-existing demos). List the ticket's existing
-   attachments; per key, SKIP the upload (reuse the existing `assetUrl`) on a title match, so re-running
-   never adds a duplicate. **With `--force`, same-title detection takes the REPLACE path per key**
-   (delete → re-upload → rewrite that key's PR-body link with the new `assetUrl`).
-2. **PR body — ONE `## Demo` region, N labeled links.** The region stays a single
-   `<!-- ui-tweak-demo -->` … `<!-- /ui-tweak-demo -->` block (replace-between-markers, never append), but
-   it lists **one labeled link per scenario key** (e.g. `- **blank-error**: <link>`). Re-running produces
-   exactly one marked block with the current key set.
-3. **PR link form**: the Linear `assetUrl` is a **plain link** in the PR body (deterministic 401 to
-   GitHub on this private repo); inline render lives on the Linear ticket only.
+1. **Convert `demo-files` to the keyed set.** Each line of `$WT/.dev/ui-tweak/demo-files` is
+   `<scenario-key>\t<path>` (a bare line = key `main`): key = the scenario key (`main` renders as the
+   single unlabeled entry), caption = the scenario key humanized (`blank-error` → `Blank error`; refine
+   it from the scenario's `expected-crux` when the `--plan` set is still held in session), path = that
+   line's file (a key with both a screenshot and a clip publishes the clip).
+2. **Run the attach core** with `{ ticket_id: $TICKET_ID, pr: $PR, keyed_set,
+   namespace: "ui-tweak-demo", sha: $(git -C "$WT" rev-parse --short HEAD), force: $FORCE }`.
+3. The core writes BOTH sides in one call: the marked inline Linear comment
+   (`<!-- ggx-attach:ui-tweak-demo -->`, images/clips render + autoplay inline — never a download-card
+   attachment) AND the PR body's `<!-- ui-tweak-demo -->` region (plain links). `/ggx-demo` no longer
+   writes the PR body itself.
 
-This is the ONLY write `/ggx-demo` performs: the Linear attachment + the PR-body region. It changes NO
-ship state — no labels, no PR open/close/merge, no ticket status/assignee.
+Dedup semantics live in the core: per key, SKIP when already published for this sha; REPLACE on
+`--force` or on a sha mismatch (a stale-commit demo is never silently reused).
+
+This is the ONLY write `/ggx-demo` performs: the Linear demo comment + the PR-body region (both via the
+core). It changes NO ship state — no labels, no PR open/close/merge, no ticket status/assignee.
 
 ## Step 5 — cleanup + summary
 
@@ -411,19 +413,25 @@ simulator is never driven by two actors at once (no lock, no TTL — true by con
 **Fail-soft end to end** (the `/_slack-notify` contract): any per-ticket failure degrades to one WARN
 line and continues; the batch never blocks/fails its caller and never touches ship state (labels, PR
 open/closed, ticket status). Per ticket it edits only what the single-ticket flow edits — the Linear
-attachment + the PR-body `<!-- ui-tweak-demo -->` region.
+demo comment + the PR-body `<!-- ui-tweak-demo -->` region.
 
-### B1 — discover candidate PRs (no input) — attachment-truth dedup
+### B1 — discover candidate PRs (no input) — demo-comment sha dedup
 
-The "already demoed" dedup keys on the **Linear `ui-tweak-demo-<sha>` attachment**, NOT the PR-body
-`<!-- ui-tweak-demo -->` marker. The marker is written at PR-open *regardless of capture success*:
-forward `/ui-tweak:ff`'s "Deliver PR body" emits a marker-wrapped `## Demo` block even when
-`preview`'s navigate+capture fail-silents (the block just carries a "No screenshot" line). So
-**marker-present ≠ demo-captured** — keying discovery on the marker permanently skipped PRs that never
-actually recorded (observed on PRs whose demo silently never captured). The Linear attachment is the
-authoritative signal: both forward `/ui-tweak:ff` and Step 4 here create `ui-tweak-demo-<sha>` **only
-after a real capture** (`demo-files` non-empty); a fail-silent run produces no such attachment. This is
-the **same signal source** as Step 4's idempotent-attach dedup, so discovery and re-attach agree.
+The "already demoed" dedup keys on the **Linear `<!-- ggx-attach:ui-tweak-demo -->` demo comment's
+`ggx-attach-sha`**, NOT the PR-body `<!-- ui-tweak-demo -->` marker. The PR-body marker is written at
+PR-open *regardless of capture success*: forward `/ui-tweak:ff`'s "Deliver PR body" emits a
+marker-wrapped `## Demo` block even when `preview`'s navigate+capture fail-silents (the block just
+carries a "No screenshot" line). So **marker-present ≠ demo-captured** — keying discovery on the PR-body
+marker permanently skipped PRs that never actually recorded (observed on PRs whose demo silently never
+captured). The Linear demo comment is the authoritative signal: both forward `/ui-tweak:ff` and Step 4
+here write it via the attach core **only after a real capture** (`demo-files` non-empty); a fail-silent
+run produces no such comment. And because the comment carries the demoed sha, a PR whose head moved past
+its last demo becomes a CANDIDATE again. This is the **same signal source** as the attach core's
+idempotency (comment marker + sha), so discovery and re-publish agree.
+
+> Legacy note: before the attach core, this dedup keyed on a Linear attachment titled
+> `ui-tweak-demo-<sha>`. Attachments are no longer created (inline comment only), so that signal is
+> permanently false for new demos — do not resurrect it.
 
 ```bash
 # Batch modifiers (parse once, at the top of Batch mode). `--draft` is batch-only; `--plan` is the
@@ -438,8 +446,9 @@ printf '%s' "$ARGUMENTS" | grep -qE -- '--max-scenarios[:= ]' \
 # Every open PR of MINE. author=@me is a HARD limit (never touch others' PRs). NO class/title
 # gate (the old `^## UI Tweak` body filter was DROPPED; the dispatch finisher emits that title
 # unreliably). Recordability is judged per-PR in B1.5 (diff-first), before any device opens.
-# `isDraft` is always fetched so `--draft` can restrict the set without a second API call.
-PRS=$(gh pr list --author "@me" --state open --json number,headRefName,url,body,title,isDraft)
+# `isDraft` is always fetched so `--draft` can restrict the set without a second API call;
+# `headRefOid` feeds the sha dedup below (stored short sha vs current head).
+PRS=$(gh pr list --author "@me" --state open --json number,headRefName,headRefOid,url,body,title,isDraft)
 
 # --draft: restrict discovery to DRAFT PRs (attach a demo before the PR leaves draft). Without the flag,
 # take every open PR (draft and ready alike). Filtering client-side keeps the one `gh pr list` call.
@@ -451,27 +460,29 @@ else
 fi
 ```
 
-Then **you (the LLM executing this skill) build `CANDIDATES`** by excluding only PRs that already carry a
-real demo attachment. For each PR in `$PRS`:
+Then **you (the LLM executing this skill) build `CANDIDATES`** by excluding only PRs whose current head
+already carries a real demo comment. For each PR in `$PRS`:
 
 1. **Extract the ticket id** — `[A-Z]+-[0-9]+` from `headRefName` (fallback: `title`, then `body`),
    uppercased. If none parses → the PR is a **CANDIDATE** (cannot verify a demo without a ticket; safer
    to re-offer than to silently skip).
-2. **Check the ticket's attachments** — call `mcp__claude_ai_Linear__get_issue --id <ticket-id>` and
-   inspect `.attachments[]`. If any attachment's `.title` starts with `ui-tweak-demo-` → a real demo was
-   recorded → **EXCLUDE** the PR (idempotent: a successfully-demoed PR is never re-recorded). Otherwise
-   (no such attachment — *even if the PR body has the `<!-- ui-tweak-demo -->` marker*) → **CANDIDATE**.
-   A `get_issue` failure (network / not found) → treat as **CANDIDATE** and log one WARN line (fail-soft:
-   re-offering a demo is cheap; the per-ticket flow is idempotent on the attachment title anyway).
+2. **Check the ticket's demo comment** — call `mcp__claude_ai_Linear__list_comments` for the ticket and
+   look for a comment containing `<!-- ggx-attach:ui-tweak-demo -->`; read its `ggx-attach-sha` meta
+   line. If the stored sha matches the PR's CURRENT head (`headRefOid` — compare as a prefix: the stored
+   value is a short sha) → a real demo of the current commit exists → **EXCLUDE** the PR (idempotent: a
+   successfully-demoed head is never re-recorded). Otherwise (no comment / no marker / a sha mismatch —
+   *even if the PR body has the `<!-- ui-tweak-demo -->` marker*) → **CANDIDATE**.
+   A `list_comments` failure (network / not found) → treat as **CANDIDATE** and log one WARN line
+   (fail-soft: re-offering a demo is cheap; the attach core's idempotency makes re-publish safe anyway).
 3. Assemble `CANDIDATES` as the JSON array B1.5 consumes — same shape as `$PRS` items
-   (`number,headRefName,url,body,title`).
+   (`number,headRefName,headRefOid,url,body,title`).
 
 ```bash
 [ "$(printf '%s' "$CANDIDATES" | jq 'length')" -gt 0 ] || { echo "ggx-demo --batch: no open PRs of mine without a recorded demo."; exit 0; }
 ```
 
-This makes the regression cases (marker present, no `ui-tweak-demo-*` attachment) candidates
-again, while PRs with a real attachment stay excluded.
+This makes the regression cases (PR-body marker present, no demo comment) candidates again — plus PRs
+re-pushed since their last demo (sha mismatch) — while PRs demoed at their current head stay excluded.
 
 (A caller that already holds the freshly-shipped rows — `/ggx-dispatcher --demo`, `/ggx-on-duty --demo`
 — MAY narrow to these PRs, but the default is self-discovery so no caller has to hand-build a JSON array.)
@@ -733,7 +744,7 @@ ggx-demo --batch: <CAPTURED> captured, <SKIPPED> capture-skipped (<REASONS>), <D
 
 `DIFF_SKIPPED_COUNT` / its reasons come from B1.5 (PRs judged non-recordable from the diff, never opened a
 device); `SKIPPED` / `REASONS` are the B3 per-ticket capture failures. Append ` — SHORT-CIRCUITED at login
-wall (configure demo_auth + a staging account on the Notion page)` when `LOGIN_WALL=1`. Per-ticket idempotency (deterministic Linear title + PR-body marker-region replace)
+wall (configure demo_auth + a staging account on the Notion page)` when `LOGIN_WALL=1`. Per-ticket idempotency (the attach core's marked Linear comment + PR-body marker-region replace)
 makes re-running safe — a re-run after fixing login picks up exactly the still-undemoed PRs. STOP.
 
 ## Disposition — fail-LOUD (R13), the inverse of `/ui-tweak`'s designer-facing fail-silent
@@ -755,7 +766,7 @@ nothing to capture on a build-only platform.
   (not bound to `design bug` / ui-tweak; a diff-first judge filters non-UI PRs before any
   device opens); single mode demos an explicit ticket/PR. (Inline-renderable PR images are a separate concern.)
 - Edits NO source, writes NO walker markers, never enters `/ui-tweak:ff`.
-- Reuses `preview --capture-only` (capture) + the `ff.md` Idempotent-attach contract (upload/embed) —
+- Reuses `preview --capture-only` (capture) + the `/ggx-attach` attach core (upload/embed) —
   it does NOT reimplement either. The only logic owned here is PR/worktree resolution, the head guard,
   the CORE `--plan` gate (Step 1.9 — recordability + nav grounding + data-prereq + N-scenario enumeration
   + HITL STOP), the per-key post-capture content assertion, the scenario-file handoff to `preview`, the
@@ -769,8 +780,9 @@ nothing to capture on a build-only platform.
   Enumerates N scenarios (`--max-scenarios`, default 3) → one clip per scenario, keyed. `--draft` is
   batch-only (a discovery filter). Both default OFF.
 - Multi-clip output: on `--plan`, `demo-files` is keyed (`<scenario-key>\t<path>`; bare line = `main`),
-  each clip attached under `ui-tweak-demo-<sha>-<key>` (bare `ui-tweak-demo-<sha>` for the single `main`
-  key), one `## Demo` PR-body region with N labeled links, `--force` REPLACE per key. Bound N; a
+  each clip published under its key in the ticket's `<!-- ggx-attach:ui-tweak-demo -->` demo comment
+  (`main` = the single unlabeled entry), one `## Demo` PR-body region with N labeled links, `--force`
+  REPLACE per key. Bound N; a
   per-scenario failure LOUD-skips that clip (never a silent empty) — the whole run fails LOUD only when
   EVERY scenario fails.
 - Driving is gated on the build (`preview` Step 2.4.4 `DRIVE=full|nav-only`): on a confirmed staging

@@ -337,6 +337,11 @@ If no ticket ID was found, skip this step.
 ### 10. Report Result
 
 Show:
+- **The implementation summary, in the chat** — the `## Summary` bullets (plus any
+  `### Deviations from Plan` items when planning artifacts were found), written in the
+  conversation's language. A status-only table is NOT enough: the user must be able to read
+  WHAT was implemented without opening the PR. This is mandatory even more so when the ticket
+  comment was skipped (e.g. tracker MCP unavailable) — otherwise the summary appears nowhere.
 - PR URL (clickable)
 - PR title
 - Number of commits included
