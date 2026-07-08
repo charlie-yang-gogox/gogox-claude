@@ -34,6 +34,16 @@ cd gogox-claude
 
 > 內部用 **symlink**，不是 copy。`git pull` 之後檔案就同步更新了，**不用再跑一次 `install.sh`**（除非有新增最上層的東西想撿起來）。
 
+### 只想裝一個 skill？（例如 `ui-tweak-fast`）
+
+不用 clone 整個 repo。`ui-tweak-fast` 是獨立自足的，可以用 [Skills CLI](https://skills.sh/) 單獨安裝：
+
+```bash
+npx skills add charlie-yang-gogox/gogox-claude/skills/design/ui-tweak-fast
+```
+
+只會把這一個 skill 放進 `~/.claude/skills/`——不跑 `install.sh`、也不裝其他 gogox-claude 的東西。之後用 `npx skills update` 就能更新它。
+
 ---
 
 ## 3. 設定專案（每個 project 一次）
