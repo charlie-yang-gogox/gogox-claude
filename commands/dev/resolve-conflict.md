@@ -3,7 +3,8 @@ name: resolve-conflict
 description: >
   Merge/Rebase current branch onto trunk, resolve any merge conflicts,
   run tests until green, format, and commit. Single mode does NOT push.
-  Platform-aware: uses the right test and format commands per project. With
+  Pass --skip-test to bypass the tests-green gate (single + batch only; never
+  callee). Platform-aware: uses the right test and format commands per project. With
   --batch, sweeps open GitHub PRs (optionally filtered by --user) and fans out
   one parallel subagent per PR — each works in the PR's worktree, merges onto
   its base, tests, and pushes only if clean (conflicted PRs are flagged for a
@@ -31,12 +32,13 @@ Pull latest trunk via merge/rebase, resolve conflicts, verify tests pass, format
 **Usage**:
 
 ```
-/resolve-conflict [--rebase | --merge]
-/resolve-conflict --batch [--user=<login> | --user=@me] [--limit=<N>] [--rebase | --merge] [--dry-run]
+/resolve-conflict [--rebase | --merge] [--skip-test]
+/resolve-conflict --batch [--user=<login> | --user=@me] [--limit=<N>] [--rebase | --merge] [--dry-run] [--skip-test]
 /resolve-conflict --callee --worktree=<path> --base=<ref>   # hybrid; invoked by /ggx-pr-resolver only
 ```
 
 - `--rebase` (default) / `--merge` — strategy, passed through to every PR in batch mode.
+- `--skip-test` — **single + batch only** (rejected in `--callee`). Skip Step 4 entirely — no `{test_cmd}` is run and the tests-green gate is bypassed. Use when the suite is known-broken for unrelated reasons, on docs-only branches, or for a fast conflict-resolution pass you will test separately. The skip is never silent: a banner is printed (single mode) / the outcome is marked `pushed (UNTESTED)` (batch mode). **Batch consequence:** a cleanly-rebased PR is still force-pushed **without** the tests-green requirement — you are opting into shipping untested code across every clean PR in the sweep. Ignored (and irrelevant) under `--dry-run`, which runs no tests regardless.
 - `--user=<login>` — batch only; restrict to PRs **created by** that GitHub login. `@me` resolves to the authenticated user. Omit to sweep all PRs (bots excluded).
 - `--limit=<N>` — batch only; **concurrency cap** — at most **N** subagents run at once. **All** eligible PRs are still processed; they are worked through in waves of N. Omit for no explicit cap (the harness's own concurrency cap still applies).
 - `--dry-run` — batch only; **read-only preview**. Lists every matching PR and probes mergeability **locally with git** (`git merge-tree`, an in-memory merge that reports conflicts without touching the working tree, index, or any branch). Performs **no** checkout, real merge/rebase, conflict resolution, test run, commit, or push — nothing is mutated, locally or remotely (a read-only `git fetch` of the refs is the only network call).
@@ -73,6 +75,8 @@ Hold these values in memory for use in Steps 4 and 5 where you see `{test_cmd}` 
 If `--merge` is provided, use `merge` instead of `rebase` in all git commands in this skill.
 
 If `--rebase` is provided, use `rebase` in all git commands in this skill.
+
+If `--skip-test` is provided, remember it for Step 4 (and, in batch mode, pass it to every subagent — see **Batch Mode**). `--skip-test` is **rejected in `--callee` mode** (see **Callee Mode**): the callee's test run is the safety net for its auto-assume conflict resolution and must never be bypassable.
 
 Invoke `/check-clean`. If it fails, stop and ask the user to commit or stash before proceeding.
 
@@ -119,6 +123,14 @@ While the merge/rebase is paused due to conflicts:
 - Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain in any file after resolution.
 
 ### 4. Verify — Run Tests until Green
+
+**`--skip-test` short-circuit.** If `--skip-test` was passed, skip this entire step — do **not** run `{test_cmd}`, and proceed straight to Step 5 (Format). Print a prominent banner so the skip is never silent, e.g.:
+
+```
+⚠️  --skip-test: test verification (Step 4) was SKIPPED — no tests were run. Verify manually before relying on this branch.
+```
+
+Otherwise, run the gate as normal:
 
 Run `{test_cmd}` to verify the test suite passes after the merge/rebase. Fix any rebase-related test failures before continuing.
 
@@ -198,7 +210,7 @@ Report the result:
 - If the merge/rebase hits more than 5 conflict rounds (single mode), pause and ask the user if they want to continue or abort.
 - Do not modify files unrelated to the conflict resolution or test fixes.
 - All conflict markers must be verified removed before continuing the merge/rebase.
-- **Batch mode push policy:** push a PR branch **only** when it came through **clean** — the rebase/merge applied with **zero conflicts** and `{test_cmd}` is green. PRs that hit conflicts, or whose tests failed, are **never** pushed; they are flagged for human review.
+- **Batch mode push policy:** push a PR branch **only** when it came through **clean** — the rebase/merge applied with **zero conflicts** and `{test_cmd}` is green. PRs that hit conflicts, or whose tests failed, are **never** pushed; they are flagged for human review. **With `--skip-test`:** the tests-green half of the criterion is dropped — a cleanly-rebased PR is pushed on the strength of the clean merge/rebase alone (no tests run). Such pushes are surfaced as outcome `pushed (UNTESTED)` in the summary so the skip is never silent. Conflicted PRs are still never pushed.
 - **Batch mode conflict handling:** the parallel subagents are non-interactive, so they do **not** attempt HITL conflict resolution. On the first conflict a subagent **aborts** its own merge/rebase (`--abort`) to leave the PR's worktree clean, then reports `conflicts`. This per-worktree auto-abort is the one sanctioned exception to the "never abort without asking" rule — it touches only that PR's isolated worktree, never the user's main worktree. Conflicted PRs are routed back to single-mode `/resolve-conflict` for a human.
 
 ---
@@ -209,7 +221,7 @@ When `--batch` is present, **do not** run the single-branch flow against the cur
 
 ### Step B0: Pre-flight (orchestrator)
 
-1. Resolve the project profile exactly as in **Step 0** — capture `{test_cmd}` to hand to each subagent. **Dry-run:** skip — no tests are run.
+1. Resolve the project profile exactly as in **Step 0** — capture `{test_cmd}` to hand to each subagent (unless `--skip-test` was passed, in which case no test command is needed — see below). **Dry-run:** skip — no tests are run. **`--skip-test`:** remember it and pass it to every subagent; they will skip their test run and push clean PRs untested.
 2. Resolve the repo: `REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)`. If this fails (not a GitHub-backed repo), stop and tell the user.
 3. Capture the repo root for worktree paths: `ROOT=$(git rev-parse --show-toplevel)`.
 
@@ -283,7 +295,7 @@ BEHIND=$(git rev-list --count "origin/<headRefName>..origin/<baseRefName>")
 >
 > Caveat to note in the output: `git merge-tree` models a **merge**; with `--rebase` the exact conflict set can differ, but it is a reliable mergeability signal.
 
-**Spawn one subagent per queued PR, in parallel**, passing each the PR number, `headRefName`, `baseRefName`, the strategy (`rebase`/`merge`, default rebase), `{test_cmd}`, `REPO`, and `ROOT`. Each subagent is self-contained and **must return a structured result** (outcome + details) for the summary.
+**Spawn one subagent per queued PR, in parallel**, passing each the PR number, `headRefName`, `baseRefName`, the strategy (`rebase`/`merge`, default rebase), `{test_cmd}`, whether `--skip-test` is set, `REPO`, and `ROOT`. Each subagent is self-contained and **must return a structured result** (outcome + details) for the summary.
 
 **Concurrency.** Process **all** queued PRs, but run at most `--limit=<N>` subagents at a time (default: no explicit cap — issue all `Agent` calls in one message and let the harness's own cap queue the overflow). When `--limit` is set, dispatch in **waves**: issue N `Agent` calls in a single message, wait for that wave to finish, then issue the next N, until every queued PR has been processed. Never drop a PR for being over the limit — the cap throttles *how many run at once*, not *how many run*.
 
@@ -307,13 +319,16 @@ Give each subagent these instructions:
    ```bash
    git -C <path> <rebase|merge> --abort
    ```
-4. **On clean merge:** run `{test_cmd}` in the worktree.
-   - Tests **red** → return `tests-failed` (leave the worktree as-is for inspection; do not push).
-   - Tests **green** → push, since clean + green is the push criterion:
+4. **On clean merge:** verify, then push.
+   - **`--skip-test` set** → do **not** run `{test_cmd}`. A clean merge/rebase alone satisfies the (relaxed) push criterion, so push immediately using the strategy-appropriate command below and return `pushed-untested`. The green requirement is deliberately dropped — this is the batch consequence of `--skip-test`.
+   - **`--skip-test` NOT set** → run `{test_cmd}` in the worktree.
+     - Tests **red** → return `tests-failed` (leave the worktree as-is for inspection; do not push).
+     - Tests **green** → push (clean + green is the push criterion) and return `pushed`.
+   - Push commands (both the `pushed` and `pushed-untested` paths):
      - **rebase** → `git -C <path> push --force-with-lease origin <headRefName>` (history rewritten; `--force-with-lease`, never `--force`).
      - **merge** → `git -C <path> push origin <headRefName>` (fast-forward).
-     - Return `pushed` on success, or `push-failed` with the error.
-5. Return a structured result: `{ pr, branch, base, outcome, conflicted_files?, test_summary?, push_error?, worktree_path, worktree_created: bool }`.
+     - On push failure, return `push-failed` with the error.
+5. Return a structured result: `{ pr, branch, base, outcome, conflicted_files?, test_summary?, skipped_test?: bool, push_error?, worktree_path, worktree_created: bool }`.
 
 **Failure isolation:** a subagent that errors or returns a failure outcome must not affect the others — the orchestrator records its result and moves on.
 
@@ -334,10 +349,10 @@ Repo: <owner/repo>   Strategy: <rebase|merge>   Filter: <--user value or "all (b
 | 4 | #126 Tidy     | tidy ← main | 0 | up-to-date | — | — | skipped (orchestrator pre-filter) |
 ```
 
-Outcome values: `pushed`, `tests-failed`, `conflicts`, `worktree-dirty`, `up-to-date`, `push-failed`, `error`.
+Outcome values: `pushed`, `pushed-untested` (only under `--skip-test`), `tests-failed`, `conflicts`, `worktree-dirty`, `up-to-date`, `push-failed`, `error`. Render `pushed-untested` in the Outcome column as **`pushed (UNTESTED)`** so the skipped gate is visible at a glance.
 
 Then print:
-- **Pushed:** branches now current with their base on the remote (outcome `pushed`).
+- **Pushed:** branches now current with their base on the remote (outcome `pushed`). Under `--skip-test`, list `pushed-untested` PRs in a **separate `⚠️ Pushed UNTESTED`** group with a one-line warning that no tests were run for them and CI is the only remaining gate.
 - **Needs a human:** `conflicts` / `tests-failed` / `worktree-dirty` PRs, with the worktree path and the suggested next step — for conflicts, `cd <path> && /resolve-conflict` (single mode) to resolve interactively.
 - **Worktrees created:** list the worktrees this run created (vs reused) so the user can `/remove-worktree` them when done.
 
@@ -352,7 +367,7 @@ Then print:
 - `--worktree=<path>` — the PR's worktree, **already created/reused/refreshed by the caller** (`/ggx-pr-resolver` step 4 owns the worktree primitive, the stale-reuse `git fetch` + reset, and the dirty guard). Callee mode does **not** create, fetch, reset, or clean the worktree; it operates strictly inside `<path>` (all git commands run with `git -C <path>`).
 - `--base=<ref>` — the **explicit** ref to rebase onto (the PR's real base; see the Callee-mode line under **Base branch** above). Substitute the bare ref for the `git fetch` refspec.
 
-Strategy is **rebase-only** (owner decision D12) — `--merge` is rejected in this mode; the caller's single push is unconditionally `--force-with-lease`, which is correct only for a rebase. Resolve project profile exactly as in **Step 0** to obtain `{test_cmd}` / `{format_cmd}`.
+Strategy is **rebase-only** (owner decision D12) — `--merge` is rejected in this mode; the caller's single push is unconditionally `--force-with-lease`, which is correct only for a rebase. **`--skip-test` is also rejected in this mode:** the Step 3 tests-green run below is the safety net that catches a Tier-1 auto-assume merge that turned out wrong, so it must never be bypassable — if `--skip-test` is somehow passed here, ignore it and run tests anyway. Resolve project profile exactly as in **Step 0** to obtain `{test_cmd}` / `{format_cmd}`.
 
 ### Procedure
 
