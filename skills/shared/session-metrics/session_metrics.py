@@ -123,7 +123,7 @@ CSV_FIELDS = [
     "pr_url",
     "pr_merged",            # 1 / 0 / "" — the one hard-to-fake value signal
     "pr_state",             # MERGED | OPEN | CLOSED | DRAFT
-    "cycle_time_sec",       # PR createdAt -> mergedAt (or now if open)
+    "cycle_time_sec",       # PR createdAt -> mergedAt; "" until actually merged (GGC-125 R5)
     "review_rounds",        # count of CHANGES_REQUESTED review submissions
     "first_pass_accepted",  # 1 if merged with zero CHANGES_REQUESTED, else 0
     "reviewer_comments",    # review/issue comments not authored by the PR author
@@ -566,13 +566,17 @@ def scan_subagents_aggregate(
                 continue
         elif wf_ticket_map:
             # Workflow run WITH a journal: attribution is journal-authoritative.
-            # An agent absent from the journal is a non-work stage agent (e.g.
-            # review/verify, whose result carries no ticketId) — its cost is
-            # attributed once dispatcher-side result-tagging lands; until then it
-            # is correctly excluded. The old cwd/gitBranch fallback below matched
-            # NOTHING on this path anyway (every Workflow agent records cwd=main
-            # repo / gitBranch=trunk), so skipping it here only strips latent
-            # risk of a false match, never removes a real one.
+            # An agent absent from the journal is a non-work dispatcher STAGE agent
+            # whose result carries no ticketId — e.g. review/verify agents AND the
+            # GGC-21 evidence cross-check agent ("Cross-check terminal evidence for
+            # ticket …"). These are DELIBERATELY EXCLUDED as dispatcher verification
+            # overhead, exactly like the session_metrics finalize agent (which is
+            # excluded by _invoked_scan_subagents below) — they are not the ticket's
+            # product work, so their cost is not attributed to the ticket's summed
+            # total (GGC-125 Residual 2: this exclusion is intentional, not a bug).
+            # The old cwd/gitBranch fallback below matched NOTHING on this path
+            # anyway (every Workflow agent records cwd=main repo / gitBranch=trunk),
+            # so skipping it here only strips latent risk of a false match.
             continue
         else:
             # Legacy (non-Workflow) path: no journal, so fall back to the
@@ -709,7 +713,13 @@ def parse_session(jsonl_path: Path) -> dict:
         "cwd": None,
     }
 
-    seen_request_ids: set[str] = set()
+    # GGC-125 Residual 4: accumulate usage per requestId rather than reading the
+    # FIRST record per request. `input`/`cache_*` are set once (first == last), but
+    # streaming emits the cumulative `output_tokens` only in the FINAL record — so
+    # a first-record read undercounted output by ~8%. We keep input/cache from the
+    # first record and take the running MAX of output across all records for the
+    # request, then fold into `model_usage` after the file loop.
+    request_usage: dict[str, dict] = {}  # requestId -> per-request usage
     agent_tool_uses: dict[str, dict] = {}  # tool_use_id -> info
 
     session_id = jsonl_path.stem
@@ -747,18 +757,27 @@ def parse_session(jsonl_path: Path) -> dict:
                 model = msg.get("model", "unknown")
                 usage = msg.get("usage", {})
 
-                # Dedup by requestId
-                if request_id and request_id not in seen_request_ids:
-                    seen_request_ids.add(request_id)
-                    mu = metrics["model_usage"][model]
-                    mu["input_tokens"] += usage.get("input_tokens", 0)
-                    mu["output_tokens"] += usage.get("output_tokens", 0)
-                    mu["cache_write_tokens"] += usage.get(
-                        "cache_creation_input_tokens", 0
-                    )
-                    mu["cache_read_tokens"] += usage.get(
-                        "cache_read_input_tokens", 0
-                    )
+                # Accumulate per requestId (GGC-125 Residual 4). First record wins
+                # for input/cache (constant across the request's records); output
+                # takes the running max (cumulative total lands in the LAST record).
+                if request_id:
+                    ru = request_usage.get(request_id)
+                    if ru is None:
+                        request_usage[request_id] = {
+                            "model": model,
+                            "input_tokens": usage.get("input_tokens", 0),
+                            "output_tokens": usage.get("output_tokens", 0),
+                            "cache_write_tokens": usage.get(
+                                "cache_creation_input_tokens", 0
+                            ),
+                            "cache_read_tokens": usage.get(
+                                "cache_read_input_tokens", 0
+                            ),
+                        }
+                    else:
+                        ru["output_tokens"] = max(
+                            ru["output_tokens"], usage.get("output_tokens", 0)
+                        )
 
                 # Scan content blocks for tool_use
                 for block in msg.get("content", []):
@@ -833,6 +852,15 @@ def parse_session(jsonl_path: Path) -> dict:
             # ----------------------------------------------------------
             elif msg_type == "system" and data.get("subtype") == "turn_duration":
                 metrics["turn_durations_ms"].append(data.get("durationMs", 0))
+
+    # GGC-125 Residual 4: fold the per-request usage (output = max across the
+    # request's streamed records) into model_usage now that every record is seen.
+    for ru in request_usage.values():
+        mu = metrics["model_usage"][ru["model"]]
+        mu["input_tokens"] += ru["input_tokens"]
+        mu["output_tokens"] += ru["output_tokens"]
+        mu["cache_write_tokens"] += ru["cache_write_tokens"]
+        mu["cache_read_tokens"] += ru["cache_read_tokens"]
 
     # Agents that were launched but never returned
     for tu_id, info in agent_tool_uses.items():
@@ -941,12 +969,26 @@ def get_session_number(ticket_id: str, session_id: str) -> int:
 # ===================================================================
 
 
-def get_ticket_cumulative(ticket_id: str, current_session_id: str, cwd: str) -> dict | None:
+def get_ticket_cumulative(
+    ticket_id: str,
+    current_session_id: str,
+    cwd: str,
+    run_stem: str | None = None,
+) -> dict | None:
     """Aggregate stats across all sessions for a ticket from CSV.
 
     Returns None if no CSV or no prior sessions exist.
     The current session is excluded — the caller merges it in.
     Also loads agents from prior session JSONLs.
+
+    GGC-125 Residual 3: when ``run_stem`` is given (the batch --scan-subagents
+    path), aggregate ONLY prior DISPATCH rows — rows with a non-empty ``run_stem``
+    other than the current one — and group "sessions" by ``run_stem``. This keeps
+    the report header derived from the SAME transcript set as its provenance:
+    stray per-session hook rows (no run_stem — e.g. a cross-check agent's own
+    session that ended in the worktree) no longer leak into the cumulative total
+    and make the header disagree with provenance. When ``run_stem`` is None (the
+    standalone path) the legacy session_id grouping is used, unchanged.
     """
     if not CSV_PATH.exists():
         return None
@@ -970,9 +1012,16 @@ def get_ticket_cumulative(ticket_id: str, current_session_id: str, cwd: str) -> 
                         stored_sp = int(sp_val)
                     except ValueError:
                         pass
-                sid = row.get("session_id", "")
-                if sid == current_session_id:
-                    continue  # exclude current for aggregation — caller merges it
+                if run_stem is not None:
+                    # Batch path: only prior DISPATCH rows, keyed by run_stem.
+                    rs = row.get("run_stem", "")
+                    if not rs or rs == run_stem:
+                        continue  # stray non-dispatch row, or the current run
+                    sid = rs
+                else:
+                    sid = row.get("session_id", "")
+                    if sid == current_session_id:
+                        continue  # exclude current for aggregation — caller merges it
                 if sid not in session_ids:
                     # Per-session fields (same across model rows): take first.
                     # `or 0` guards empty cells (old rows lack active_proxy_sec).
@@ -1063,11 +1112,17 @@ def outcome_to_csv(outcome: dict | None) -> dict:
     """Map an outcome dict (finalize-gathered) to the CSV outcome columns —
     every field "" when absent, never fabricated."""
     o = outcome or {}
+    # GGC-125 Residual 5: cycle time is meaningful ONLY for a merged PR
+    # (open→merge). For an unmerged PR the upstream gather used to compute
+    # now−createdAt (a naive local-vs-UTC subtraction that produced a bogus ~8h
+    # TZ-offset value), so blank it unless the PR actually merged — regardless of
+    # what the gather emitted.
+    merged = _bool01(o.get("merged")) == 1
     return {
         "pr_url": o.get("pr_url", "") or "",
         "pr_merged": _bool01(o.get("merged")),
         "pr_state": o.get("pr_state", "") or "",
-        "cycle_time_sec": _num_or_blank(o.get("cycle_time_sec")),
+        "cycle_time_sec": _num_or_blank(o.get("cycle_time_sec")) if merged else "",
         "review_rounds": _num_or_blank(o.get("review_rounds")),
         "first_pass_accepted": _bool01(o.get("first_pass")),
         "reviewer_comments": _num_or_blank(o.get("reviewer_comments")),
@@ -1090,7 +1145,9 @@ def format_outcome_section(outcome: dict | None, current_cost: float) -> list[st
     # Coerce numerics through the same hardened path as the CSV (strings from
     # gh are common); "" means absent/unparseable → omit the row (never float()
     # a raw string, which would crash the whole metrics run mid-report).
-    cyc = _num_or_blank(o.get("cycle_time_sec"))
+    # GGC-125 Residual 5: only an open→merge cycle time is real; skip it for an
+    # unmerged PR (the upstream now−createdAt value was a bogus TZ-offset artifact).
+    cyc = _num_or_blank(o.get("cycle_time_sec")) if merged else ""
     if cyc != "":
         lines.append(f"| Cycle time (open→merge) | {format_duration(float(cyc))} |")
     rr = _num_or_blank(o.get("review_rounds"))
@@ -1712,6 +1769,14 @@ def run_scan_subagents_mode(args) -> None:
     metrics = agg["metrics"]
     durations = agg["durations"]
     git_branch = agg["git_branch"]
+    # GGC-125 Residual 1: the summed subagents all record gitBranch=<default>
+    # (Workflow workers run with cwd=main repo), so agg["git_branch"] is
+    # "trunk"/"main", never the ticket's worktree branch. --cwd IS the ticket
+    # worktree here, so resolve the real branch from it; keep the transcript
+    # branch as a fail-soft fallback when the worktree has already been removed.
+    worktree_branch = get_git_branch(cwd)
+    if worktree_branch:
+        git_branch = worktree_branch
     provenance = agg["provenance"]
     current_total_cost = agg["total_cost"]
     # Compact, round-trippable provenance string for the CSV column.
@@ -1719,7 +1784,7 @@ def run_scan_subagents_mode(args) -> None:
 
     # ---- Story points (GGC-71 reuse): explicit --story-points > stored CSV
     # value > snapped --manual-hours blind estimate. ----
-    cumulative = get_ticket_cumulative(ticket_id, "", cwd)
+    cumulative = get_ticket_cumulative(ticket_id, "", cwd, run_stem=run_stem)
     if args.story_points is None and cumulative and cumulative.get("stored_story_points"):
         args.story_points = cumulative["stored_story_points"]
     if args.story_points is None and args.manual_hours is not None:
