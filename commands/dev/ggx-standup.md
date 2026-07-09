@@ -134,8 +134,10 @@ degrades to PR-only.
 1. **In-progress tickets** — `mcp__claude_ai_Linear__list_issues` with
    `assignee = "me"` and `updatedAt` ≥ the window start (pass the ISO start as
    the `updatedAt` filter to pre-narrow server-side). For each returned issue
-   capture: `id` (identifier, e.g. `<TEAM>-<n>`), `title`, `state` (`.state.name`),
-   `stateType` (`.state.type`), `updatedAt`. **Cap: 50 issues.** If the result
+   capture (NOTE the `list_issues` field shape — the human identifier is `.id`,
+   and the current state is the flat `.status` / `.statusType`, NOT `.state.*`):
+   `id` (`.id`, e.g. `<TEAM>-<n>`), `title`, `state` (`.status`),
+   `stateType` (`.statusType`), `updatedAt`. **Cap: 50 issues.** If the result
    is capped, STOP-and-narrow: tell the user the assignee set exceeds the cap
    and to pass `--date`/narrower scope; never silently truncate.
 
@@ -143,8 +145,10 @@ degrades to PR-only.
    MERGED + OPENED PRs (same `(CAF|DAF|CET|DET|GGC)-\d+` shapes). For each id
    (**cap: 40** `get_issue` calls; beyond that, list the joined-but-unfetched
    ids explicitly rather than dropping them), call
-   `mcp__claude_ai_Linear__get_issue` and record `id → .state.name` into a
-   `ticket_states` map. These are the chips shown next to each Done ticket.
+   `mcp__claude_ai_Linear__get_issue` and record `id → .status` (the flat
+   current-state name; `get_issue` uses `.status` / `.statusType` too, and
+   `.state.*` only inside `stateHistory[]`) into a `ticket_states` map. These
+   are the chips shown next to each Done ticket.
 
 ## Step 5: Assemble the bundle and render
 
