@@ -122,6 +122,29 @@ For Jira, the current-user accountId can be discovered via
 `mcp__claude_ai_Atlassian_Rovo__atlassianUserInfo` (cache it; the value
 is stable per session).
 
+### set_cycle — move to the team's current cycle (Linear only)
+
+| ticket_system | Tool                                                | Required args                                     |
+|---------------|-----------------------------------------------------|---------------------------------------------------|
+| `linear`      | `mcp__claude_ai_Linear__save_issue`                 | `id: <ticket-id>`, `cycle: <cycle-id>`            |
+| `jira`        | unsupported — no cycle concept                      | no-op (log `cycle: skipped (jira)`, continue)     |
+
+Resolve the current cycle id via `mcp__claude_ai_Linear__list_cycles(teamId,
+type: "current")`, which returns the active cycle directly; take `.[0].id`:
+
+```bash
+# Team key = BRANCH_PREFIX (the ticket-id prefix, e.g. the Linear team key) —
+# the same team identifier the other team-scoped callers pass (cf.
+# /ticket-analyze's list_issue_statuses <team_key>). Resolved by the standard
+# profile block; do not invent a separate $TEAM_ID.
+CYCLE_ID=$(mcp__claude_ai_Linear__list_cycles --teamId "$BRANCH_PREFIX" --type current | jq -r '.[0].id // empty')
+```
+
+Empty result → the team has no active cycle → **skip the cycle write with a
+WARN** (never abort). A ticket already in a *different* cycle is force-moved to
+the current one (overwrite) — the caller decides whether that overwrite is
+desired. Jira has no cycle: the Jira branch is a logged no-op.
+
 ### get_relations — read inter-ticket links
 
 | ticket_system | Source field                                      | Notes                                                                          |
@@ -210,6 +233,7 @@ Every MCP call wrapped by this abstraction:
 - `/dev:apply` Step 0-bug — ticket re-fetch
 - `/dev:ship` — status transition + summary comment
 - `/ticket-analyze` — batch sweep (To-Do + assignee=me), relations read, verdict comment + label writes (Jira: string labels in `fields.labels`)
+- `/ggx-investigate` — opt-in adopt stage: `set_assignee` + `set_cycle` + `transition_status` (To Do) + `labels` (single `ready-to-*`); all Linear-only, soft-fail (cycle skipped on Jira)
 
 Adding a new caller? Cite this file and replicate the resolution block.
 Do NOT re-derive the abstraction.
