@@ -133,7 +133,11 @@ Resolve the current cycle id via `mcp__claude_ai_Linear__list_cycles(teamId,
 type: "current")`, which returns the active cycle directly; take `.[0].id`:
 
 ```bash
-CYCLE_ID=$(mcp__claude_ai_Linear__list_cycles --teamId "$TEAM_ID" --type current | jq -r '.[0].id // empty')
+# Team key = BRANCH_PREFIX (the ticket-id prefix, e.g. the Linear team key) —
+# the same team identifier the other team-scoped callers pass (cf.
+# /ticket-analyze's list_issue_statuses <team_key>). Resolved by the standard
+# profile block; do not invent a separate $TEAM_ID.
+CYCLE_ID=$(mcp__claude_ai_Linear__list_cycles --teamId "$BRANCH_PREFIX" --type current | jq -r '.[0].id // empty')
 ```
 
 Empty result → the team has no active cycle → **skip the cycle write with a

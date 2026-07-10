@@ -37,7 +37,7 @@ Prerequisite: >
 
 <!-- RULE: command content is English. -->
 
-# `/ggx-investigate <ticket-id> [--verify-fixed]`
+# `/ggx-investigate <ticket-id> [--verify-fixed] [--adopt|--no-adopt]`
 
 Investigate one ticket and write an **engineer note** — Root Cause + a fix
 *plan* (bug / design bug), or Current Behaviour + Suggested Changes
@@ -60,7 +60,9 @@ cycle / a `ready-to-dev` label to hand an actionable ticket to `/ggx-dispatcher`
   code evidence at the top of the note.
 - `/ggx-investigate <ticket-id> --adopt` / `--no-adopt` — pre-answer the
   post-note **adopt gate** (Step 7) for the reserved non-interactive path; the
-  interactive default shows the gate. Mutually exclusive.
+  interactive default shows the gate. Mutually exclusive. **Reserved / inert in
+  v1**: HITL #1 (Step 5) always confirms interactively, so no unattended run
+  reaches Step 7 yet — these flags are forward-looking scaffolding.
 
 **Locked decisions** (from the PRD — do not silently deviate):
 
@@ -305,13 +307,16 @@ adopt is best-effort and never aborts the run.
 1. **assign → me** — `_ticket-lib` `set_assignee`: `save_issue --assignee me`;
    skip if already me.
 2. **cycle → current** — `_ticket-lib` `set_cycle`: resolve
-   `list_cycles(teamId, type: "current")` → `.[0].id`; empty → skip this leg with a
+   `list_cycles(teamId=<team key = the ticket-id prefix / BRANCH_PREFIX>, type: "current")`
+   → `.[0].id`; empty → skip this leg with a
    WARN (no active cycle). Else `save_issue --cycle <id>` (a ticket in a different
    cycle is force-moved to current). **Linear-only** — on Jira log
    `cycle: skipped (jira)` and continue.
 3. **status → To Do** — resolve the team's **unstarted** state via
-   `list_issue_statuses` (match `type == unstarted`; do NOT hardcode
-   `To Do` / `To-do`), then `_ticket-lib` `transition_status`. Skip if already there.
+   `list_issue_statuses` for the ticket's team key (the ticket-id prefix /
+   `BRANCH_PREFIX`, as `/ticket-analyze` passes) (match `type == unstarted`; do
+   NOT hardcode `To Do` / `To-do`), then `_ticket-lib` `transition_status`. Skip
+   if already there.
 4. **label → `ready-to-dev`** — the single `ready-to-*` label for this lane
    (`bug` / `feature` / `design bug` → `ready-to-dev`; the family is centralized so
    a future port-in-scope could yield `ready-to-port`). **Re-fetch the label set
