@@ -1,6 +1,6 @@
 ---
 name: ggx-investigate
-argument-hint: "<ticket-id> [--verify-fixed]"
+argument-hint: "<ticket-id> [--verify-fixed] [--adopt|--no-adopt]"
 description: >
   Investigate a Linear/Jira ticket and write a lane-aware **engineer note**
   back to it — the automated form of the operator's recurring "調查這張單，
@@ -15,10 +15,13 @@ description: >
   (origin is the SSOT there) — STOP and point at `/port:explore`. `--verify-fixed`
   investigates whether a previously-described root cause is already resolved in
   current code and records `Status: fixed | not-fixed | partially`. READ-ONLY on
-  code and git; the ONLY writes are the tracker note (D5). It invokes NO pipeline
-  (`/route`, `/ggx-work`, `/bug:ff`, `/dev:ff`) — it produces the grounding those
-  consume and stops. Linear is the primary tracker (description-region
-  convention); Jira runs degraded (stable-marker comment only).
+  code and git. After the note, an **opt-in, separately-gated adopt stage** can
+  hand an actionable ticket to `/ggx-dispatcher` — assignee → me, current cycle,
+  status To Do, and a single `ready-to-dev` label; every non-adopt run stays
+  note-only (D5). It invokes NO pipeline (`/route`, `/ggx-work`, `/bug:ff`,
+  `/dev:ff`): adopt only *labels* the ticket so the dispatcher can pick it up.
+  Linear is the primary tracker (description-region convention); Jira runs
+  degraded (stable-marker comment only; cycle leg no-ops).
 Prerequisite: >
   - Linear MCP authenticated for CAF/DAF tickets; Atlassian Rovo MCP
     authenticated for Jira tickets.
@@ -40,10 +43,12 @@ Investigate one ticket and write an **engineer note** — Root Cause + a fix
 *plan* (bug / design bug), or Current Behaviour + Suggested Changes
 (feature / align) — back into the ticket. This replaces the manual
 "調查某某單，並把它寫成 engineer note" loop the operator runs by hand across
-many tickets. It is **investigation + note authoring only**: it never edits
-source, never commits, never opens a PR, never changes status/assignee, and
-never starts a pipeline (D5, §8). The note it writes becomes the grounding a
-later `/bug:ff` / `/dev:ff` consumes.
+many tickets. Its core is **investigation + note authoring**: it never edits
+source, never commits, never opens a PR, never starts a pipeline (D5, §8). The
+note it writes becomes the grounding a later `/bug:ff` / `/dev:ff` consumes.
+After the note, an **opt-in adopt gate** (Step 7) can set assignee / status /
+cycle / a `ready-to-dev` label to hand an actionable ticket to `/ggx-dispatcher`
+— separately gated, never automatic.
 
 **Usage**:
 
@@ -53,6 +58,9 @@ later `/bug:ff` / `/dev:ff` consumes.
   from **current** code whether a previously-known / described root cause is
   already resolved, and record `Status: fixed | not-fixed | partially` with
   code evidence at the top of the note.
+- `/ggx-investigate <ticket-id> --adopt` / `--no-adopt` — pre-answer the
+  post-note **adopt gate** (Step 7) for the reserved non-interactive path; the
+  interactive default shows the gate. Mutually exclusive.
 
 **Locked decisions** (from the PRD — do not silently deviate):
 
@@ -61,7 +69,7 @@ later `/bug:ff` / `/dev:ff` consumes.
 | D1 | Write target = the description's `ENGINEERING Notes` region, replace-between-markers. Fallback to a stable-marker **comment** only when the description cannot be edited. |
 | D2 | Origin grounding = auto-detect, **fail-closed**. Scan origin only for align/parity tickets or those that name the origin/native app; origin not on disk → silently skip. |
 | D4 | **NO gstack dependency.** Investigation is internal (Grep/Glob/Read + reasoning). The skill must run on a machine with no gstack installed — it MUST contain zero references to gstack `/investigate` or any gstack skill. |
-| D5 | **Read-only on code; tracker-write only.** Never edit source, commit, PR, or change status/assignee. Output is Root Cause + a fix *plan*, not an applied fix. |
+| D5 | **Read-only on code.** Never edit source, commit, or PR. Output is Root Cause + a fix *plan*, not an applied fix. Tracker writes = the note (always) plus — only via the opt-in, separately-gated adopt stage (Step 7) — assignee / status / cycle / a single `ready-to-*` label. No pipeline is ever invoked. |
 | D6 | The written note is **English** (tracker convention). Interactive chat may be Traditional Chinese. |
 
 ---
@@ -71,8 +79,11 @@ later `/bug:ff` / `/dev:ff` consumes.
 ### Step 0: Parse arguments
 
 1. Extract `<ticket-id>` (trim, uppercase). Missing → STOP with the usage block.
-2. Detect `--verify-fixed` → `<verify-fixed> = True/False`. Unknown flags → STOP
-   with the usage block.
+2. Detect `--verify-fixed` → `<verify-fixed> = True/False`.
+3. Detect `--adopt` / `--no-adopt` → `<adopt-preseed> = adopt | no-adopt | none`
+   (`none` = show the adopt gate interactively; the flags pre-answer HITL #2 for
+   the reserved non-interactive path). Both flags present → STOP with the usage block.
+4. Any other unknown flag → STOP with the usage block.
 
 ### Step 1: Resolve profile + fetch ticket + derive lane
 
@@ -163,7 +174,7 @@ Fill the lane's template (§ Engineer-note templates) from the Step 2 (+ Step 3)
 findings. Every claim that references code carries a `file:line`. Keep it a fix
 **plan**, not an applied fix (D5). English only.
 
-### Step 5: HITL gate (confirm before any write)
+### Step 5: HITL #1 — note approval (confirm before the note write)
 
 Print the full composed note, then `AskUserQuestion` with:
 
@@ -242,7 +253,78 @@ no description-region convention):** write the note as a single stable-marker
    <ticket-id> --body <marked-note>`; Jira add-comment).
 
 Print a final one-line confirmation with the ticket URL and whether the note
-landed in the description region or a comment.
+landed in the description region or a comment. Hold `<note-target> =
+description | comment` for Step 7's suppression check.
+
+### Step 7: HITL #2 — adopt gate (opt-in; runs ONLY after the note is posted)
+
+Hands an **actionable** ticket to `/ggx-dispatcher` by doing the four tracker
+writes the operator otherwise flips by hand. This is the ONLY place the skill
+writes anything other than the note, and it is always separately gated.
+
+**Suppression — skip Step 7 entirely (end at the note, as today) when any holds:**
+
+- `<verify-fixed> == True` (QA-facing runs end at the note); OR
+- `<note-target> == comment` (Jira, or Linear description not editable — the
+  comment-fallback paths end at the note); OR
+- `<lane>` is not one of `bug` / `feature` / `ui-tweak` (design bug). (`port`
+  already STOPped at Step 1; this is belt-and-suspenders.)
+
+Otherwise form a **binary readiness read** from the investigation already done in
+Step 2 — this is *naming* a conclusion already reached, not new analysis:
+
+- **Ready** — root cause found / change surface clear, no missing
+  repro-scope-acceptance, no blocking dependency.
+- **Not ready** — missing repro / scope / acceptance, code could not be located
+  with confidence, or a blocking dependency exists.
+
+**Pre-seed.** If `<adopt-preseed>` is `adopt` or `no-adopt` (Step 0), skip the
+prompt and take that action directly.
+
+**The gate — two buttons, default cursor follows the readiness read:**
+
+- **Ready** → `AskUserQuestion`: `Adopt` (Recommended, default) / `Skip`.
+- **Not ready** → `AskUserQuestion`: `Adopt` / `Skip` (Recommended, default), and
+  state *why* not-ready in the prompt. The user may still pick `Adopt` to
+  override (the read is advisory, not a hard gate).
+
+The prompt MUST state the hand-off plainly, so adopting is never a surprise:
+
+> **Adopt** assigns this to you, moves it to the current cycle at **To Do**, and
+> adds **`ready-to-dev`** — which makes it a `/ggx-dispatcher` pickup target, so
+> the next dispatcher sweep will run `/dev:ff` on it autonomously.
+
+**`Skip`** → done. The run ends at the note; **no adopt writes**. This skill
+**NEVER** writes `need-revision` / `need-dependency` — negative-readiness
+labeling stays owned by `/ticket-analyze`.
+
+**`Adopt` → the four writes (Linear only; each idempotent + soft-fail).** Any one
+leg failing logs a single `WARN` and continues — the note already landed, so
+adopt is best-effort and never aborts the run.
+
+1. **assign → me** — `_ticket-lib` `set_assignee`: `save_issue --assignee me`;
+   skip if already me.
+2. **cycle → current** — `_ticket-lib` `set_cycle`: resolve
+   `list_cycles(teamId, type: "current")` → `.[0].id`; empty → skip this leg with a
+   WARN (no active cycle). Else `save_issue --cycle <id>` (a ticket in a different
+   cycle is force-moved to current). **Linear-only** — on Jira log
+   `cycle: skipped (jira)` and continue.
+3. **status → To Do** — resolve the team's **unstarted** state via
+   `list_issue_statuses` (match `type == unstarted`; do NOT hardcode
+   `To Do` / `To-do`), then `_ticket-lib` `transition_status`. Skip if already there.
+4. **label → `ready-to-dev`** — the single `ready-to-*` label for this lane
+   (`bug` / `feature` / `design bug` → `ready-to-dev`; the family is centralized so
+   a future port-in-scope could yield `ready-to-port`). **Re-fetch the label set
+   immediately before the write** (race guard). The four analyzer labels
+   (`ready-to-port` / `ready-to-dev` / `need-revision` / `need-dependency`) are
+   **mutually exclusive**: set `ready-to-dev` and **drop the other three if
+   present** (conflict cleanup so the ticket is never in two states at once — NOT
+   this skill judging those states). **Preserve every non-analyzer label**
+   (classification labels, `Design bug`, `dispatcher-*-in-flight`). Do NOT
+   blind-union. Persist the full new set via `_ticket-lib` `labels` write.
+
+Print a one-line adopt summary: which legs wrote vs skipped, plus the reminder
+that the dispatcher will pick the ticket up on its next sweep.
 
 ---
 
@@ -280,13 +362,16 @@ if not. Never leave `Root Cause:` blank or fabricated.
 ## Guardrails
 
 - **Read-only on code + git (D5, AC6).** Grep/Glob/Read only. No Edit/Write to
-  source, no `git` mutations, no build, no PR, no status/assignee change. The
-  ONLY mutation this skill makes is the tracker note.
+  source, no `git` mutations, no build, no PR. Tracker mutations: the engineer
+  note (always), plus — only through the opt-in adopt gate (Step 7) — assignee /
+  status / cycle / a single `ready-to-*` label. Nothing else; never
+  `need-revision` / `need-dependency`.
 - **No gstack, no external skill (D4, AC5).** Investigation reasoning is internal.
   This file contains zero references to gstack `/investigate`. It runs on a
   machine with no gstack installed.
 - **No pipeline invocation (§8).** Never call `/route`, `/ggx-work`, `/bug:ff`,
-  `/dev:ff`, `/port:*`. Write the note and stop.
+  `/dev:ff`, `/port:*`. The adopt gate (Step 7) only *labels* the ticket so
+  `/ggx-dispatcher` can pick it up — it never invokes a pipeline itself.
 - **`port` lane is out of scope.** STOP → `/port:explore` (origin is the SSOT).
 - **Never fabricate evidence.** Every `file:line` must be code actually read; if
   the root cause can't be located confidently, say so in the note.
