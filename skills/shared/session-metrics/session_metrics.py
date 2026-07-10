@@ -1432,6 +1432,18 @@ def write_csv(
             if multiplier != "":
                 multiplier_basis = "active" if durations["active_sec"] > 0 else "active_proxy"
             est_manual = round(sp_sec) if sp_sec is not None else ""
+            # GGC-127: reconcile manual_hours to the SNAPPED bucket. estimated_manual_sec,
+            # the report "(≈ Nh manual)" line, and the speed multiplier all derive from
+            # story_point_seconds (post-snap). The raw --manual-hours estimate is pre-snap,
+            # so writing it verbatim disagreed with estimated_manual_sec by the snap delta
+            # whenever the blind estimate did not land exactly on a bucket. Snap it here so
+            # all three representations agree; keep the raw value only when there is no
+            # story point to snap to (est_manual is "" in that case anyway).
+            manual_hours_out = (
+                STORY_POINT_HOURS[story_points]
+                if (story_points is not None and story_points in STORY_POINT_HOURS)
+                else (manual_hours if manual_hours is not None else "")
+            )
             outcome_cols = outcome_to_csv(outcome)
 
             # These SESSION-SCALAR columns are written ONLY on the first model
@@ -1494,7 +1506,7 @@ def write_csv(
                         "agent_total_tokens": agent_tokens,
                         "agent_total_cost": round(agent_cost, 4),
                         "story_points": story_points if story_points is not None else "",
-                        "manual_hours": manual_hours if manual_hours is not None else "",
+                        "manual_hours": manual_hours_out,
                         "estimated_manual_sec": est_manual,
                         "claude_code_version": metrics.get(
                             "claude_code_version", ""
