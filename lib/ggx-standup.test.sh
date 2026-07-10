@@ -171,6 +171,36 @@ assert_absent "xref.body-caf1022"  "$OUTX" "CAF-1022"
 assert_absent "xref.body-daf77"    "$OUTX" "DAF-77"
 assert_has    "xref.body-fallback" "$OUTX" "CET-8462"   # #50 has no title/branch id → body fallback fires
 
+echo "== render --html: anchors, code chips, escaping, no-url = no anchor =="
+# CAF-987 has a ticket url -> its id becomes an <a href>. GGC-54 has NO ticket
+# url -> its id must render WITHOUT an anchor (AC3: no misleading link). PR urls
+# always anchor. Titles are HTML-escaped. Personal-repo PRs still filtered.
+BUNDLEH=$(cat <<'JSON'
+{
+  "tz": "Asia/Hong_Kong", "me": "charlie-yang-gogox", "linear_ok": true,
+  "window": {"start": "2026-07-06T00:00:00+08:00", "end": "2026-07-07T00:00:00+08:00", "spans_weekend": false},
+  "ticket_states": {"CAF-987": "Ready for QA", "GGC-54": "Done"},
+  "ticket_urls": {"CAF-987": "https://linear.app/gogox/issue/CAF-987/x"},
+  "merged_prs": [
+    {"number": 801, "title": "CAF-987: Tunnels <fee> & stuff", "url": "https://github.com/gogovan/gogox-client-flutter/pull/801", "repository": {"name": "gogox-client-flutter", "nameWithOwner": "gogovan/gogox-client-flutter"}},
+    {"number": 177, "title": "feat(GGC-54): telemetry aggregator", "url": "https://github.com/x/gogox-claude/pull/177", "repository": {"name": "gogox-claude", "nameWithOwner": "charlie-yang-gogox/gogox-claude"}},
+    {"number": 5, "title": "GGC-999 personal", "url": "u", "repository": {"name": "zip-crack", "nameWithOwner": "charlie-yang-gogox/zip-crack"}}
+  ],
+  "opened_prs": [], "open_prs": [], "linear_started": []
+}
+JSON
+)
+OUTH=$(printf '%s' "$BUNDLEH" | python3 "$PY" render --html)
+assert_has    "html.doctype"       "$OUTH" "<!doctype html>"
+assert_has    "html.strong-hdr"    "$OUTH" "<strong>Yesterday (Done)</strong>"
+assert_has    "html.ticket-anchor" "$OUTH" 'href="https://linear.app/gogox/issue/CAF-987/x">CAF-987</a>'
+assert_has    "html.state-code"    "$OUTH" "<code>Ready for QA</code>"
+assert_has    "html.pr-anchor"     "$OUTH" 'href="https://github.com/gogovan/gogox-client-flutter/pull/801">#801</a>'
+assert_absent "html.no-url-anchor" "$OUTH" ">GGC-54</a>"        # GGC-54 has no url -> bare, not an anchor
+assert_has    "html.escape"        "$OUTH" "&lt;fee&gt;"        # title '<fee>' escaped
+assert_absent "html.escape-raw"    "$OUTH" "<fee>"              # raw angle brackets must not leak
+assert_absent "html.personal"      "$OUTH" "GGC-999"            # personal repo still filtered
+
 echo
 echo "ggx-standup.test.sh: $PASSES passed, $FAILS failed"
 [ "$FAILS" -eq 0 ]

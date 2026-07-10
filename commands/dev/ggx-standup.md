@@ -6,7 +6,10 @@ description: >
   source of truth. Answers "what did I finish yesterday / what am I on today",
   grouped BY TICKET, and emits a paste-ready two-section block aligned to an
   async standup bot's default Scrum questions (Yesterday / Today) for the user
-  to paste in. "Yesterday (Done)" is anchored on GitHub PR EVENTS — PRs the
+  to paste in. The PRIMARY output is an HTML file opened in the browser whose
+  rich text (bold headers, code-styled status chips, clickable ticket/PR links)
+  survives a paste into Slack (the clipboard carries HTML); a plain chat report
+  and a markdown file are also written. "Yesterday (Done)" is anchored on GitHub PR EVENTS — PRs the
   user authored that were opened OR merged in the window — because dev work
   legitimately stops at In Review / Ready for QA, so PR events (not a Linear
   terminal state) are the reliable "done" signal; each ticket shows its current
@@ -36,9 +39,12 @@ Prerequisite: >
 # `/ggx-standup [--date=YYYY-MM-DD] [--org O] [--repo R] [--tz TZ]`
 
 Build a manager-facing standup from the systems that already hold the truth.
-**Read-only**: no Linear writes, no Git mutations, no auto-submit. The output
-is a chat report + a paste-ready block + a markdown file; the user pastes the
-block into their standup bot themselves.
+**Read-only** on Linear/Git: no Linear writes, no Git mutations, no auto-submit,
+no Slack posting. The primary output is an **HTML file opened in the browser** —
+`Cmd+A`/`Cmd+C` in the page then `Cmd+V` into Slack (or the standup bot's DM)
+preserves rich text and clickable ticket/PR links because the clipboard carries
+HTML. A plain chat report and a markdown file are also written; the user pastes
+into their standup bot themselves.
 
 **Usage**
 
@@ -137,7 +143,8 @@ degrades to PR-only.
    capture (NOTE the `list_issues` field shape — the human identifier is `.id`,
    and the current state is the flat `.status` / `.statusType`, NOT `.state.*`):
    `id` (`.id`, e.g. `<TEAM>-<n>`), `title`, `state` (`.status`),
-   `stateType` (`.statusType`), `updatedAt`. **Cap: 50 issues.** If the result
+   `stateType` (`.statusType`), `updatedAt`, and `url` (`.url` — record it into
+   the `ticket_urls` map below; used for the HTML ticket anchors). **Cap: 50 issues.** If the result
    is capped, STOP-and-narrow: tell the user the assignee set exceeds the cap
    and to pass `--date`/narrower scope; never silently truncate.
 
@@ -147,8 +154,10 @@ degrades to PR-only.
    ids explicitly rather than dropping them), call
    `mcp__claude_ai_Linear__get_issue` and record `id → .status` (the flat
    current-state name; `get_issue` uses `.status` / `.statusType` too, and
-   `.state.*` only inside `stateHistory[]`) into a `ticket_states` map. These
-   are the chips shown next to each Done ticket.
+   `.state.*` only inside `stateHistory[]`) into a `ticket_states` map, and
+   `id → .url` into a `ticket_urls` map (same response — no extra fetch — used
+   for the HTML ticket anchors). These are the chips shown next to each Done
+   ticket.
 
 ## Step 5: Assemble the bundle and render
 
@@ -163,6 +172,7 @@ Assemble one JSON bundle and pipe it to `standup.py render`:
   "allow_orgs": [...],      // only if --org given; else omit (script default)
   "allow_repos": [...],     // only if --repo given; else omit
   "ticket_states": { "<TEAM>-<n>": "<state name>", ... },
+  "ticket_urls":   { "<TEAM>-<n>": "<linear url>", ... },
   "merged_prs":  <MERGED>,
   "opened_prs":  <OPENED>,
   "open_prs":    <OPEN with commits[] attached>,
@@ -171,31 +181,52 @@ Assemble one JSON bundle and pipe it to `standup.py render`:
 ```
 
 ```bash
+REPORT_DIR="$(git rev-parse --show-toplevel)/claude-reports"
+mkdir -p "$REPORT_DIR"
+STAMP=$(date +%Y%m%d)
+OUT_MD="$REPORT_DIR/standup-$STAMP.md"
+OUT_HTML="$REPORT_DIR/standup-$STAMP.html"
+
+# (1) Chat report + paste block -> terminal (tee) and a markdown byproduct.
 printf '%s' "$BUNDLE_JSON" | python3 "$STANDUP_PY" render | tee /dev/stderr > "$OUT_MD"
+
+# (2) PRIMARY artifact: the HTML document, opened in the browser. Rich text
+#     (bold headers, <code> status chips, clickable <a href> ticket/PR links)
+#     survives a Cmd+A/Cmd+C -> Cmd+V paste into Slack because the clipboard
+#     carries HTML. `render --html` is a pure additive renderer over the same
+#     bundle; the deterministic core is unchanged.
+printf '%s' "$BUNDLE_JSON" | python3 "$STANDUP_PY" render --html > "$OUT_HTML"
+open "$OUT_HTML" 2>/dev/null || echo "HTML written to $OUT_HTML (open it manually)."
 ```
 
-Then write the same content to a markdown file for easy copying, e.g.
-`"$(git rev-parse --show-toplevel)/claude-reports/standup-$(date +%Y%m%d).md"`
-(or the session scratchpad). Print the file path.
+Print both file paths (`$OUT_HTML` first — it is the one the user pastes from).
 
 ## Step 6: Hand-off note
 
-Show the user the paste-ready `① Yesterday / ② Today` block and remind them:
+The HTML file is open in the browser. Tell the user:
 
-> Paste `① Yesterday` and `② Today` into your standup bot when it prompts.
+> `Cmd+A` → `Cmd+C` in the browser tab, then `Cmd+V` into the standup bot's DM
+> (or any Slack message) — bold headers, status chips, and clickable ticket/PR
+> links are preserved because the clipboard carries HTML. The plain
+> `① Yesterday / ② Today` block in the chat report / markdown file is a
+> fallback for plain-text paste.
 > This command does not submit for you (the bot collects answers via a DM to
 > you; auto-submit is out of scope by design).
 
 ## Output
 
+- **An HTML file opened in the browser** (primary): rich text with clickable
+  ticket/PR anchors, for a format-preserving paste into Slack.
 - A by-ticket chat report: `<TEAM>-<n> <title> — <current-state> · PR #<n> merged/opened`.
-- A paste-ready two-section block (`① Yesterday` / `② Today`).
-- A markdown file with both, path printed.
+- A paste-ready two-section block (`① Yesterday` / `② Today`) as a plain-text fallback.
+- A markdown file with the report + block; both the HTML and markdown paths printed.
 
 ## Guardrails
 
-- **Read-only.** No Linear writes, no Git mutations, no auto-submit, no Slack
-  posting. The only writes are the usage log and the local markdown file.
+- **Read-only on Linear/Git.** No Linear writes, no Git mutations, no
+  auto-submit, no Slack posting. The only local writes are the usage log, the
+  markdown file, and the HTML file; the HTML file is opened in the browser (a
+  benign local side effect, mirroring the predecessor skill).
 - **All logic in the tested core.** Window/timezone, ticket-id extraction,
   allow-list, union/dedup, and rendering live in `standup.py`
   (`lib/ggx-standup.test.sh`). This command must not re-implement any of it by
