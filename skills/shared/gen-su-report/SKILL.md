@@ -1,9 +1,19 @@
 ---
 name: gen-su-report
-description: Generate today's daily stand-up (SU) report by reading the user's Claude Code activity from the last working day, cross-referencing Linear ticket statuses, and grouping output by project. Use this when the user says "write my SU", "stand-up report", "daily SU", "generate standup", or asks for help drafting their daily check-in.
+description: "DEPRECATED — superseded by /ggx-standup, which now emits the same HTML rich-text output. Kept temporarily; scheduled for removal once /ggx-standup's HTML mode has been dogfooded. Prefer /ggx-standup. (Legacy: generate today's daily stand-up report by reading Claude Code activity from the last working day, cross-referencing Linear/Jira ticket statuses, grouped by project.)"
 ---
 
 # Generate Stand-Up Report
+
+> **⚠️ DEPRECATED — use `/ggx-standup` instead.** `/ggx-standup` produces the
+> same browser-opened HTML with clickable ticket/PR links (rich-text Slack
+> paste), built from GitHub PR events + Linear, on a tested deterministic core.
+> This skill is retained only until `/ggx-standup`'s HTML mode has been
+> dogfooded, then it will be removed. The only capabilities not carried over
+> (accepted): Jira/Atlassian fallback, the 3 subjective questions
+> (feeling / blockers / anything-else), transcript-based non-ticket-work
+> extraction, and project-name grouping. If you rely on any of those, say so
+> before this skill is deleted.
 
 > **One-line summary**: Reads Claude Code transcripts from the last working day, extracts ticket-based and non-ticket-based work, queries Linear and Jira for current ticket statuses, and produces a Slack-ready SU report as an HTML file opened in the browser — copying from the rendered page preserves rich-text formatting (bold headers, italic project subtitles, inline-code status badges, clickable ticket anchors) when pasted into Slack.
 >

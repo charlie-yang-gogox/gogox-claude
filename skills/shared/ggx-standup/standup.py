@@ -25,6 +25,7 @@ whole thing is unit-testable against frozen fixtures (lib/ggx-standup.test.sh).
 """
 
 import argparse
+import html
 import json
 import re
 import sys
@@ -161,6 +162,9 @@ def build(bundle):
     me = (bundle.get("me") or "").lower()
     linear_ok = bundle.get("linear_ok", True)
     ticket_states = bundle.get("ticket_states") or {}
+    # id -> Linear url, captured by the command from the get_issue/list_issues
+    # calls it already makes (additive; used only by render_html for anchors).
+    ticket_urls = bundle.get("ticket_urls") or {}
     notes = []
 
     def allowed(pr):
@@ -198,7 +202,8 @@ def build(bundle):
         for tid in ids:
             entry = done_tickets.setdefault(
                 tid,
-                {"id": tid, "title": None, "state": ticket_states.get(tid), "prs": []},
+                {"id": tid, "title": None, "state": ticket_states.get(tid),
+                 "url": ticket_urls.get(tid), "prs": []},
             )
             entry["prs"].append(pr_row)
 
@@ -216,7 +221,8 @@ def build(bundle):
     def today_entry(tid):
         return today_tickets.setdefault(
             tid,
-            {"id": tid, "title": None, "state": ticket_states.get(tid), "prs": [],
+            {"id": tid, "title": None, "state": ticket_states.get(tid),
+             "url": ticket_urls.get(tid), "prs": [],
              "follow_up": tid in done_ids},
         )
 
@@ -246,8 +252,8 @@ def build(bundle):
             # An open PR with no ticket id still signals active work.
             e = today_tickets.setdefault(
                 f"__pr_{pr_row['repo']}_{pr_row['number']}",
-                {"id": None, "title": pr.get("title"), "state": None, "prs": [],
-                 "follow_up": False},
+                {"id": None, "title": pr.get("title"), "state": None, "url": None,
+                 "prs": [], "follow_up": False},
             )
             e["prs"].append(pr_row)
             continue
@@ -380,6 +386,109 @@ def render_paste(built):
     return "\n".join(lines)
 
 
+def _esc(s):
+    return html.escape(s or "", quote=True)
+
+
+def _pr_anchor_html(row):
+    """A PR reference as an <a href> anchor + event verb (bare label if no url)."""
+    verb = {"merged": "merged", "opened": "opened", "open": "open"}.get(
+        row["event"], row["event"]
+    )
+    label = f"#{row['number']}"
+    url = row.get("url")
+    anchor = f'<a href="{_esc(url)}">{label}</a>' if url else label
+    return f"{anchor} {verb}"
+
+
+def render_html(built, bundle):
+    """gen-su-report-style HTML — rich text survives a Slack paste.
+
+    The clipboard carries HTML, so ticket/PR `<a href>` anchors, `<code>` status
+    badges, and `<strong>` headers all survive Cmd+A/Cmd+C in the browser ->
+    Cmd+V into the Slack composer or the Standup & Prosper DM. Ticket ids get an
+    anchor only when a url is known (no misleading link otherwise); no-ticket-id
+    rows fall back to their PR anchor, mirroring gen-su-report's non-ticket
+    bullets. Pure function of the built sections — no clock/network.
+    """
+    win = bundle["window"]
+    P = []
+
+    def hdr(s):
+        P.append(f"<p><strong>{s}</strong></p>")
+
+    def bullet(s):
+        P.append(f"<p>&bull;&nbsp;{s}</p>")
+
+    def spacer():
+        P.append("<p>&nbsp;</p>")
+
+    def ticket_line(e):
+        title = _esc(e["title"] or (e["prs"][0]["title"] if e["prs"] else ""))
+        anchor = (
+            f'<a href="{_esc(e["url"])}">{_esc(e["id"])}</a>'
+            if e.get("url")
+            else _esc(e["id"])
+        )
+        state = f' <code>{_esc(e["state"])}</code>' if e["state"] else ""
+        tag = " <em>(follow-up)</em>" if e.get("follow_up") else ""
+        prs = ", ".join(_pr_anchor_html(pr) for pr in e["prs"]) if e["prs"] else ""
+        sep = " &middot; " if prs else ""
+        return f"{anchor}: {title}{state}{tag}{sep}{prs}"
+
+    title_txt = f"Standup {win['start'][:10]} → {win['end'][:10]} ({bundle.get('tz', DEFAULT_TZ)})"
+    hdr(_esc(title_txt))
+    if win.get("spans_weekend"):
+        P.append("<p><em>(Monday run — window spans the weekend)</em></p>")
+    spacer()
+
+    # Yesterday / Done
+    hdr("Yesterday (Done)")
+    done = built["done_tickets"]
+    if not done and not built["done_other"]:
+        bullet("(no PRs opened or merged in the window)")
+    else:
+        for tid in sorted(done):
+            bullet(ticket_line(done[tid]))
+        for pr in built["done_other"]:
+            bullet(f"{_esc(pr['title'])} &middot; {_pr_anchor_html(pr)}")
+    spacer()
+
+    # Today / In progress
+    hdr("Today (In progress)")
+    today = built["today_tickets"]
+    real = {k: v for k, v in today.items() if v["id"]}
+    prless = {k: v for k, v in today.items() if not v["id"]}
+    if not today:
+        bullet("(nothing in progress)")
+    else:
+        for tid in sorted(real):
+            bullet(ticket_line(real[tid]))
+        for e in prless.values():
+            prs = ", ".join(_pr_anchor_html(pr) for pr in e["prs"])
+            bullet(f"{_esc(e['title'])} &middot; {prs}")
+
+    if built["notes"]:
+        spacer()
+        hdr("Notes")
+        for n in built["notes"]:
+            bullet(_esc(n))
+
+    style = (
+        'body{font:14px -apple-system,BlinkMacSystemFont,"Helvetica Neue",'
+        "sans-serif;line-height:1.5;padding:24px;max-width:820px;color:#1d1c1d}"
+        "p{margin:0}"
+        "code{background:#f4f4f4;border:1px solid #e0e0e0;border-radius:3px;"
+        "padding:1px 4px;font:12px ui-monospace,Menlo,monospace;color:#c0341d}"
+    )
+    return (
+        "<!doctype html>\n"
+        f'<html><head><meta charset="utf-8"><title>{_esc(title_txt)}</title>\n'
+        f"<style>{style}</style>\n"
+        "</head><body>\n" + "\n".join(P) + "\n</body></html>\n"
+    )
+
+
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
@@ -395,6 +504,8 @@ def main(argv=None):
     r = sub.add_parser("render", help="render report + paste block from stdin bundle")
     r.add_argument("--paste-only", action="store_true")
     r.add_argument("--report-only", action="store_true")
+    r.add_argument("--html", action="store_true",
+                   help="emit an HTML document (rich-text Slack paste)")
 
     args = ap.parse_args(argv)
 
@@ -405,6 +516,9 @@ def main(argv=None):
     if args.cmd == "render":
         bundle = json.load(sys.stdin)
         built = build(bundle)
+        if args.html:
+            print(render_html(built, bundle))
+            return 0
         report = render_report(built, bundle)
         paste = render_paste(built)
         if args.paste_only:
