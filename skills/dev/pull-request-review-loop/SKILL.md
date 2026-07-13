@@ -4,7 +4,8 @@ description: >
   Drive the current branch's PR to a reviewer-ready state. By default it STOPS
   at draft: opens a draft PR if the branch has none, runs the @claude AI-review
   loop until clean (auto-fixing mechanical findings, pausing for human-decision
-  ones), and waits for CI to go green while the PR stays a draft — then prints a
+  ones) — falling back to the local /code-review skill when @claude is not
+  installed on the repo — and waits for CI to go green while the PR stays a draft — then prints a
   handoff checklist. Promoting a draft to ready is a human's sign-off, so it is
   never automatic — but the human can opt in with --assign=<logins> to un-draft
   and assign those reviewers once the review is clean and CI is green, and add
@@ -17,7 +18,7 @@ description: >
 
 # Pull Request Review Loop
 
-> **One-line summary**: For the current branch's PR (created as a draft if none exists), post the `@claude` review trigger and loop fix→re-trigger until the AI review is clean, then wait for CI to go green — all while the PR stays a **draft**. By default the skill stops there and prints a handoff checklist. Promoting is opt-in: `--assign=<logins>` un-drafts and assigns once clean, and `--notify=<channel>` then posts a PR-review request to that Slack channel. The skill never merges.
+> **One-line summary**: For the current branch's PR (created as a draft if none exists), post the `@claude` review trigger — or fall back to the local `/code-review` skill when `@claude` is not available on the repo — and loop fix→re-review until the AI review is clean, then wait for CI to go green — all while the PR stays a **draft**. By default the skill stops there and prints a handoff checklist. Promoting is opt-in: `--assign=<logins>` un-drafts and assigns once clean, and `--notify=<channel>` then posts a PR-review request to that Slack channel. The skill never merges.
 >
 > **MCP prerequisites**: none for the default flow (`gh` CLI only, authenticated via `gh auth status`). `--notify=<channel>` additionally needs a Slack MCP connection (it calls `slack_send_message`); without one, the notify step fails loudly while the rest still completes.
 >
@@ -73,23 +74,35 @@ echo "{\"skill\":\"pull-request-review-loop\",\"user\":\"$(whoami)\",\"ts\":\"$(
 
 ### 2. AI-review loop
 
-Repeat up to `--max-rounds` times:
+The loop runs one of two review backends. `BACKEND` starts as `claude` (the `@claude` GitHub App). It flips **once** to `code-review` (the local, diff-based `/code-review` skill) if `@claude` proves unavailable on this repo — see the `claude` backend's step 2 — and the flip is **sticky for the rest of the run**. Repeat up to `--max-rounds` times, running the block for the current `BACKEND`:
+
+#### Backend `claude` (default)
 
 1. **Trigger.** Post the fixed trigger comment to the PR (verbatim — see Gogox Context):
 
    ```
    @claude please review this PR — focus on critical issues and security.
    ```
-2. **Wait for the bot.** Poll the PR's comments/reviews until the `@claude` bot leaves a review dated after the trigger (bounded wait; if it never arrives, stop and report — do not silently proceed).
-3. **Triage for human-decision findings (this skill's own gate — do this BEFORE delegating).** Read the bot's review yourself and decide whether any finding needs a *human* call: an acceptance-criteria mismatch, a product trade-off, or anything that cannot be settled in code. If so → **STOP**. Print those finding(s) and what the human must decide. The PR stays a draft.
+2. **Wait for the bot — or fall back.** Poll the PR's comments/reviews until the `@claude` bot leaves a review dated after the trigger (bounded wait). **If the bounded wait elapses with no `@claude` review** (the App is not installed on this repo, or the bot never responds) → do **NOT** stop: set `BACKEND=code-review`, print `note: @claude unavailable — falling back to /code-review`, and re-enter this round on the `code-review` backend below (a timed-out `@claude` attempt does **not** consume a `--max-rounds` count). The flip is sticky — every later round uses `code-review`.
+3. **Triage for human-decision findings (this skill's own gate — BEFORE delegating).** Read the bot's review yourself and decide whether any finding needs a *human* call: an acceptance-criteria mismatch, a product trade-off, or anything that cannot be settled in code. If so → **STOP**. Print those finding(s) and what the human must decide. The PR stays a draft.
 
    This gate lives here, not downstream: `/resolve-pr-comments --auto` (next step) runs fully unattended and never pauses to ask — it sorts every comment into FIX/REPLY/STALE/DEFER and acts on all of them. So the only place a human-decision finding can halt the loop is this triage, *before* the delegation.
 4. **Delegate the mechanical fixes.** When triage finds nothing needing a human, hand the bot's findings to `/resolve-pr-comments --auto`. It reads the unresolved threads, applies the code fixes in one combined commit, replies in English, runs its build-sanity gate (`/format` + `/check-test`), and pushes. If that gate fails it stops with `needs-human: comment-fix-failed-tests` and leaves the tree dirty — surface that as a STOP too (a red build is not something this loop fixes).
-5. **Decide loop vs stop:**
-   - The round produced fixes and the build-sanity gate passed → push has happened; **go to round N+1** (re-trigger, so the bot reviews the fix).
-   - The bot's review is **clean** (nothing left to address) → exit the loop, continue to Step 3.
-   - Triage flagged a human-decision finding (step 3), or the delegated fix hit `needs-human: comment-fix-failed-tests` (step 4) → **STOP** and report. The PR stays a draft.
-6. If `--max-rounds` is hit while findings remain → STOP and report (same as the human-decision halt, with the round cap noted).
+5. **Decide loop vs stop** — see **Round outcome** below.
+
+#### Backend `code-review` (fallback — `@claude` unavailable)
+
+1. **Review the diff.** Run `/code-review --auto` against the branch diff vs the base ref (the default branch — resolve it the way `/dev:review` does), producing a `code-review.md` findings report (`^critical:` lines = blocking). No `@claude`, no PR comment threads. If the branch name yields a ticket id the report lands under `claude-reports/<id>/`; otherwise read the findings straight from `/code-review`'s output.
+2. **Triage for human-decision findings.** Same gate as the `claude` backend — a finding needing a product/AC call → **STOP**; the PR stays a draft.
+3. **Fix the mechanical `^critical:` findings directly** (there are no PR comment threads to resolve on this path): edit the code, run `/format`, commit them in one combined commit, and push. If the tests/build cannot be made to pass → **STOP** with the reason (a red build is not something this loop fixes).
+4. **Decide loop vs stop** — see **Round outcome** below.
+
+#### Round outcome (both backends)
+
+- Fixes were made and pushed → **go to round N+1** (re-review the fix on the current `BACKEND`).
+- The review is **clean** — backend `claude`: nothing left to address; backend `code-review`: `code-review.md` has no `^critical:` line → **exit the loop, continue to Step 3.**
+- A human-decision finding, or a fix that hit a red build/tests → **STOP** and report. The PR stays a draft.
+- `--max-rounds` hit while findings remain → **STOP** and report (round cap noted).
 
 ### 3. Wait for CI to go green (while still a draft)
 
@@ -165,6 +178,7 @@ Otherwise (reviewers resolved):
 ## Gogox Context
 
 - **Trigger comment (verbatim):** `@claude please review this PR — focus on critical issues and security.` Summons the Claude GitHub App. This is a machine instruction to a bot — it stays English and fixed, never localized or templated per-user.
+- **Review backend + fallback.** The `@claude` GitHub App is the default reviewer, but it is not installed on every repo. When the bounded wait for the bot's review elapses with no response, the loop falls back **once** (sticky for the run) to the local `/code-review` skill (`commands/dev/code-review.md`, the same reviewer `/dev:review` uses) — it reviews the branch diff and the loop fixes `^critical:` findings directly in code instead of via PR comment threads. Everything after the review (CI wait, `--assign`/`--notify` handoff, human-decision / CI-red STOP) is backend-agnostic.
 - **Why stop at draft by default.** The team reads a PR's draft/ready state as "AI-written, not yet human-verified" (draft) vs "a person has checked it and it is ready" (ready). Promoting draft→ready is therefore a human sign-off; the skill automates it only when the human explicitly opts in via `--assign`.
 - **CI runs on drafts here.** On `gogox-driver-flutter` the real build/test check, `PR Check (format, analyze, test, build-verify)`, is run by Codemagic (an external CI) and fires on draft PRs — so the skill can confirm it green without un-drafting. The `WIP` marketplace check, by contrast, stays `pending` until the PR is un-drafted; Step 3 excludes it for that reason.
 - **Assign via REST, not `gh pr edit`.** `gh pr edit --add-reviewer` uses GraphQL and fails when the local token lacks the `read:org` scope; the `requested_reviewers` REST endpoint works regardless.
