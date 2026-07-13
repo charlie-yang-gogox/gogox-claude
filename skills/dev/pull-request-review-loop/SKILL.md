@@ -28,7 +28,7 @@ description: >
 > - **Default = stop at draft; `--assign` is the human's explicit opt-in to promote.** The team uses a PR's draft/ready state as the marker for "AI-written, not yet verified" (draft) vs "a human has checked it" (ready), so the skill never *auto*-promotes. By default it takes the PR only as far as "AI review clean + CI green" and stops, leaving it a draft. When the human runs it with `--assign=<logins>`, that invocation *is* the human sign-off — so the skill then un-drafts and assigns those reviewers. (A **bare** `--assign`, its value supplied by `pr_review.reviewers` in `.gogox-claude.yaml`, is equally an explicit opt-in — config fills in *who*, never *whether*.) (Caveat: `--assign` is pre-authorization given at invocation, before the final diff exists — a deliberate, opt-in trade-off.) Merging is always the human's.
 > - **Slack is opt-in via `--notify`, never on the skill's own initiative.** By default the skill posts nothing to Slack. It posts one PR-review request only when the human passes `--notify=<channel>` alongside `--assign`, and only to the channel the human named — the same "the invocation is the authorization" logic as `--assign`.
 > - **CI is waited for *while still a draft*.** The build/test CI (e.g. Codemagic on `gogox-driver-flutter`) runs on draft PRs, so the skill can confirm it green without un-drafting. (Verified: `gogox-driver-flutter` PR #83 was a draft yet its `PR Check` had passed.)
-> - **Human-decision findings stop the loop — and this skill, not the delegate, catches them.** A review finding that needs a product/AC call (or that cannot be fixed in code) is surfaced and the loop halts for the human. Because `/resolve-pr-comments --auto` runs unattended and never pauses, the triage that catches these findings happens in Step 2 *before* delegating (see Step 2.3). A halt here means no promotion and no notification, even under `--assign` / `--notify`.
+> - **Human-decision findings stop the loop — and this skill, not the delegate, catches them.** A review finding that needs a product/AC call (or that cannot be fixed in code) is surfaced and the loop halts for the human. Because `/resolve-pr-comments --auto` runs unattended and never pauses, the triage that catches these findings happens in Step 2 *before* delegating (see Step 2.3). (On the `/code-review` fallback backend the same triage lives at that backend's own review step, before the direct code fixes.) A halt here means no promotion and no notification, even under `--assign` / `--notify`.
 
 ## Inputs
 
@@ -94,13 +94,13 @@ The loop runs one of two review backends. `BACKEND` starts as `claude` (the `@cl
 
 1. **Review the diff.** Run `/code-review --auto` against the branch diff vs the base ref (the default branch — resolve it the way `/dev:review` does), producing a `code-review.md` findings report (`^critical:` lines = blocking). No `@claude`, no PR comment threads. If the branch name yields a ticket id the report lands under `claude-reports/<id>/`; otherwise read the findings straight from `/code-review`'s output.
 2. **Triage for human-decision findings.** Same gate as the `claude` backend — a finding needing a product/AC call → **STOP**; the PR stays a draft.
-3. **Fix the mechanical `^critical:` findings directly** (there are no PR comment threads to resolve on this path): edit the code, run `/format`, commit them in one combined commit, and push. If the tests/build cannot be made to pass → **STOP** with the reason (a red build is not something this loop fixes).
+3. **Fix the mechanical `^critical:` findings directly** (there are no PR comment threads to resolve on this path): edit the code, run the same build-sanity gate the `@claude` path delegates to (`/format` + `/check-test`), commit the fixes in one combined commit, and push. If `/check-test` (or the build) cannot be made to pass → **STOP** with the reason (a red build is not something this loop fixes).
 4. **Decide loop vs stop** — see **Round outcome** below.
 
 #### Round outcome (both backends)
 
 - Fixes were made and pushed → **go to round N+1** (re-review the fix on the current `BACKEND`).
-- The review is **clean** — backend `claude`: nothing left to address; backend `code-review`: `code-review.md` has no `^critical:` line → **exit the loop, continue to Step 3.**
+- The review is **clean** — backend `claude`: nothing left to address; backend `code-review`: no `^critical:` finding (from the report file, or `/code-review`'s stdout when the branch has no ticket id) → **exit the loop, continue to Step 3.**
 - A human-decision finding, or a fix that hit a red build/tests → **STOP** and report. The PR stays a draft.
 - `--max-rounds` hit while findings remain → **STOP** and report (round cap noted).
 
