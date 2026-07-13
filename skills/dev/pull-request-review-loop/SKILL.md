@@ -35,8 +35,8 @@ description: >
 Invoke directly — no input required for the common (stop-at-draft) case.
 
 - **`--max-rounds=N`** (optional, default `5`) — hard cap on AI-review iterations, so a never-converging review can't loop forever.
-- **`--assign[=<logins>]`** (optional) — comma-separated GitHub logins (e.g. `--assign=AlexWangGoGoX,AlanCHTseng`). The human's explicit opt-in to promote: **only after** the review loop is clean and CI is green, the skill un-drafts the PR and requests review from these logins. A leading `@` and surrounding whitespace are tolerated. Without this flag the skill stops at draft and promotes nothing.
-  - **Bare `--assign` (no `=value`)** → pull the logins from `pr_review.reviewers` in the repo's `.gogox-claude.yaml` (resolved in Step 1). The bare flag is still the explicit human opt-in to promote; config only supplies *who*. If that key is absent/empty the skill does **not** stop — it degrades to the default stop-at-draft handoff and suggests adding the key or passing `--assign=<logins>` (Step 4).
+- **`--assign[=<logins>]`** (optional) — comma-separated GitHub logins (e.g. `--assign=AlexWangGoGoX,AlanCHTseng`). The human's explicit opt-in to promote: **only after** the review loop is clean and CI is green, the skill un-drafts the PR and requests review from these logins. A leading `@` and surrounding whitespace are tolerated. The **PR author is always removed** from the resolved set (GitHub rejects a review request naming the author with a 422), so listing the whole team — author included — is safe. Without this flag the skill stops at draft and promotes nothing.
+  - **Bare `--assign` (no `=value`)** → pull the logins from `pr_review.reviewers` in the repo's `.gogox-claude.yaml` (resolved in Step 1). The bare flag is still the explicit human opt-in to promote; config only supplies *who*. If that key is absent/empty — **or** if every resolved reviewer is dropped as the PR author, leaving the effective list empty — the skill does **not** stop; it degrades to the default stop-at-draft handoff and suggests adding reviewers or passing `--assign=<logins>` (Step 4 covers both empty cases).
 - **`--notify[=<channel>]`** (optional, requires `--assign`) — a Slack channel ID (e.g. `C0APU1TJ98Q`) or `#name`. After the un-draft + assign succeeds, post a PR-review request to this channel so the team is pinged to review. Without it, the skill assigns but posts nothing. Passing it *without* `--assign` is a no-op — notification follows assignment, so the skill warns and skips it.
   - **Bare `--notify` (no `=value`)** → pull the channel from `pr_review.notify_channel` in `.gogox-claude.yaml` (a `#name` or a `Cxxxx` id — both accepted). If that key is absent/empty the skill does **not** stop — it skips only the notification and suggests adding the key or passing `--notify=<channel>` (Step 4).
 
@@ -51,9 +51,9 @@ echo "{\"skill\":\"pull-request-review-loop\",\"user\":\"$(whoami)\",\"ts\":\"$(
 ### 1. Resolve context
 
 1. **gh auth.** Abort early with a clear message if `gh` is not authenticated (`gh auth status`).
-2. **Branch + PR.** `gh pr view --json number,url,state,isDraft 2>/dev/null`.
+2. **Branch + PR.** `gh pr view --json number,url,state,isDraft,author 2>/dev/null`.
    - A draft PR that is `OPEN` → use it.
-   - No PR (or the last one is `MERGED`/`CLOSED`) → run `/pull-request --draft` to push the branch and open a draft PR, then re-resolve. Capture `PR_NUMBER`, `PR_URL`, `REPO`.
+   - No PR (or the last one is `MERGED`/`CLOSED`) → run `/pull-request --draft` to push the branch and open a draft PR, then re-resolve. Capture `PR_NUMBER`, `PR_URL`, `REPO`, and `PR_AUTHOR` (the `author.login` — needed to exclude the author from the reviewer set in item 4). If the PR was just created, re-fetch `author` after creation.
    - The PR is `OPEN` but already **ready** (a human promoted it) → use it, do **not** re-draft it. Run the review loop and CI wait as normal; under `--assign` it skips the un-draft step (already ready) and goes straight to assigning.
 3. **Resolve per-project config (`pr_review`).** Locate the repo profile the same way `_ticket-lib.md`'s Resolution flow does (primary file, then the per-developer registry fallback), then read the two leaf keys with `grep`/`sed` — **NOT `yq`** (it is not guaranteed installed; the core profile read has always used `grep`, and both keys are single-line scalars):
 
@@ -70,7 +70,8 @@ echo "{\"skill\":\"pull-request-review-loop\",\"user\":\"$(whoami)\",\"ts\":\"$(
    - `--assign=<logins>` (valued) → use the inline value. `--assign` (bare) → use `REVIEWERS_CFG`. Absent → no promotion (stop at draft).
    - `--notify=<ch>` (valued) → use it. `--notify` (bare) → use `NOTIFY_CFG` (a `#name` or `Cxxxx` id). Absent → no notification.
    - `--notify` given without `--assign` → warn and ignore it (notification follows assignment).
-   - Parse the resolved assign value into a deduped list of bare GitHub logins (strip a leading `@` and whitespace). Hold the resolved assignees + channel — and, for each bare flag, whether its config key was missing (for Step 4's degrade-and-suggest) — for Step 4.
+   - Parse the resolved assign value into a deduped list of bare GitHub logins (strip a leading `@` and whitespace).
+   - **Exclude the PR author** to produce the **effective reviewer list**: drop `PR_AUTHOR` (case-insensitive) from that deduped list. GitHub's `requested_reviewers` endpoint returns HTTP 422 *"Review cannot be requested from pull request author"* — and assigns **nobody** — if the author is in the list, so this filter is mandatory on **both** the valued (`--assign=<logins>`) and bare (`--assign`) paths; even an explicitly-typed author login is dropped. Hold the **effective reviewer list** + channel — and, for each bare flag, whether its config key was missing (for Step 4's degrade-and-suggest) — for Step 4. Note that the effective list can be **empty** even when `--assign` resolved logins (if the only resolved reviewer was the author); Step 4 treats an empty effective list as the degrade case.
 
 ### 2. AI-review loop
 
@@ -140,11 +141,15 @@ Your turn (a human's sign-off — the skill does none of these):
   4. Merge once approved.
 ```
 
-**With `--assign` (valued, or bare with `pr_review.reviewers` resolved in Step 1)** — the invocation is the human's pre-authorization to promote, so carry out the un-draft + assign on their behalf.
+**With `--assign` (valued, or bare with `pr_review.reviewers` resolved in Step 1) AND a non-empty effective reviewer list** — the invocation is the human's pre-authorization to promote, so carry out the un-draft + assign on their behalf. The gate is the **effective** list (Step 1 item 4, author already excluded), NOT the raw resolved list — the check must happen **before** the un-draft in step 1 below, so a PR whose only reviewer would be the author is never promoted-then-left-unassigned.
 
-**Degrade (bare `--assign` but no resolved reviewers — config key absent/empty):** do NOT un-draft or assign. Fall through to the **Default (stop at draft)** handoff above, and additionally print one line — `suggestion: no reviewers resolved — add pr_review.reviewers to .gogox-claude.yaml, or pass --assign=<logins> next run.` The run still completed cleanly (review clean + CI green); the PR is just left a draft — no promotion this run (this is a normal completion, not a **STOP** abort).
+**Degrade (empty effective reviewer list):** this covers both (a) bare `--assign` but no resolved reviewers (config key absent/empty), and (b) `--assign` resolved logins but the effective list is empty after excluding the PR author (the only reviewer was the author, or config listed only the author). In either case do NOT un-draft, assign, or notify. Fall through to the **Default (stop at draft)** handoff above, and additionally print one line:
+- case (a): `suggestion: no reviewers resolved — add pr_review.reviewers to .gogox-claude.yaml, or pass --assign=<logins> next run.`
+- case (b): `suggestion: only reviewer resolved was the PR author (<login>) — add other reviewers to pr_review.reviewers, or pass --assign=<other-logins> next run.`
 
-Otherwise (reviewers resolved):
+The run still completed cleanly (review clean + CI green); the PR is just left a draft — no promotion this run (this is a normal completion, not a **STOP** abort).
+
+Otherwise (effective reviewer list non-empty):
 
 1. **Un-draft** (skip if the PR is already ready): `gh pr ready "$PR_NUMBER"`.
 2. **WIP nudge.** Un-drafting leaves this repo's Marketplace WIP check stale at `pending` (it doesn't listen for `ready_for_review`). If `gh pr checks "$PR_NUMBER"` shows WIP `pending`, nudge the `edited` event it does listen for via a REST title append-and-revert:
@@ -154,14 +159,14 @@ Otherwise (reviewers resolved):
    sleep 3
    gh api -X PATCH "repos/$REPO/pulls/$PR_NUMBER" -f title="$ORIG_TITLE"    # revert
    ```
-3. **Assign reviewers** via REST — NOT `gh pr edit --add-reviewer` (its GraphQL path fails when the token lacks `read:org`):
+3. **Assign reviewers** via REST — NOT `gh pr edit --add-reviewer` (its GraphQL path fails when the token lacks `read:org`). Assign **only the effective reviewer list** (Step 1 item 4 — PR author already excluded); one `-f` per effective login:
 
    ```bash
-   # one -f per login parsed from --assign
+   # one -f per login from the EFFECTIVE reviewer list (author already dropped)
    gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" \
-     -f 'reviewers[]=AlexWangGoGoX' -f 'reviewers[]=AlanCHTseng'
+     -f 'reviewers[]=<effective-login-1>' -f 'reviewers[]=<effective-login-2>'
    ```
-4. **Notify (only if `--notify` resolved to a channel).** Post a PR-review request to the resolved Slack channel (a `Cxxxx` id or `#name`, from the inline value or `pr_review.notify_channel`) via `slack_send_message`. **Degrade:** if `--notify` was bare but `pr_review.notify_channel` was absent/empty, skip the notification and print `suggestion: no notify channel resolved — add pr_review.notify_channel to .gogox-claude.yaml, or pass --notify=<channel> next run.` — the un-draft + assign already succeeded and are never rolled back. Otherwise, write the message in **English** and greet the reviewers by the GitHub logins passed to `--assign` (plain text, not Slack `<@id>` mentions — the skill keeps no GitHub→Slack mapping, by design, so it stays generic for org-wide use; a plain login does not ping anyone). Format it as four lines:
+4. **Notify (only if `--notify` resolved to a channel).** Post a PR-review request to the resolved Slack channel (a `Cxxxx` id or `#name`, from the inline value or `pr_review.notify_channel`) via `slack_send_message`. **Degrade:** if `--notify` was bare but `pr_review.notify_channel` was absent/empty, skip the notification and print `suggestion: no notify channel resolved — add pr_review.notify_channel to .gogox-claude.yaml, or pass --notify=<channel> next run.` — the un-draft + assign already succeeded and are never rolled back. Otherwise, write the message in **English** and greet the reviewers by the GitHub logins that were **actually assigned** — i.e. the effective reviewer list from step 3 (PR author already excluded), NOT the raw pre-filter set (plain text, not Slack `<@id>` mentions — the skill keeps no GitHub→Slack mapping, by design, so it stays generic for org-wide use; a plain login does not ping anyone). Format it as four lines:
 
    ```
    Hi <login1>, <login2>
@@ -183,7 +188,7 @@ Otherwise (reviewers resolved):
 - **CI runs on drafts here.** On `gogox-driver-flutter` the real build/test check, `PR Check (format, analyze, test, build-verify)`, is run by Codemagic (an external CI) and fires on draft PRs — so the skill can confirm it green without un-drafting. The `WIP` marketplace check, by contrast, stays `pending` until the PR is un-drafted; Step 3 excludes it for that reason.
 - **Assign via REST, not `gh pr edit`.** `gh pr edit --add-reviewer` uses GraphQL and fails when the local token lacks the `read:org` scope; the `requested_reviewers` REST endpoint works regardless.
 - **WIP nudge after un-draft.** The Marketplace WIP check leaves a stale `pending` after un-draft because it does not listen for `ready_for_review`; the title append-and-revert in Step 4 triggers the `edited` event it does listen for.
-- **Slack notification (`--notify`) is generic and English.** The message is English so the skill works for any team, not tied to one team's language convention. It greets the reviewers as `Hi <logins>` (the GitHub logins from `--assign`, plain text — no GitHub→Slack mapping, so no real ping), then `Please review this PR` + a thank-you emoji, the PR URL, and one `•` bullet, once per PR. The channel is always whatever the human passes to `--notify`; the skill never picks one on its own, and posts nothing without the flag.
+- **Slack notification (`--notify`) is generic and English.** The message is English so the skill works for any team, not tied to one team's language convention. It greets the reviewers as `Hi <logins>` (the GitHub logins that were actually assigned — i.e. the effective list with the PR author excluded, NOT the raw `--assign` value — plain text, no GitHub→Slack mapping, so no real ping), then `Please review this PR` + a thank-you emoji, the PR URL, and one `•` bullet, once per PR. The channel is always whatever the human passes to `--notify`; the skill never picks one on its own, and posts nothing without the flag.
 
 ## Output
 
@@ -194,7 +199,7 @@ PR #<n> — <url>
 AI review: <clean in N rounds | stopped: needs human (…)>
 CI: <green | red (<check>) | timed out>
 Status: <DRAFT (left on purpose) | READY — un-drafted, assigned: a, b>
-Notify: <posted to <channel> | not requested | skipped (no --assign) | skipped (no channel resolved)>
+Notify: <posted to <channel> | not requested | skipped (no --assign) | skipped (no assignee resolved) | skipped (no channel resolved)>
 Next: <human: review → un-draft → assign → merge | merge once approved>
 ```
 
@@ -203,5 +208,6 @@ Next: <human: review → un-draft → assign → merge | merge once approved>
 > Update this footer when you use the skill, so the next person knows the real-world use case.
 > Format: `YYYY-MM-DD by @username — one-line context`
 
+- 2026-07-13 by @charlie.yang — excluded the PR author from the resolved `--assign` reviewer set: GitHub's `requested_reviewers` 422s and assigns no one when the author is in the list, and the per-project `pr_review.reviewers` config lists the whole team (author included). The promote gate now keys on the author-excluded "effective reviewer list", computed in Step 1 before the un-draft; an empty effective list degrades to stay-at-draft with a distinct suggestion. Surfaced while dogfooding the per-project config end-to-end on a live client-app PR whose author was in the team reviewer list (the first real end-to-end run; the `@claude` fallback to `/code-review` also fired and worked there).
 - 2026-06-26 by @broccoli.huang — switched the `--notify` message from Chinese to English and made it greet the assigned reviewers by GitHub login (`Hi <logins>` / `Please review this PR`). Addressing reviewers by login needs no GitHub→Slack mapping, decoupling the skill from §8's team-specific Chinese convention so it stays generic for org-wide use.
 - 2026-06-25 by @broccoli.huang — reworked to stop at draft by default (runs the AI-review loop, waits for CI green, then leaves the PR a draft), after team feedback that draft↔ready is the team's human-verified marker. Added `--assign=<logins>` (opt-in un-draft + assign) and `--notify=<channel>` (opt-in Slack PR-review ping after assigning — added because the repo's assumed notify Action turned out not to exist, so the notification had to be the skill's own step). CI is waited for in draft because the build CI (Codemagic) runs on drafts. Shipped as PR #137. Not yet dogfooded end-to-end on a live PR.
