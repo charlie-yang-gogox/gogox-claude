@@ -54,12 +54,16 @@ echo "{\"skill\":\"pull-request-review-loop\",\"user\":\"$(whoami)\",\"ts\":\"$(
    - A draft PR that is `OPEN` → use it.
    - No PR (or the last one is `MERGED`/`CLOSED`) → run `/pull-request --draft` to push the branch and open a draft PR, then re-resolve. Capture `PR_NUMBER`, `PR_URL`, `REPO`.
    - The PR is `OPEN` but already **ready** (a human promoted it) → use it, do **not** re-draft it. Run the review loop and CI wait as normal; under `--assign` it skips the un-draft step (already ready) and goes straight to assigning.
-3. **Resolve per-project config (`pr_review`).** Locate the repo profile the same way `_ticket-lib.md`'s Resolution flow does — `PROFILE="$(git rev-parse --show-toplevel)/.gogox-claude.yaml"`, falling back to `~/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml`. Read the two leaf keys with `grep`/`awk` — **NOT `yq`** (it is not guaranteed installed; the core profile read has always used `grep`/`awk`, and both keys are single-line scalars):
+3. **Resolve per-project config (`pr_review`).** Locate the repo profile the same way `_ticket-lib.md`'s Resolution flow does (primary file, then the per-developer registry fallback), then read the two leaf keys with `grep`/`sed` — **NOT `yq`** (it is not guaranteed installed; the core profile read has always used `grep`, and both keys are single-line scalars):
 
    ```bash
+   PROFILE="$(git rev-parse --show-toplevel)/.gogox-claude.yaml"
+   [ -f "$PROFILE" ] || PROFILE="$HOME/.claude/commands/profiles/registry/$(basename "$(git rev-parse --show-toplevel)").yaml"
    REVIEWERS_CFG=$(grep -E '^[[:space:]]*reviewers:' "$PROFILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/^"//; s/"$//')
    NOTIFY_CFG=$(grep -E '^[[:space:]]*notify_channel:' "$PROFILE" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/^"//; s/"$//')
    ```
+
+   The grep matches the leaf key by name (the file has only one `reviewers:` / `notify_channel:`, both under `pr_review:`); `head -1` guards against a duplicate. Empty result → treat as absent (Step 4 degrades).
 
 4. **Resolve effective assignees + notify** — flag intent is always the human's; config only supplies the value:
    - `--assign=<logins>` (valued) → use the inline value. `--assign` (bare) → use `REVIEWERS_CFG`. Absent → no promotion (stop at draft).
@@ -125,7 +129,7 @@ Your turn (a human's sign-off — the skill does none of these):
 
 **With `--assign` (valued, or bare with `pr_review.reviewers` resolved in Step 1)** — the invocation is the human's pre-authorization to promote, so carry out the un-draft + assign on their behalf.
 
-**Degrade (bare `--assign` but no resolved reviewers — config key absent/empty):** do NOT un-draft or assign. Fall through to the **Default (stop at draft)** handoff above, and additionally print one line — `suggestion: no reviewers resolved — add pr_review.reviewers to .gogox-claude.yaml, or pass --assign=<logins> next run.` The run still completed cleanly (review clean + CI green); the PR is just left a draft. Then stop.
+**Degrade (bare `--assign` but no resolved reviewers — config key absent/empty):** do NOT un-draft or assign. Fall through to the **Default (stop at draft)** handoff above, and additionally print one line — `suggestion: no reviewers resolved — add pr_review.reviewers to .gogox-claude.yaml, or pass --assign=<logins> next run.` The run still completed cleanly (review clean + CI green); the PR is just left a draft — no promotion this run (this is a normal completion, not a **STOP** abort).
 
 Otherwise (reviewers resolved):
 
@@ -176,7 +180,7 @@ PR #<n> — <url>
 AI review: <clean in N rounds | stopped: needs human (…)>
 CI: <green | red (<check>) | timed out>
 Status: <DRAFT (left on purpose) | READY — un-drafted, assigned: a, b>
-Notify: <posted to <channel> | not requested | skipped (no --assign)>
+Notify: <posted to <channel> | not requested | skipped (no --assign) | skipped (no channel resolved)>
 Next: <human: review → un-draft → assign → merge | merge once approved>
 ```
 
