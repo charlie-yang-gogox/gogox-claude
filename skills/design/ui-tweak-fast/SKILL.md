@@ -1099,11 +1099,40 @@ verdict / Coverage table with `shared?`), then a marker-wrapped `## Demo`:
 Demo content, in priority order:
 1. **Captured demo** (`demo-files`, preferred — the actual result): a Linear `assetUrl` is a
    **deterministic 401 to GitHub** on a private repo, so in the PR body it is **always a plain link**,
-   never `![](…)`. Publish via the **`/ggx-attach` Attach core** (`commands/dev/ggx-attach.md` — the
-   single source of truth; do NOT re-derive) with `namespace: "ui-tweak-demo"`,
-   `sha: $(git -C "$WT" rev-parse --short HEAD)`, and `pr` absent (the PR doesn't exist yet): the core
-   writes ONE marked inline-rendered Linear comment (`<!-- ggx-attach:ui-tweak-demo -->`, idempotent by
-   marker + sha; never a download-card attachment) and returns the `assetUrl`(s) to reference here.
+   never `![](…)`. Publish the files inline using the procedure below; this procedure is deliberately
+   included here so a standalone installation needs no `/ggx-attach` command or repository checkout.
+
+   **Inline demo-publish procedure** (`namespace=ui-tweak-demo`,
+   `sha=$(git -C "$WT" rev-parse --short HEAD)`):
+   - Build a stable keyed set from `demo-files`. For each path, use its filename without extension,
+     slugified to lowercase kebab-case, as `key`; inspect the image (or a video's first/middle/last
+     frames) and write a short plain-English `caption` describing the screen/result. Accept only
+     existing, non-empty `png|jpg|jpeg|gif|mp4|mov` files. Any invalid file is a loud failure.
+   - Read the work item's comments and find the single block beginning
+     `<!-- ggx-attach:ui-tweak-demo -->`. Parse its `ggx-attach-keys`, `ggx-attach-sha`, and existing
+     key→assetUrl entries. If an existing key's stored sha equals the current sha, SKIP its upload and
+     reuse its URL. A new key, or any sha mismatch, is uploaded/replaced.
+   - Upload each required file serially (at most three signed PUTs per burst): call Linear
+     `prepare_attachment_upload(issue=<ticket-id>, filename, contentType, size)`, then immediately
+     `curl -X PUT --data-binary @<path>` to `uploadRequest.url` with **every** returned
+     `uploadRequest.headers` entry verbatim. Keep the clean returned `assetUrl`; never call
+     `create_attachment_from_upload` (that creates a download card). All uploads must succeed before
+     writing the comment; otherwise fail loudly and leave the existing comment untouched.
+   - Merge skipped and newly uploaded entries in stable key order and write ONE comment body:
+     ```markdown
+     <!-- ggx-attach:ui-tweak-demo -->
+     <!-- ggx-attach-keys: <comma-separated keys> -->
+     <!-- ggx-attach-sha: <short HEAD> -->
+     ### <caption>
+     ![<caption>](<assetUrl>)
+     <!-- /ggx-attach:ui-tweak-demo -->
+     ```
+     Repeat the heading/image pair for every key. Images and videos use the same Markdown; the PUT
+     content type makes videos render inline. If the marked comment exists, update it in place by id;
+     if update-by-id is unsupported, delete that one comment and create the merged replacement.
+     If absent, create it. This is the only Linear write in this procedure and it must never create a
+     download-card attachment. Return the merged key→assetUrl map and use those URLs as plain links in
+     the PR body's marked `## Demo` block below.
 2. **Ticket visuals**: image attachments from `ticket.json` embedded as `![]()` only if publicly
    fetchable (`curl -fsI <url>` → 200); the Figma node URL is a page → always a plain
    `Target design (Figma): <url>` link, never `![]()`.
