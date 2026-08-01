@@ -1,0 +1,186 @@
+name: GGX Cloud Bug Worker
+
+# P2 of the Linear → GitHub Actions trigger investigation.
+# End-to-end equivalent of PoC-4 (CCR sandbox) but running in a GitHub
+# Actions runner. Driven by a Linear ticket id, this workflow installs
+# gogox-claude + Flutter, then runs claude-code-base-action with a
+# bug-fix prompt. Claude opens a PR on gogovan/gogox-client-flutter via
+# the gh CLI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticket_id:
+        description: "Linear ticket id (e.g. CAF-603)"
+        required: true
+        type: string
+      ticket_title:
+        description: "Ticket title (one line)"
+        required: true
+        type: string
+      ticket_description:
+        description: "Full ticket description / acceptance criteria (multi-line OK)"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [linear-bug-fix]
+      # client_payload schema:
+      #   { "ticket_id": "...", "ticket_title": "...", "ticket_description": "..." }
+
+env:
+  TARGET_REPO: gogovan/gogox-client-flutter
+
+jobs:
+  fix-bug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve ticket inputs
+        id: ticket
+        env:
+          # Use env to avoid YAML escape issues with multi-line strings
+          WF_TICKET_ID:     ${{ github.event.inputs.ticket_id }}
+          WF_TICKET_TITLE:  ${{ github.event.inputs.ticket_title }}
+          WF_TICKET_DESC:   ${{ github.event.inputs.ticket_description }}
+          RD_TICKET_ID:     ${{ github.event.client_payload.ticket_id }}
+          RD_TICKET_TITLE:  ${{ github.event.client_payload.ticket_title }}
+          RD_TICKET_DESC:   ${{ github.event.client_payload.ticket_description }}
+          EVENT_NAME:       ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            ID="$RD_TICKET_ID"; TITLE="$RD_TICKET_TITLE"; DESC="$RD_TICKET_DESC"
+          else
+            ID="$WF_TICKET_ID"; TITLE="$WF_TICKET_TITLE"; DESC="$WF_TICKET_DESC"
+          fi
+          # Persist for later steps via $GITHUB_ENV (multi-line via delimiter)
+          echo "TICKET_ID=$ID" >> "$GITHUB_ENV"
+          echo "TICKET_TITLE=$TITLE" >> "$GITHUB_ENV"
+          {
+            echo "TICKET_DESCRIPTION<<__GGX_EOF__"
+            printf '%s\n' "$DESC"
+            echo "__GGX_EOF__"
+          } >> "$GITHUB_ENV"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "Ticket: $ID — $TITLE"
+
+      - name: Checkout gogox-claude (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: gogox-claude
+
+      - name: Checkout target repo (gogovan/gogox-client-flutter)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          path: target
+          token: ${{ secrets.GH_PAT }}
+          fetch-depth: 0
+
+      - name: Setup Flutter 3.38.7
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.38.7
+          channel: stable
+
+      - name: Configure git (insteadOf + safe.directory + gh auth)
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git config --global --add safe.directory '*'
+          # Rewrite ssh / git@ → HTTPS+PAT so Dart pub git: deps (flutter-core-sdk) resolve
+          git config --global --add url."https://x-access-token:${GH_PAT}@github.com/".insteadOf 'git@github.com:'
+          git config --global --add url."https://x-access-token:${GH_PAT}@github.com/".insteadOf 'ssh://git@github.com/'
+          # Identity for any commits Claude makes
+          git config --global user.email "ggx-cloud-worker@gogox.local"
+          git config --global user.name  "ggx-cloud-worker"
+          # gh CLI auth (runner has no token by default)
+          echo "$GH_PAT" | gh auth login --with-token
+          gh auth status
+
+      - name: Install gogox-claude into ~/.claude
+        run: |
+          cd "$GITHUB_WORKSPACE/gogox-claude"
+          bash install.sh
+          # Sanity: critical artifacts in place
+          for f in \
+            "$HOME/.claude/commands/ggx-work.md" \
+            "$HOME/.claude/commands/dev/ff.md" \
+            "$HOME/.claude/lib/dev-mode.sh"; do
+            if [ ! -e "$f" ]; then
+              echo "BOOTSTRAP FAILED: $f missing"
+              exit 1
+            fi
+          done
+          echo "gogox-claude bootstrap OK"
+
+      - name: Pre-flight pub get
+        run: |
+          cd "$GITHUB_WORKSPACE/target"
+          flutter --version | head -3
+          flutter pub get 2>&1 | tail -10
+
+      - name: Write ticket data to disk for Claude to read
+        run: |
+          mkdir -p /tmp/ggx-worker
+          cat > /tmp/ggx-worker/ticket.md <<EOF
+          # ${TICKET_ID} — ${TICKET_TITLE}
+
+          ${TICKET_DESCRIPTION}
+          EOF
+          echo "--- Ticket data persisted to /tmp/ggx-worker/ticket.md (first 30 lines): ---"
+          head -30 /tmp/ggx-worker/ticket.md
+
+      - name: Run Claude bug-fix flow
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          prompt: |-
+            You are running inside a GitHub Actions runner as the **cloud bug worker** for the gogox-claude pipeline.
+
+            ## Ticket
+            - Linear ticket ID: ${{ steps.ticket.outputs.id }}
+            - Repository: gogovan/gogox-client-flutter (already checked out at $GITHUB_WORKSPACE/target)
+            - Full ticket title + description: read `/tmp/ggx-worker/ticket.md` via the Read tool. This file contains everything you need to know about the bug — do NOT improvise or guess at a different fix.
+
+            ## Your job
+            Drive this ticket through the equivalent of `/ggx-work <ticket-id> --auto` (bug lane). The pipeline definition is in `~/.claude/commands/ggx-work.md` and `~/.claude/commands/dev/*.md` — read them as needed and follow.
+
+            For bug-mode the chain is: dev:start → write the fix per ticket → dev:verify → dev:review → dev:ship.
+
+            ## Cloud-specific overrides (apply throughout)
+            1. cd "$GITHUB_WORKSPACE/target" first; do NOT cd elsewhere.
+            2. **`gh` CLI is installed and authenticated** (workflow already ran `gh auth login`). Use `gh pr create`, `gh pr list`, `gh pr view`, `gh pr edit` directly. Do NOT try mcp__github__* — it is not configured here.
+            3. **Linear MCP is NOT available** in this runner. All ticket data you need is in `/tmp/ggx-worker/ticket.md`. Do NOT attempt to call any `mcp__claude_ai_Linear__*` tool. Linear status / comments will be handled by Linear's automatic GitHub PR linkage when the PR title contains the ticket id.
+            4. **Branch naming**: `fix/<TICKET-ID>` off `trunk`. Use the configured `ggx-cloud-worker` git identity (already set globally).
+            5. Flutter SDK is on PATH (`flutter --version` shows 3.38.7). `flutter pub get` already ran. Run `flutter analyze` after edits; run `flutter test` if you touched Dart code; skip test for pure-doc / README-only changes.
+            6. **Implement EXACTLY what the ticket asks** — do not substitute a different bug fix even if you think it would be better.
+
+            ## Safety rails
+            - Do NOT force-push, do NOT push to trunk
+            - Do NOT delete any remote branch you did not create
+            - If anything looks unsafe or unrecoverable, stop and report
+
+            ## Output
+            End your final reply with the literal line block:
+
+            === GGX CLOUD WORKER OUTCOME ===
+            Result       : <success | failure>
+            Final stage  : <e.g. dev:ship | dev:verify aborted>
+            PR URL       : <URL or none>
+            Files changed: <N files (summary)>
+            Notes        : <any noteworthy gotcha>
+            === GGX CLOUD WORKER COMPLETE ===
+          allowed_tools: "Bash,Read,Write,Edit,Glob,Grep"
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          max_turns: "80"
+          claude_env: |
+            GH_TOKEN: ${{ secrets.GH_PAT }}
+            GH_PAT: ${{ secrets.GH_PAT }}
+
+      - name: Show summary
+        if: always()
+        run: |
+          echo "=== Workflow finished ==="
+          echo "Ticket: ${{ steps.ticket.outputs.id }}"
+          echo "(see Claude action output above for outcome block)"

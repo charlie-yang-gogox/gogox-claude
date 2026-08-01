@@ -1,0 +1,15 @@
+name = "ggx-linear-to-github-dispatch"
+main = "worker.js"
+compatibility_date = "2026-05-01"
+
+# Public-facing settings — override per-environment if needed
+[vars]
+GH_REPO              = "charlie-yang-gogox/gogox-claude"
+ASSIGNEE_LINEAR_EMAIL = "charlie.yang@gogox.com"
+ALLOWED_TEAM_KEY     = "CAF"
+REQUIRED_LABEL       = "Bug"
+TRIGGER_STATE_NAME   = "In Progress"
+
+# Secrets (NOT in this file — set via `wrangler secret put`):
+#   - LINEAR_WEBHOOK_SECRET — HMAC secret from Linear webhook config
+#   - GH_PAT                — GitHub PAT with `repo` scope
